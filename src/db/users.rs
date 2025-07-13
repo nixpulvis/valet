@@ -1,6 +1,6 @@
 use crate::db::{Database, Error};
 use crate::encrypt::{Encrypted, SALT_SIZE};
-use crate::user::{self, User};
+use crate::user::User;
 
 pub struct Users;
 
