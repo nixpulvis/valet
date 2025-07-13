@@ -1,28 +1,30 @@
 use crate::db::Database;
-use crate::user::{Encrypted, Registration};
+use crate::user::{Encrypted, SALT_SIZE, User};
 use sqlx::Error;
 
 pub struct Users;
 
 impl Users {
-    pub async fn create(db: &Database, registration: &Registration) -> Result<(), Error> {
+    pub async fn register(db: &Database, username: &str, password: &str) -> Result<(), Error> {
+        let user = User::registeration(username, password).expect("TODO");
+
         sqlx::query(
             r"
             INSERT INTO users (username, salt, validation_data, validation_nonce)
             VALUES (?, ?, ?, ?)
             ",
         )
-        .bind(&registration.username)
-        .bind(&registration.salt[..])
-        .bind(&registration.validation.data[..])
-        .bind(&registration.validation.nonce[..])
+        .bind(&user.username)
+        .bind(&user.salt[..])
+        .bind(&user.validation.data[..])
+        .bind(&user.validation.nonce[..])
         .execute(db.pool())
         .await?;
 
         Ok(())
     }
 
-    pub async fn registration(db: &Database, username: &str) -> Result<Registration, Error> {
+    pub async fn get(db: &Database, username: &str, password: &str) -> Result<User, Error> {
         let (username, salt, data, nonce): (String, Vec<u8>, Vec<u8>, Vec<u8>) = sqlx::query_as(
             r"
             SELECT username, salt, validation_data, validation_nonce
@@ -34,12 +36,8 @@ impl Users {
         .fetch_one(db.pool())
         .await?;
 
+        let salt: [u8; SALT_SIZE] = salt.try_into().expect("TODO: Need our own error type");
         let validation = Encrypted { data, nonce };
-        let salt = salt.try_into().expect("TODO: Need our own error type");
-        Ok(Registration {
-            username,
-            salt,
-            validation,
-        })
+        Ok(User::load(username, password, salt, validation).expect("TODO"))
     }
 }

@@ -5,18 +5,20 @@ use aes_siv::{
 use argon2::Argon2;
 use rand::{Rng, rngs::OsRng};
 
-const SALT_SIZE: usize = 16;
-const CREDENTIAL_SIZE: usize = 64;
+pub const SALT_SIZE: usize = 16;
+pub const CREDENTIAL_SIZE: usize = 64;
 const VALIDATION: &[u8] = b"VALID";
 
 /// Usernames and the salt for their password are store in a database.
-pub struct Registration {
+pub struct User {
     pub username: String,
     pub salt: [u8; SALT_SIZE],
     pub validation: Encrypted,
+
+    pub(crate) credential: Credential,
 }
 
-impl Registration {
+impl User {
     fn generate_salt() -> Result<[u8; SALT_SIZE], ()> {
         let mut salt = [0; SALT_SIZE];
         let mut rng = OsRng::new().map_err(|_| ())?;
@@ -24,29 +26,48 @@ impl Registration {
         Ok(salt)
     }
 
-    pub fn new(username: &str, password: &str) -> Result<Self, ()> {
+    pub fn credential(&self) -> &Credential {
+        &self.credential
+    }
+
+    pub fn registeration(username: &str, password: &str) -> Result<Self, ()> {
         let salt = Self::generate_salt()?;
         let credential = Credential::new(password, &salt)?;
         let validation = credential.encrypt(VALIDATION)?;
-        Ok(Registration {
+        Ok(User {
             username: username.into(),
             salt,
             validation,
+            credential,
         })
     }
 
-    pub fn validate(&self, password: &str) -> Result<bool, ()> {
-        let credential = self.credential(password)?;
-        let validation = credential.decrypt(&self.validation);
-        if let Ok(v) = validation {
+    pub fn load(
+        username: String,
+        password: &str,
+        salt: [u8; SALT_SIZE],
+        validation: Encrypted,
+    ) -> Result<Self, ()> {
+        let user = User {
+            username,
+            salt,
+            validation,
+            credential: Credential::new(password, &salt[..])
+                .expect("TODO: Need our own error type"),
+        };
+        if user.validate().expect("TODO") {
+            Ok(user)
+        } else {
+            Err(())
+        }
+    }
+
+    pub fn validate(&self) -> Result<bool, ()> {
+        if let Ok(v) = self.credential().decrypt(&self.validation) {
             Ok(v == VALIDATION)
         } else {
             Ok(false)
         }
-    }
-
-    pub fn credential(&self, password: &str) -> Result<Credential, ()> {
-        Credential::new(password, &self.salt)
     }
 }
 
@@ -74,7 +95,7 @@ impl Credential {
 
 #[test]
 fn new_credential() {
-    let salt = Registration::generate_salt().expect("error generating salt");
+    let salt = User::generate_salt().expect("error generating salt");
     let credential = Credential::new("user1password", &salt).expect("error generating credential");
 
     assert_eq!(CREDENTIAL_SIZE, credential.0.len());
@@ -113,9 +134,9 @@ impl Credential {
 
 #[test]
 fn encrypt_decrypt_test() {
-    use crate::prelude::Registration;
+    use crate::prelude::User;
 
-    let salt = Registration::generate_salt().expect("error generating salt");
+    let salt = User::generate_salt().expect("error generating salt");
     let credential = Credential::new("user1password", &salt).expect("error generating credentials");
 
     let plaintext = b"this is a secret";
