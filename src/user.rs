@@ -1,4 +1,4 @@
-use crate::encrypt::{Credential, Encrypted, SALT_SIZE};
+use crate::encrypt::{self, Credential, Encrypted, SALT_SIZE};
 
 const VALIDATION: &[u8] = b"VALID";
 
@@ -15,7 +15,7 @@ impl User {
         &self.credential
     }
 
-    pub fn new(username: &str, password: &str) -> Result<Self, ()> {
+    pub fn new(username: &str, password: &str) -> Result<Self, Error> {
         let salt = Credential::generate_salt()?;
         let credential = Credential::new(password, &salt)?;
         let validation = credential.encrypt(VALIDATION)?;
@@ -32,26 +32,37 @@ impl User {
         password: &str,
         salt: [u8; SALT_SIZE],
         validation: Encrypted,
-    ) -> Result<Self, ()> {
+    ) -> Result<Self, Error> {
         let user = User {
             username,
             salt,
             validation,
-            credential: Credential::new(password, &salt[..])
-                .expect("TODO: Need our own error type"),
+            credential: Credential::new(password, &salt[..])?,
         };
-        if user.validate().expect("TODO") {
+        if user.validate() {
             Ok(user)
         } else {
-            Err(())
+            Err(Error::InvalidPassword)
         }
     }
 
-    pub fn validate(&self) -> Result<bool, ()> {
+    pub fn validate(&self) -> bool {
         if let Ok(v) = self.credential().decrypt(&self.validation) {
-            Ok(v == VALIDATION)
+            v == VALIDATION
         } else {
-            Ok(false)
+            false
         }
+    }
+}
+
+#[derive(Debug)]
+pub enum Error {
+    InvalidPassword,
+    Encrypt(encrypt::Error),
+}
+
+impl From<encrypt::Error> for Error {
+    fn from(err: encrypt::Error) -> Self {
+        Error::Encrypt(err)
     }
 }

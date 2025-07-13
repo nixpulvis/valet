@@ -3,7 +3,7 @@ use tokio;
 use valet::db::{DEFAULT_URL, Database, Lots, Users};
 
 #[tokio::main]
-async fn main() -> Result<(), sqlx::Error> {
+async fn main() -> Result<(), valet::db::Error> {
     let mut args = env::args();
 
     // TODO: Import a proper CLI arg parser.

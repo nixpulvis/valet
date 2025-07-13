@@ -1,4 +1,5 @@
-use sqlx::{Error, Pool, Sqlite, SqlitePool};
+use crate::user;
+use sqlx::{Pool, Sqlite, SqlitePool};
 
 pub const DEFAULT_URL: &'static str = "sqlite://valet.sqlite?mode=rwc";
 
@@ -9,7 +10,10 @@ impl Database {
         let pool: Pool<Sqlite> = SqlitePool::connect(url).await?;
         println!("Connected to the database!");
 
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .map_err(|e| sqlx::Error::from(e))?;
         println!("Migrations up to date.");
 
         Ok(Database(pool))
@@ -17,6 +21,24 @@ impl Database {
 
     pub fn pool(&self) -> &SqlitePool {
         &self.0
+    }
+}
+
+#[derive(Debug)]
+pub enum Error {
+    User(user::Error),
+    Sqlx(sqlx::Error),
+}
+
+impl From<user::Error> for Error {
+    fn from(err: user::Error) -> Self {
+        Error::User(err)
+    }
+}
+
+impl From<sqlx::Error> for Error {
+    fn from(err: sqlx::Error) -> Self {
+        Error::Sqlx(err)
     }
 }
 

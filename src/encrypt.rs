@@ -18,51 +18,65 @@ pub struct Encrypted {
 pub struct Credential(Key<Aes256SivAead>);
 
 impl Credential {
-    pub fn new(password: &str, salt: &[u8]) -> Result<Self, ()> {
+    // TODO: Rename this whole struct to key and impl Deref.
+    pub fn key(&self) -> &Key<Aes256SivAead> {
+        &self.0
+    }
+
+    pub(crate) fn generate_salt() -> Result<[u8; SALT_SIZE], Error> {
+        let mut salt = [0; SALT_SIZE];
+        let mut rng = OsRng::new().map_err(|e| Error::KeyDerivation(e.msg.into()))?;
+        rng.try_fill(&mut salt)
+            .map_err(|e| Error::KeyDerivation(e.msg.into()))?;
+        Ok(salt)
+    }
+
+    pub fn new(password: &str, salt: &[u8]) -> Result<Self, Error> {
         let argon2 = Argon2::default();
         assert_eq!(CREDENTIAL_SIZE, Aes256SivAead::key_size());
         let mut output_key_material = [0u8; CREDENTIAL_SIZE];
         argon2
             .hash_password_into(password.as_bytes(), salt, &mut output_key_material)
-            .map_err(|_| ())?;
+            .map_err(|e| Error::KeyDerivation(format!("{}", e)))?;
 
         Ok(Credential(Key::<Aes256SivAead>::clone_from_slice(
             &output_key_material,
         )))
     }
 
-    pub fn key(&self) -> &Key<Aes256SivAead> {
-        &self.0
-    }
-
-    pub fn encrypt(&self, plaintext: &[u8]) -> Result<Encrypted, ()> {
+    pub fn encrypt(&self, plaintext: &[u8]) -> Result<Encrypted, Error> {
         // TODO: Better security will be achieved by storing a unique counter for this somewhere.
         let mut nonce_bytes = [0; NONCE_SIZE];
-        let mut rng = OsRng::new().map_err(|_| ())?;
-        rng.try_fill(&mut nonce_bytes).map_err(|_| ())?;
+        let mut rng = OsRng::new().map_err(|e| Error::Encryption(format!("{}", e)))?;
+        rng.try_fill(&mut nonce_bytes)
+            .map_err(|e| Error::Encryption(format!("{}", e)))?;
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let cipher = Aes256SivAead::new(self.key());
-        let ciphertext = cipher.encrypt(nonce, plaintext).map_err(|_| ())?;
+        let ciphertext = cipher
+            .encrypt(nonce, plaintext)
+            .map_err(|e| Error::Encryption(format!("{}", e)))?;
         Ok(Encrypted {
             data: ciphertext,
             nonce: nonce.as_slice().into(),
         })
     }
 
-    pub fn decrypt(&self, encrypted: &Encrypted) -> Result<Vec<u8>, ()> {
+    pub fn decrypt(&self, encrypted: &Encrypted) -> Result<Vec<u8>, Error> {
         let nonce = Nonce::from_slice(&encrypted.nonce);
         let cipher = Aes256SivAead::new(self.key());
-        let plaintext = cipher.decrypt(nonce, &encrypted.data[..]).map_err(|_| ())?;
+        let plaintext = cipher
+            .decrypt(nonce, &encrypted.data[..])
+            .map_err(|e| Error::Decryption(format!("{}", e)))?;
         Ok(plaintext)
     }
+}
 
-    pub(crate) fn generate_salt() -> Result<[u8; SALT_SIZE], ()> {
-        let mut salt = [0; SALT_SIZE];
-        let mut rng = OsRng::new().map_err(|_| ())?;
-        rng.try_fill(&mut salt).map_err(|_| ())?;
-        Ok(salt)
-    }
+#[derive(Debug)]
+pub enum Error {
+    KeyDerivation(String),
+    Encryption(String),
+    Decryption(String),
 }
 
 #[test]

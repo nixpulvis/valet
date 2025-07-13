@@ -1,13 +1,12 @@
-use crate::db::Database;
+use crate::db::{Database, Error};
 use crate::encrypt::{Encrypted, SALT_SIZE};
-use crate::user::User;
-use sqlx::Error;
+use crate::user::{self, User};
 
 pub struct Users;
 
 impl Users {
     pub async fn register(db: &Database, username: &str, password: &str) -> Result<(), Error> {
-        let user = User::new(username, password).expect("TODO");
+        let user = User::new(username, password)?;
 
         sqlx::query(
             r"
@@ -39,6 +38,6 @@ impl Users {
 
         let salt: [u8; SALT_SIZE] = salt.try_into().expect("TODO: Need our own error type");
         let validation = Encrypted { data, nonce };
-        Ok(User::load(username, password, salt, validation).expect("TODO"))
+        Ok(User::load(username, password, salt, validation)?)
     }
 }
