@@ -45,6 +45,8 @@ async fn main() -> Result<(), sqlx::Error> {
                     } else {
                         println!("Invalid password.")
                     }
+                } else {
+                    println!("No username/password/data given.")
                 }
             }
             "get" => {
@@ -64,6 +66,8 @@ async fn main() -> Result<(), sqlx::Error> {
                     } else {
                         println!("Invalid password.")
                     }
+                } else {
+                    println!("No username/password given.")
                 }
             }
             _ => {
