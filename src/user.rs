@@ -57,19 +57,3 @@ fn new_credential() {
 
     assert_eq!(CREDENTIAL_SIZE, credential.0.len());
 }
-
-// pub fn key_from_password(password: &str, salt: &str) -> Result<Aes256SivAead, ()> {
-//     let argon2 = Argon2::default();
-//     assert_eq!(KEY_SIZE, Aes256SivAead::key_size());
-//     let mut output_key_material = [0u8; KEY_SIZE];
-//     argon2
-//         .hash_password_into(
-//             password.as_bytes(),
-//             salt.as_bytes(),
-//             &mut output_key_material,
-//         )
-//         .map_err(|_| ())?;
-
-//     let key = Key::<Aes256SivAead>::from_slice(&output_key_material);
-//     Ok(Aes256SivAead::new(&key))
-// }

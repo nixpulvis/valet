@@ -4,6 +4,7 @@
 
 use crate::user::Credential;
 
+pub mod database;
 #[cfg(feature = "gui")]
 mod gui;
 pub mod lot;

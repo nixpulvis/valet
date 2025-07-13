@@ -7,7 +7,9 @@ edition = "2024"
 gui = ["dep:egui"]
 
 [dependencies]
-rand = "0.6"
 aes-siv = "0.7"
 argon2 = "0.5"
 egui = { version = "0.32", optional = true }
+rand = "0.6"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+tokio = { version = "1.46", features = ["full"] }
