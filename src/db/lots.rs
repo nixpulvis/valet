@@ -1,5 +1,5 @@
 use crate::db::Database;
-use crate::user::Encrypted;
+use crate::encrypt::Encrypted;
 use sqlx::Error;
 
 pub struct Lots;

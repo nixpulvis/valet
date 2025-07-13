@@ -3,6 +3,7 @@
 //! TODO
 
 pub mod db;
+pub mod encrypt;
 #[cfg(feature = "gui")]
 mod gui;
 pub mod lot;

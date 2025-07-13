@@ -1,12 +1,13 @@
 use crate::db::Database;
-use crate::user::{Encrypted, SALT_SIZE, User};
+use crate::encrypt::{Encrypted, SALT_SIZE};
+use crate::user::User;
 use sqlx::Error;
 
 pub struct Users;
 
 impl Users {
     pub async fn register(db: &Database, username: &str, password: &str) -> Result<(), Error> {
-        let user = User::registeration(username, password).expect("TODO");
+        let user = User::new(username, password).expect("TODO");
 
         sqlx::query(
             r"
