@@ -5,6 +5,7 @@ use sqlx::Error;
 pub struct Lots;
 
 impl Lots {
+    // TODO: Use a put function to insert data, nonce. Don't take encrypted arg.
     pub async fn create(db: &Database, username: &str, encrypted: &Encrypted) -> Result<(), Error> {
         sqlx::query(
             r"

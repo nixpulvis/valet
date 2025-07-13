@@ -1,0 +1,153 @@
+// #![cfg(feature = "gui")]
+use eframe::egui;
+use egui_inbox::UiInbox;
+use tokio::runtime;
+use valet::db::{DEFAULT_URL, Database, Lots, Users};
+use valet::encrypt::Encrypted;
+use valet::user::User;
+
+fn main() {
+    let options = eframe::NativeOptions::default();
+    eframe::run_native(
+        "Valet",
+        options,
+        Box::new(|ctx| Ok(Box::new(ValetApp::new(ctx)))),
+    )
+    .expect("eframe run failed");
+}
+
+struct ValetApp {
+    logged_in: bool,
+    // TODO: This should be it's own widget.
+    username: String,
+    password: String,
+    show_password: bool,
+    login_inbox: UiInbox<User>,
+    load_inbox: UiInbox<Encrypted>,
+    rt: runtime::Runtime,
+    user: Option<User>,
+    lot: Option<String>,
+}
+
+impl ValetApp {
+    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        ValetApp {
+            logged_in: false,
+            // XXX: prefilled for faster testing
+            username: "nixpulvis".into(),
+            password: "password".into(),
+            show_password: false,
+            rt: runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+            login_inbox: UiInbox::new(),
+            load_inbox: UiInbox::new(),
+            user: None,
+            lot: None,
+        }
+    }
+}
+
+impl eframe::App for ValetApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("my_panel").show(ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    ui.set_width(35.);
+                    if self.logged_in {
+                        if ui.button("Lock").clicked() {
+                            self.logged_in = false;
+                            self.lot = None;
+                            self.user = None;
+                            self.login_inbox = UiInbox::new();
+                            self.load_inbox = UiInbox::new();
+                        }
+                    }
+                    if ui.button("Quit").clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+            });
+        });
+        if self.logged_in {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some(user) = &self.user {
+                    if let Some(encrypted) = self.load_inbox.read(ui).last() {
+                        let data = user
+                            .credential()
+                            .decrypt(&encrypted)
+                            .expect("error decrypting load");
+                        let msg = std::str::from_utf8(&data).expect("error parsing string");
+                        self.lot = Some(msg.into());
+                    }
+
+                    ui.label(format!("Username: {}", user.username));
+                    if let Some(ref mut msg) = self.lot {
+                        ui.add(egui::TextEdit::multiline(msg));
+                        if ui.add(egui::Button::new("Save")).clicked() {
+                            let username = self.username.clone();
+                            let encrypted = user
+                                .credential()
+                                .encrypt(msg.as_bytes())
+                                .expect("error encrypting");
+                            self.rt.spawn(async move {
+                                let db =
+                                    Database::new(DEFAULT_URL).await.expect("error getting DB");
+                                Lots::create(&db, &username, &encrypted)
+                                    .await
+                                    .expect("TODO");
+                            });
+                        }
+                    } else {
+                        if ui.add(egui::Button::new("Load Main Lot")).clicked() {
+                            let username = self.username.clone();
+                            let tx = self.load_inbox.sender();
+                            self.rt.spawn(async move {
+                                let db =
+                                    Database::new(DEFAULT_URL).await.expect("error getting DB");
+                                let encrypted = Lots::get(&db, &username).await.expect("TODO");
+                                tx.send(encrypted).ok();
+                            });
+                        }
+                    }
+                }
+            });
+        } else {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some(user) = self.login_inbox.read(ui).last() {
+                    self.password = "".into();
+                    self.show_password = false;
+                    self.logged_in = true;
+                    self.user = Some(user);
+                }
+
+                ui.label("Username:");
+                let username_re = ui.add(egui::TextEdit::singleline(&mut self.username));
+                ui.label("Password:");
+                let password_re = ui.add(
+                    egui::TextEdit::singleline(&mut self.password).password(!self.show_password),
+                );
+                ui.checkbox(&mut self.show_password, "Show password");
+                if ui.add(egui::Button::new("Unlock")).clicked()
+                    || password_re.lost_focus()
+                        && username_re.ctx.input(|i| i.key_pressed(egui::Key::Enter))
+                    || username_re.lost_focus()
+                        && password_re.ctx.input(|i| i.key_pressed(egui::Key::Enter))
+                {
+                    // XXX: This is obviously hacky, but I don't want to deal with sharing things now.
+                    let username = self.username.clone();
+                    let password = self.password.clone();
+                    let tx = self.login_inbox.sender();
+                    self.rt.spawn(async move {
+                        let db = Database::new(DEFAULT_URL).await.expect("error getting DB");
+                        let user = Users::get(&db, &username, &password).await.expect("TODO");
+                        if user.validate() {
+                            tx.send(user).ok();
+                        }
+                    });
+                }
+            });
+        }
+    }
+}
