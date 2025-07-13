@@ -15,7 +15,7 @@ pub struct User {
     pub salt: [u8; SALT_SIZE],
     pub validation: Encrypted,
 
-    pub(crate) credential: Credential,
+    credential: Credential,
 }
 
 impl User {
