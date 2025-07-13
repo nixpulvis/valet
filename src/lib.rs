@@ -2,9 +2,7 @@
 //!
 //! TODO
 
-use crate::user::Credential;
-
-pub mod database;
+pub mod db;
 #[cfg(feature = "gui")]
 mod gui;
 pub mod lot;

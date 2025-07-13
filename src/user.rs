@@ -10,8 +10,8 @@ const CREDENTIAL_SIZE: usize = 64;
 
 /// Usernames and the salt for their password are store in a database.
 pub struct Registration {
-    username: String,
-    salt: [u8; SALT_SIZE],
+    pub username: String,
+    pub salt: [u8; SALT_SIZE],
 }
 
 impl Registration {
