@@ -9,5 +9,4 @@ pub mod database;
 mod gui;
 pub mod lot;
 pub mod prelude;
-pub mod record;
 pub mod user;
