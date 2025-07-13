@@ -22,4 +22,5 @@ impl Database {
 
 mod users;
 pub use self::users::Users;
-// pub mod lots;
+mod lots;
+pub use self::lots::Lots;

@@ -3,9 +3,9 @@ CREATE TABLE IF NOT EXISTS lots (
     uuid      TEXT     PRIMARY KEY,
     label     TEXT,
     main      BOOLEAN  NOT NULL DEFAULT TRUE,
-    -- TODO: make the store an listing of the record labels
+    -- TODO: make the data a listing of the record labels
     -- once we have a records table.
-    store     BLOB,
+    data      BLOB,
     nonce     BLOB,
     FOREIGN KEY (username) REFERENCES users (username)
 );

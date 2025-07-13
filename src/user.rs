@@ -36,13 +36,17 @@ impl Registration {
     }
 
     pub fn validate(&self, password: &str) -> Result<bool, ()> {
-        let credential = Credential::new(password, &self.salt)?;
+        let credential = self.credential(password)?;
         let validation = credential.decrypt(&self.validation);
         if let Ok(v) = validation {
             Ok(v == VALIDATION)
         } else {
             Ok(false)
         }
+    }
+
+    pub fn credential(&self, password: &str) -> Result<Credential, ()> {
+        Credential::new(password, &self.salt)
     }
 }
 
