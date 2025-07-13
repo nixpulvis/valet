@@ -23,7 +23,7 @@ impl Lots {
     }
 
     // TODO: Pass a UUID argument and use that for the WHERE.
-    pub async fn encrypted(db: &Database, username: &str) -> Result<Encrypted, Error> {
+    pub async fn get(db: &Database, username: &str) -> Result<Encrypted, Error> {
         let (data, nonce): (Vec<u8>, Vec<u8>) = sqlx::query_as(
             r"
             SELECT data, nonce

@@ -56,7 +56,7 @@ async fn main() -> Result<(), sqlx::Error> {
                     let db = Database::new(DEFAULT_URL).await?;
                     let user = Users::get(&db, &username, &password).await?;
                     if user.validate().expect("validation failed") {
-                        let encrypted = Lots::encrypted(&db, &user.username).await?;
+                        let encrypted = Lots::get(&db, &user.username).await?;
                         let bytes = user
                             .credential()
                             .decrypt(&encrypted)
