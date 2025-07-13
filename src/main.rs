@@ -25,8 +25,7 @@ async fn main() -> Result<(), sqlx::Error> {
                 if let (Some(username), Some(password)) = (username, password) {
                     let db = Database::new(DEFAULT_URL).await?;
                     let user = Users::get(&db, &username, &password).await?;
-                    let valid = user.validate().expect("validation failed");
-                    println!("{}", valid);
+                    println!("{} validated", user.username);
                 }
             }
             "put" => {
@@ -36,15 +35,11 @@ async fn main() -> Result<(), sqlx::Error> {
                 if let (Some(username), Some(password), Some(data)) = (username, password, data) {
                     let db = Database::new(DEFAULT_URL).await?;
                     let user = Users::get(&db, &username, &password).await?;
-                    if user.validate().expect("validation failed") {
-                        let encrypted = user
-                            .credential()
-                            .encrypt(data.as_bytes())
-                            .expect("failed to encrypt");
-                        Lots::create(&db, &user.username, &encrypted).await?;
-                    } else {
-                        println!("Invalid password.")
-                    }
+                    let encrypted = user
+                        .credential()
+                        .encrypt(data.as_bytes())
+                        .expect("failed to encrypt");
+                    Lots::create(&db, &user.username, &encrypted).await?;
                 } else {
                     println!("No username/password/data given.")
                 }
@@ -55,17 +50,13 @@ async fn main() -> Result<(), sqlx::Error> {
                 if let (Some(username), Some(password)) = (username, password) {
                     let db = Database::new(DEFAULT_URL).await?;
                     let user = Users::get(&db, &username, &password).await?;
-                    if user.validate().expect("validation failed") {
-                        let encrypted = Lots::get(&db, &user.username).await?;
-                        let bytes = user
-                            .credential()
-                            .decrypt(&encrypted)
-                            .expect("failed to decrypt");
-                        let data = std::str::from_utf8(&bytes).expect("failed to parse data");
-                        println!("{}", data);
-                    } else {
-                        println!("Invalid password.")
-                    }
+                    let encrypted = Lots::get(&db, &user.username).await?;
+                    let bytes = user
+                        .credential()
+                        .decrypt(&encrypted)
+                        .expect("failed to decrypt");
+                    let data = std::str::from_utf8(&bytes).expect("failed to parse data");
+                    println!("{}", data);
                 } else {
                     println!("No username/password given.")
                 }
