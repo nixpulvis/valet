@@ -11,13 +11,25 @@ async fn main() -> Result<(), sqlx::Error> {
     if let Some(command) = args.nth(1) {
         match command.as_str() {
             "register" => {
-                if let Some(username) = args.nth(0) {
+                let username = args.nth(0);
+                let password = args.nth(0);
+                if let (Some(username), Some(password)) = (username, password) {
                     let db = Database::new(DEFAULT_URL).await?;
-                    let registration =
-                        Registration::new(&username).expect("error generating registering");
+                    let registration = Registration::new(&username, &password)
+                        .expect("error generating registering");
                     Users::create(&db, &registration).await?;
                 } else {
-                    println!("No username given.")
+                    println!("No username/password given.")
+                }
+            }
+            "validate" => {
+                let username = args.nth(0);
+                let password = args.nth(0);
+                if let (Some(username), Some(password)) = (username, password) {
+                    let db = Database::new(DEFAULT_URL).await?;
+                    let registration = Users::registration(&db, &username).await?;
+                    let valid = registration.validate(&password).expect("validation failed");
+                    println!("{}", valid);
                 }
             }
             _ => {

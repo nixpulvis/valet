@@ -7,43 +7,55 @@ use rand::{Rng, rngs::OsRng};
 
 const SALT_SIZE: usize = 16;
 const CREDENTIAL_SIZE: usize = 64;
+const VALIDATION: &[u8] = b"VALID";
 
 /// Usernames and the salt for their password are store in a database.
 pub struct Registration {
     pub username: String,
     pub salt: [u8; SALT_SIZE],
+    pub validation: Encrypted,
 }
 
 impl Registration {
-    pub fn new(username: &str) -> Result<Self, ()> {
+    fn generate_salt() -> Result<[u8; SALT_SIZE], ()> {
         let mut salt = [0; SALT_SIZE];
         let mut rng = OsRng::new().map_err(|_| ())?;
         rng.try_fill(&mut salt).map_err(|_| ())?;
+        Ok(salt)
+    }
+
+    pub fn new(username: &str, password: &str) -> Result<Self, ()> {
+        let salt = Self::generate_salt()?;
+        let credential = Credential::new(password, &salt)?;
+        let validation = credential.encrypt(VALIDATION)?;
         Ok(Registration {
             username: username.into(),
-            salt: salt,
+            salt,
+            validation,
         })
     }
 
-    // pub fn validate(&self, password: &str) -> bool {
-    //     let credential = Credential::new(self, password);
-    // }
+    pub fn validate(&self, password: &str) -> Result<bool, ()> {
+        let credential = Credential::new(password, &self.salt)?;
+        let validation = credential.decrypt(&self.validation);
+        if let Ok(v) = validation {
+            Ok(v == VALIDATION)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 /// A credential is generated from a user's registration and thier password.
 pub struct Credential(Key<Aes256SivAead>);
 
 impl Credential {
-    pub fn new(registration: &Registration, password: &str) -> Result<Self, ()> {
+    pub fn new(password: &str, salt: &[u8]) -> Result<Self, ()> {
         let argon2 = Argon2::default();
         assert_eq!(CREDENTIAL_SIZE, Aes256SivAead::key_size());
         let mut output_key_material = [0u8; CREDENTIAL_SIZE];
         argon2
-            .hash_password_into(
-                password.as_bytes(),
-                &registration.salt,
-                &mut output_key_material,
-            )
+            .hash_password_into(password.as_bytes(), salt, &mut output_key_material)
             .map_err(|_| ())?;
 
         Ok(Credential(Key::<Aes256SivAead>::clone_from_slice(
@@ -58,9 +70,8 @@ impl Credential {
 
 #[test]
 fn new_credential() {
-    let registration = Registration::new("user1").expect("error registering user");
-    let credential =
-        Credential::new(&registration, "user1password").expect("error generating credential");
+    let salt = Registration::generate_salt().expect("error generating salt");
+    let credential = Credential::new("user1password", &salt).expect("error generating credential");
 
     assert_eq!(CREDENTIAL_SIZE, credential.0.len());
 }
@@ -68,8 +79,8 @@ fn new_credential() {
 const NONCE_SIZE: usize = 16;
 
 pub struct Encrypted {
-    data: Vec<u8>,
-    nonce: Vec<u8>,
+    pub data: Vec<u8>,
+    pub nonce: Vec<u8>,
 }
 
 impl Credential {
@@ -100,9 +111,8 @@ impl Credential {
 fn encrypt_decrypt_test() {
     use crate::prelude::Registration;
 
-    let registration = Registration::new("user1").expect("error registering user");
-    let credential =
-        Credential::new(&registration, "user1password").expect("error generating credentials");
+    let salt = Registration::generate_salt().expect("error generating salt");
+    let credential = Credential::new("user1password", &salt).expect("error generating credentials");
 
     let plaintext = b"this is a secret";
     let encrypted = credential.encrypt(plaintext).expect("error encrypting");
