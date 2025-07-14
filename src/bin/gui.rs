@@ -1,13 +1,20 @@
-// #![cfg(feature = "gui")]
-use eframe::egui;
+use eframe::egui::{self, RichText, ViewportCommand};
 use egui_inbox::UiInbox;
 use tokio::runtime;
 use valet::db::{DEFAULT_URL, Database, Lots, Users};
 use valet::encrypt::Encrypted;
 use valet::user::User;
 
+const MIN_SIZE: [f32; 2] = [200., 160.];
+const MAX_SIZE: [f32; 2] = [400., 350.];
+
 fn main() {
-    let options = eframe::NativeOptions::default();
+    let mut options = eframe::NativeOptions::default();
+    options.viewport = options
+        .viewport
+        .with_inner_size(MIN_SIZE)
+        .with_min_inner_size(MIN_SIZE)
+        .with_max_inner_size(MAX_SIZE);
     eframe::run_native(
         "Valet",
         options,
@@ -62,10 +69,18 @@ impl eframe::App for ValetApp {
                             self.user = None;
                             self.login_inbox = UiInbox::new();
                             self.load_inbox = UiInbox::new();
+                            ctx.send_viewport_cmd(ViewportCommand::InnerSize(MIN_SIZE.into()));
                         }
                     }
                     if ui.button("Quit").clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.logged_in {
+                        ui.label("Unlocked");
+                    } else {
+                        ui.label("Locked");
                     }
                 });
             });
@@ -82,9 +97,11 @@ impl eframe::App for ValetApp {
                         self.lot = Some(msg.into());
                     }
 
-                    ui.label(format!("Username: {}", user.username));
+                    ui.label(RichText::new(&user.username).strong());
                     if let Some(ref mut msg) = self.lot {
-                        ui.add(egui::TextEdit::multiline(msg));
+                        let mut size = ui.available_size();
+                        size[1] -= 20.;
+                        ui.add_sized(size, egui::TextEdit::multiline(msg));
                         if ui.add(egui::Button::new("Save")).clicked() {
                             let username = self.username.clone();
                             let encrypted = user
@@ -129,6 +146,7 @@ impl eframe::App for ValetApp {
                     egui::TextEdit::singleline(&mut self.password).password(!self.show_password),
                 );
                 ui.checkbox(&mut self.show_password, "Show password");
+                ui.add_space(5.);
                 if ui.add(egui::Button::new("Unlock")).clicked()
                     || password_re.lost_focus()
                         && username_re.ctx.input(|i| i.key_pressed(egui::Key::Enter))
