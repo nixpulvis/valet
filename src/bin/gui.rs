@@ -2,7 +2,6 @@ use eframe::egui::{self, RichText, ViewportCommand};
 use egui_inbox::UiInbox;
 use tokio::runtime;
 use valet::db::{DEFAULT_URL, Database, Lots, Users};
-use valet::encrypt::Encrypted;
 use valet::user::User;
 
 const MIN_SIZE: [f32; 2] = [200., 160.];
@@ -29,8 +28,7 @@ struct ValetApp {
     username: String,
     password: String,
     show_password: bool,
-    login_inbox: UiInbox<User>,
-    load_inbox: UiInbox<Encrypted>,
+    login_inbox: UiInbox<(User, String)>,
     rt: runtime::Runtime,
     user: Option<User>,
     lot: Option<String>,
@@ -49,7 +47,6 @@ impl ValetApp {
                 .build()
                 .unwrap(),
             login_inbox: UiInbox::new(),
-            load_inbox: UiInbox::new(),
             user: None,
             lot: None,
         }
@@ -68,7 +65,6 @@ impl eframe::App for ValetApp {
                             self.lot = None;
                             self.user = None;
                             self.login_inbox = UiInbox::new();
-                            self.load_inbox = UiInbox::new();
                             ctx.send_viewport_cmd(ViewportCommand::InnerSize(MIN_SIZE.into()));
                         }
                     }
@@ -88,15 +84,6 @@ impl eframe::App for ValetApp {
         if self.logged_in {
             egui::CentralPanel::default().show(ctx, |ui| {
                 if let Some(user) = &self.user {
-                    if let Some(encrypted) = self.load_inbox.read(ui).last() {
-                        let data = user
-                            .credential()
-                            .decrypt(&encrypted)
-                            .expect("error decrypting load");
-                        let msg = std::str::from_utf8(&data).expect("error parsing string");
-                        self.lot = Some(msg.into());
-                    }
-
                     ui.label(RichText::new(&user.username).strong());
                     if let Some(ref mut msg) = self.lot {
                         let mut size = ui.available_size();
@@ -117,26 +104,19 @@ impl eframe::App for ValetApp {
                             });
                         }
                     } else {
-                        if ui.add(egui::Button::new("Load Main Lot")).clicked() {
-                            let username = self.username.clone();
-                            let tx = self.load_inbox.sender();
-                            self.rt.spawn(async move {
-                                let db =
-                                    Database::new(DEFAULT_URL).await.expect("error getting DB");
-                                let encrypted = Lots::get(&db, &username).await.expect("TODO");
-                                tx.send(encrypted).ok();
-                            });
-                        }
+                        ui.label("Error loading encrypted data.");
+                        if ui.add(egui::Button::new("Load Main Lot")).clicked() {}
                     }
                 }
             });
         } else {
             egui::CentralPanel::default().show(ctx, |ui| {
-                if let Some(user) = self.login_inbox.read(ui).last() {
+                if let Some((user, msg)) = self.login_inbox.read(ui).last() {
                     self.password = "".into();
                     self.show_password = false;
                     self.logged_in = true;
                     self.user = Some(user);
+                    self.lot = Some(msg.into());
                 }
 
                 ui.label("Username:");
@@ -161,7 +141,13 @@ impl eframe::App for ValetApp {
                         let db = Database::new(DEFAULT_URL).await.expect("error getting DB");
                         let user = Users::get(&db, &username, &password).await.expect("TODO");
                         if user.validate() {
-                            tx.send(user).ok();
+                            let encrypted = Lots::get(&db, &username).await.expect("TODO");
+                            let data = user
+                                .credential()
+                                .decrypt(&encrypted)
+                                .expect("error decrypting load");
+                            let msg = std::str::from_utf8(&data).expect("error parsing string");
+                            tx.send((user, msg.into())).ok();
                         }
                     });
                 }

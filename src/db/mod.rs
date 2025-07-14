@@ -8,13 +8,11 @@ pub struct Database(SqlitePool);
 impl Database {
     pub async fn new(url: &str) -> Result<Database, Error> {
         let pool: Pool<Sqlite> = SqlitePool::connect(url).await?;
-        println!("Connected to the database!");
 
         sqlx::migrate!("./migrations")
             .run(&pool)
             .await
             .map_err(|e| sqlx::Error::from(e))?;
-        println!("Migrations up to date.");
 
         Ok(Database(pool))
     }
