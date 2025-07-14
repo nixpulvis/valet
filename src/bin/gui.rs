@@ -1,7 +1,8 @@
 use eframe::egui::{self, RichText, ViewportCommand};
 use egui_inbox::UiInbox;
+use std::env;
 use tokio::runtime;
-use valet::db::{DEFAULT_URL, Database, Lots, Users};
+use valet::db::{Database, Lots, Users};
 use valet::user::User;
 
 const MIN_SIZE: [f32; 2] = [200., 160.];
@@ -32,10 +33,17 @@ struct ValetApp {
     rt: runtime::Runtime,
     user: Option<User>,
     lot: Option<String>,
+    db_url: String,
 }
 
 impl ValetApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        let mut dir = env::current_exe().unwrap();
+        dir.pop();
+        dir.pop();
+        let dir = String::from(dir.to_str().unwrap());
+        let db_url = format!("sqlite://{}/valet.sqlite?mode=rwc", dir);
+        dbg!(&db_url);
         ValetApp {
             logged_in: false,
             // XXX: prefilled for faster testing
@@ -49,6 +57,7 @@ impl ValetApp {
             login_inbox: UiInbox::new(),
             user: None,
             lot: None,
+            db_url,
         }
     }
 }
@@ -95,9 +104,9 @@ impl eframe::App for ValetApp {
                                 .credential()
                                 .encrypt(msg.as_bytes())
                                 .expect("error encrypting");
+                            let db_url = self.db_url.clone();
                             self.rt.spawn(async move {
-                                let db =
-                                    Database::new(DEFAULT_URL).await.expect("error getting DB");
+                                let db = Database::new(&db_url).await.expect("error getting DB");
                                 Lots::create(&db, &username, &encrypted)
                                     .await
                                     .expect("TODO");
@@ -137,9 +146,10 @@ impl eframe::App for ValetApp {
                         // XXX: This is obviously hacky, but I don't want to deal with sharing things now.
                         let username = self.username.clone();
                         let password = self.password.clone();
+                        let db_url = self.db_url.clone();
                         let tx = self.login_inbox.sender();
                         self.rt.spawn(async move {
-                            let db = Database::new(DEFAULT_URL).await.expect("error getting DB");
+                            let db = Database::new(&db_url).await.expect("error getting DB");
                             let user = Users::get(&db, &username, &password).await.expect("TODO");
                             if user.validate() {
                                 let encrypted = Lots::get(&db, &username).await.expect("TODO");
@@ -156,9 +166,10 @@ impl eframe::App for ValetApp {
                         // XXX: This is obviously hacky, but I don't want to deal with sharing things now.
                         let username = self.username.clone();
                         let password = self.password.clone();
+                        let db_url = self.db_url.clone();
                         let tx = self.login_inbox.sender();
                         self.rt.spawn(async move {
-                            let db = Database::new(DEFAULT_URL).await.expect("error getting DB");
+                            let db = Database::new(&db_url).await.expect("error getting DB");
                             let user = Users::register(&db, &username, &password)
                                 .await
                                 .expect("TODO");

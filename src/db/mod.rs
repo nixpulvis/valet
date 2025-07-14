@@ -26,6 +26,7 @@ impl Database {
 pub enum Error {
     User(user::Error),
     Sqlx(sqlx::Error),
+    SaltError,
 }
 
 impl From<user::Error> for Error {

@@ -22,7 +22,7 @@ impl Users {
         .fetch_one(db.pool())
         .await?;
 
-        let salt: [u8; SALT_SIZE] = salt.try_into().expect("TODO: Need our own error type");
+        let salt: [u8; SALT_SIZE] = salt.try_into().map_err(|_| Error::SaltError)?;
         let validation = Encrypted { data, nonce };
         Ok(User::load(username, password, salt, validation)?)
     }
@@ -39,7 +39,7 @@ impl Users {
         .fetch_one(db.pool())
         .await?;
 
-        let salt: [u8; SALT_SIZE] = salt.try_into().expect("TODO: Need our own error type");
+        let salt: [u8; SALT_SIZE] = salt.try_into().map_err(|_| Error::SaltError)?;
         let validation = Encrypted { data, nonce };
         Ok(User::load(username, password, salt, validation)?)
     }
