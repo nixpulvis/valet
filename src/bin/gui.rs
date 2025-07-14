@@ -39,8 +39,8 @@ impl ValetApp {
         ValetApp {
             logged_in: false,
             // XXX: prefilled for faster testing
-            username: "nixpulvis".into(),
-            password: "password".into(),
+            username: "".into(),
+            password: "".into(),
             show_password: false,
             rt: runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -127,30 +127,56 @@ impl eframe::App for ValetApp {
                 );
                 ui.checkbox(&mut self.show_password, "Show password");
                 ui.add_space(5.);
-                if ui.add(egui::Button::new("Unlock")).clicked()
-                    || password_re.lost_focus()
-                        && username_re.ctx.input(|i| i.key_pressed(egui::Key::Enter))
-                    || username_re.lost_focus()
-                        && password_re.ctx.input(|i| i.key_pressed(egui::Key::Enter))
-                {
-                    // XXX: This is obviously hacky, but I don't want to deal with sharing things now.
-                    let username = self.username.clone();
-                    let password = self.password.clone();
-                    let tx = self.login_inbox.sender();
-                    self.rt.spawn(async move {
-                        let db = Database::new(DEFAULT_URL).await.expect("error getting DB");
-                        let user = Users::get(&db, &username, &password).await.expect("TODO");
-                        if user.validate() {
-                            let encrypted = Lots::get(&db, &username).await.expect("TODO");
-                            let data = user
-                                .credential()
-                                .decrypt(&encrypted)
-                                .expect("error decrypting load");
-                            let msg = std::str::from_utf8(&data).expect("error parsing string");
-                            tx.send((user, msg.into())).ok();
-                        }
-                    });
-                }
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new("Unlock")).clicked()
+                        || password_re.lost_focus()
+                            && username_re.ctx.input(|i| i.key_pressed(egui::Key::Enter))
+                        || username_re.lost_focus()
+                            && password_re.ctx.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        // XXX: This is obviously hacky, but I don't want to deal with sharing things now.
+                        let username = self.username.clone();
+                        let password = self.password.clone();
+                        let tx = self.login_inbox.sender();
+                        self.rt.spawn(async move {
+                            let db = Database::new(DEFAULT_URL).await.expect("error getting DB");
+                            let user = Users::get(&db, &username, &password).await.expect("TODO");
+                            if user.validate() {
+                                let encrypted = Lots::get(&db, &username).await.expect("TODO");
+                                let data = user
+                                    .credential()
+                                    .decrypt(&encrypted)
+                                    .expect("error decrypting load");
+                                let msg = std::str::from_utf8(&data).expect("error parsing string");
+                                tx.send((user, msg.into())).ok();
+                            }
+                        });
+                    }
+                    if ui.add(egui::Button::new("Create")).clicked() {
+                        // XXX: This is obviously hacky, but I don't want to deal with sharing things now.
+                        let username = self.username.clone();
+                        let password = self.password.clone();
+                        let tx = self.login_inbox.sender();
+                        self.rt.spawn(async move {
+                            let db = Database::new(DEFAULT_URL).await.expect("error getting DB");
+                            let user = Users::register(&db, &username, &password)
+                                .await
+                                .expect("TODO");
+                            Lots::create(&db, &username, &user.validation)
+                                .await
+                                .expect("TODO");
+                            if user.validate() {
+                                let encrypted = Lots::get(&db, &username).await.expect("TODO");
+                                let data = user
+                                    .credential()
+                                    .decrypt(&encrypted)
+                                    .expect("error decrypting load");
+                                let msg = std::str::from_utf8(&data).expect("error parsing string");
+                                tx.send((user, msg.into())).ok();
+                            }
+                        });
+                    }
+                })
             });
         }
     }

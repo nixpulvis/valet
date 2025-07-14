@@ -5,23 +5,26 @@ use crate::user::User;
 pub struct Users;
 
 impl Users {
-    pub async fn register(db: &Database, username: &str, password: &str) -> Result<(), Error> {
+    pub async fn register(db: &Database, username: &str, password: &str) -> Result<User, Error> {
         let user = User::new(username, password)?;
 
-        sqlx::query(
+        let (username, salt, data, nonce): (String, Vec<u8>, Vec<u8>, Vec<u8>) = sqlx::query_as(
             r"
             INSERT INTO users (username, salt, validation_data, validation_nonce)
             VALUES (?, ?, ?, ?)
+            RETURNING username, salt, validation_data, validation_nonce
             ",
         )
         .bind(&user.username)
         .bind(&user.salt[..])
         .bind(&user.validation.data[..])
         .bind(&user.validation.nonce[..])
-        .execute(db.pool())
+        .fetch_one(db.pool())
         .await?;
 
-        Ok(())
+        let salt: [u8; SALT_SIZE] = salt.try_into().expect("TODO: Need our own error type");
+        let validation = Encrypted { data, nonce };
+        Ok(User::load(username, password, salt, validation)?)
     }
 
     pub async fn get(db: &Database, username: &str, password: &str) -> Result<User, Error> {
