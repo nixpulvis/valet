@@ -101,7 +101,7 @@ impl eframe::App for ValetApp {
                         if ui.add(egui::Button::new("Save")).clicked() {
                             let username = self.username.clone();
                             let encrypted = user
-                                .credential()
+                                .key()
                                 .encrypt(msg.as_bytes())
                                 .expect("error encrypting");
                             let db_url = self.db_url.clone();
@@ -154,7 +154,7 @@ impl eframe::App for ValetApp {
                             if user.validate() {
                                 let encrypted = Lots::get(&db, &username).await.expect("TODO");
                                 let data = user
-                                    .credential()
+                                    .key()
                                     .decrypt(&encrypted)
                                     .expect("error decrypting load");
                                 let msg = std::str::from_utf8(&data).expect("error parsing string");
@@ -179,7 +179,7 @@ impl eframe::App for ValetApp {
                             if user.validate() {
                                 let encrypted = Lots::get(&db, &username).await.expect("TODO");
                                 let data = user
-                                    .credential()
+                                    .key()
                                     .decrypt(&encrypted)
                                     .expect("error decrypting load");
                                 let msg = std::str::from_utf8(&data).expect("error parsing string");

@@ -1,28 +1,24 @@
 use aes_siv::{
     Aes256SivAead, KeySizeUser, Nonce,
-    aead::{Aead, Key, KeyInit},
+    aead::{Aead, Key as AesKey, KeyInit},
 };
 use argon2::Argon2;
 use rand::{Rng, rngs::OsRng};
 
 pub const SALT_SIZE: usize = 16;
 pub const NONCE_SIZE: usize = 16;
-pub const CREDENTIAL_SIZE: usize = 64;
+pub const KEY_SIZE: usize = 64;
 
+/// Represents some encrypted data.
 pub struct Encrypted {
     pub data: Vec<u8>,
     pub nonce: Vec<u8>,
 }
 
-/// A credential is generated from a user's registration and thier password.
-pub struct Credential(Key<Aes256SivAead>);
+/// A key is generated from a user record's salt and thier password.
+pub struct Key(AesKey<Aes256SivAead>);
 
-impl Credential {
-    // TODO: Rename this whole struct to key and impl Deref.
-    pub fn key(&self) -> &Key<Aes256SivAead> {
-        &self.0
-    }
-
+impl Key {
     pub(crate) fn generate_salt() -> Result<[u8; SALT_SIZE], Error> {
         let mut salt = [0; SALT_SIZE];
         let mut rng = OsRng::new().map_err(|e| Error::KeyDerivation(e.msg.into()))?;
@@ -33,13 +29,13 @@ impl Credential {
 
     pub fn new(password: &str, salt: &[u8]) -> Result<Self, Error> {
         let argon2 = Argon2::default();
-        assert_eq!(CREDENTIAL_SIZE, Aes256SivAead::key_size());
-        let mut output_key_material = [0u8; CREDENTIAL_SIZE];
+        assert_eq!(KEY_SIZE, Aes256SivAead::key_size());
+        let mut output_key_material = [0u8; KEY_SIZE];
         argon2
             .hash_password_into(password.as_bytes(), salt, &mut output_key_material)
             .map_err(|e| Error::KeyDerivation(format!("{}", e)))?;
 
-        Ok(Credential(Key::<Aes256SivAead>::clone_from_slice(
+        Ok(Key(AesKey::<Aes256SivAead>::clone_from_slice(
             &output_key_material,
         )))
     }
@@ -52,7 +48,7 @@ impl Credential {
             .map_err(|e| Error::Encryption(format!("{}", e)))?;
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let cipher = Aes256SivAead::new(self.key());
+        let cipher = Aes256SivAead::new(&self.0);
         let ciphertext = cipher
             .encrypt(nonce, plaintext)
             .map_err(|e| Error::Encryption(format!("{}", e)))?;
@@ -64,7 +60,7 @@ impl Credential {
 
     pub fn decrypt(&self, encrypted: &Encrypted) -> Result<Vec<u8>, Error> {
         let nonce = Nonce::from_slice(&encrypted.nonce);
-        let cipher = Aes256SivAead::new(self.key());
+        let cipher = Aes256SivAead::new(&self.0);
         let plaintext = cipher
             .decrypt(nonce, &encrypted.data[..])
             .map_err(|e| Error::Decryption(format!("{}", e)))?;
@@ -81,16 +77,16 @@ pub enum Error {
 
 #[test]
 fn new_credential() {
-    let salt = Credential::generate_salt().expect("error generating salt");
-    let credential = Credential::new("user1password", &salt).expect("error generating credential");
+    let salt = Key::generate_salt().expect("error generating salt");
+    let credential = Key::new("user1password", &salt).expect("error generating credential");
 
-    assert_eq!(CREDENTIAL_SIZE, credential.0.len());
+    assert_eq!(KEY_SIZE, credential.0.len());
 }
 
 #[test]
 fn encrypt_decrypt_test() {
-    let salt = Credential::generate_salt().expect("error generating salt");
-    let credential = Credential::new("user1password", &salt).expect("error generating credentials");
+    let salt = Key::generate_salt().expect("error generating salt");
+    let credential = Key::new("user1password", &salt).expect("error generating credentials");
 
     let plaintext = b"this is a secret";
     let encrypted = credential.encrypt(plaintext).expect("error encrypting");

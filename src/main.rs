@@ -36,7 +36,7 @@ async fn main() -> Result<(), valet::db::Error> {
                     let db = Database::new(DEFAULT_URL).await?;
                     let user = Users::get(&db, &username, &password).await?;
                     let encrypted = user
-                        .credential()
+                        .key()
                         .encrypt(data.as_bytes())
                         .expect("failed to encrypt");
                     Lots::create(&db, &user.username, &encrypted).await?;
@@ -51,10 +51,7 @@ async fn main() -> Result<(), valet::db::Error> {
                     let db = Database::new(DEFAULT_URL).await?;
                     let user = Users::get(&db, &username, &password).await?;
                     let encrypted = Lots::get(&db, &user.username).await?;
-                    let bytes = user
-                        .credential()
-                        .decrypt(&encrypted)
-                        .expect("failed to decrypt");
+                    let bytes = user.key().decrypt(&encrypted).expect("failed to decrypt");
                     let data = std::str::from_utf8(&bytes).expect("failed to parse data");
                     println!("{}", data);
                 } else {

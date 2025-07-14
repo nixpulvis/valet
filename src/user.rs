@@ -1,29 +1,32 @@
-use crate::encrypt::{self, Credential, Encrypted, SALT_SIZE};
+use crate::encrypt::{self, Encrypted, Key, SALT_SIZE};
 
 const VALIDATION: &[u8] = b"VALID";
 
 /// Usernames and the salt for their password are store in a database.
+///
+/// A short validation string is also saved which is used to authenticate the
+/// user.
 pub struct User {
     pub username: String,
     pub salt: [u8; SALT_SIZE],
     pub validation: Encrypted,
-    credential: Credential,
+    key: Key,
 }
 
 impl User {
-    pub fn credential(&self) -> &Credential {
-        &self.credential
+    pub fn key(&self) -> &Key {
+        &self.key
     }
 
     pub fn new(username: &str, password: &str) -> Result<Self, Error> {
-        let salt = Credential::generate_salt()?;
-        let credential = Credential::new(password, &salt)?;
-        let validation = credential.encrypt(VALIDATION)?;
+        let salt = Key::generate_salt()?;
+        let key = Key::new(password, &salt)?;
+        let validation = key.encrypt(VALIDATION)?;
         Ok(User {
             username: username.into(),
             salt,
             validation,
-            credential,
+            key,
         })
     }
 
@@ -37,7 +40,7 @@ impl User {
             username,
             salt,
             validation,
-            credential: Credential::new(password, &salt[..])?,
+            key: Key::new(password, &salt[..])?,
         };
         if user.validate() {
             Ok(user)
@@ -47,8 +50,8 @@ impl User {
     }
 
     pub fn validate(&self) -> bool {
-        if let Ok(v) = self.credential().decrypt(&self.validation) {
-            v == VALIDATION
+        if let Ok(v) = self.key().decrypt(&self.validation) {
+            v == VALIDATION // This should never be false.
         } else {
             false
         }
