@@ -30,9 +30,11 @@ struct ValetApp {
     password: String,
     show_password: bool,
     login_inbox: UiInbox<(User, String)>,
+    save_inbox: UiInbox<bool>,
     rt: runtime::Runtime,
     user: Option<User>,
     lot: Option<String>,
+    saved_lot: Option<String>,
     db_url: String,
 }
 
@@ -55,8 +57,10 @@ impl ValetApp {
                 .build()
                 .unwrap(),
             login_inbox: UiInbox::new(),
+            save_inbox: UiInbox::new(),
             user: None,
             lot: None,
+            saved_lot: None,
             db_url,
         }
     }
@@ -72,8 +76,10 @@ impl eframe::App for ValetApp {
                         if ui.button("Lock").clicked() {
                             self.logged_in = false;
                             self.lot = None;
+                            self.saved_lot = None;
                             self.user = None;
                             self.login_inbox = UiInbox::new();
+                            self.save_inbox = UiInbox::new();
                             ctx.send_viewport_cmd(ViewportCommand::InnerSize(MIN_SIZE.into()));
                         }
                     }
@@ -92,25 +98,43 @@ impl eframe::App for ValetApp {
         });
         if self.logged_in {
             egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some(save) = self.save_inbox.read(ui).last() {
+                    if save {
+                        self.saved_lot = self.lot.clone();
+                    }
+                }
+
                 if let Some(user) = &self.user {
                     ui.label(RichText::new(&user.username).strong());
                     if let Some(ref mut msg) = self.lot {
                         let mut size = ui.available_size();
-                        size[1] -= 20.;
+                        let changed;
+                        if let Some(ref saved_msg) = self.saved_lot && msg != saved_msg {
+                            changed = true;
+                        } else {
+                            changed = false;
+                        }
+                        if changed {
+                            size[1] -= 20.;
+                        }
                         ui.add_sized(size, egui::TextEdit::multiline(msg));
-                        if ui.add(egui::Button::new("Save")).clicked() {
-                            let username = self.username.clone();
-                            let encrypted = user
-                                .key()
-                                .encrypt(msg.as_bytes())
-                                .expect("error encrypting");
-                            let db_url = self.db_url.clone();
-                            self.rt.spawn(async move {
-                                let db = Database::new(&db_url).await.expect("error getting DB");
-                                Lots::create(&db, &username, &encrypted)
-                                    .await
-                                    .expect("TODO");
-                            });
+                        if let Some(ref saved_msg) = self.saved_lot && msg != saved_msg {
+                            if ui.add(egui::Button::new("Save")).clicked() {
+                                let username = self.username.clone();
+                                let encrypted = user
+                                    .key()
+                                    .encrypt(msg.as_bytes())
+                                    .expect("error encrypting");
+                                let db_url = self.db_url.clone();
+                                let tx = self.save_inbox.sender();
+                                self.rt.spawn(async move {
+                                    let db = Database::new(&db_url).await.expect("error getting DB");
+                                    Lots::create(&db, &username, &encrypted)
+                                        .await
+                                        .expect("TODO");
+                                    tx.send(true).ok();
+                                });
+                            }
                         }
                     } else {
                         ui.label("Error loading encrypted data.");
@@ -125,7 +149,8 @@ impl eframe::App for ValetApp {
                     self.show_password = false;
                     self.logged_in = true;
                     self.user = Some(user);
-                    self.lot = Some(msg.into());
+                    self.lot = Some(msg.clone().into());
+                    self.saved_lot = Some(msg.into());
                 }
 
                 ui.label("Username:");
