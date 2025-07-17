@@ -45,7 +45,7 @@ impl User {
         if user.validate() {
             Ok(user)
         } else {
-            Err(Error::InvalidPassword)
+            Err(Error::InvalidUsernamePassword)
         }
     }
 
@@ -60,7 +60,7 @@ impl User {
 
 #[derive(Debug)]
 pub enum Error {
-    InvalidPassword,
+    InvalidUsernamePassword,
     Encrypt(encrypt::Error),
 }
 

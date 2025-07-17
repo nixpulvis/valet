@@ -5,8 +5,13 @@ use crate::user::User;
 pub struct Users;
 
 impl Users {
-    pub async fn register(db: &Database, username: &str, password: &str) -> Result<User, Error> {
-        let user = User::new(username, password)?;
+    /// TODO
+    ///
+    /// Takes ownership of `password` because the returned `User`
+    /// has it's key and we shouldn't be reusing the password after
+    /// this point.
+    pub async fn register(db: &Database, username: &str, password: String) -> Result<User, Error> {
+        let user = User::new(username, &password)?;
 
         let (username, salt, data, nonce): (String, Vec<u8>, Vec<u8>, Vec<u8>) = sqlx::query_as(
             r"
@@ -24,10 +29,15 @@ impl Users {
 
         let salt: [u8; SALT_SIZE] = salt.try_into().map_err(|_| Error::SaltError)?;
         let validation = Encrypted { data, nonce };
-        Ok(User::load(username, password, salt, validation)?)
+        Ok(User::load(username, &password, salt, validation)?)
     }
 
-    pub async fn get(db: &Database, username: &str, password: &str) -> Result<User, Error> {
+    /// TODO
+    ///
+    /// Takes ownership of `password` because the returned `User`
+    /// has it's key and we shouldn't be reusing the password after
+    /// this point.
+    pub async fn get(db: &Database, username: &str, password: String) -> Result<User, Error> {
         let (username, salt, data, nonce): (String, Vec<u8>, Vec<u8>, Vec<u8>) = sqlx::query_as(
             r"
             SELECT username, salt, validation_data, validation_nonce
@@ -41,6 +51,6 @@ impl Users {
 
         let salt: [u8; SALT_SIZE] = salt.try_into().map_err(|_| Error::SaltError)?;
         let validation = Encrypted { data, nonce };
-        Ok(User::load(username, password, salt, validation)?)
+        Ok(User::load(username, &password, salt, validation)?)
     }
 }

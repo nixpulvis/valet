@@ -14,8 +14,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     // TODO: Remove password from CLI, it should be prompted.
-    Validate { username: String, password: String },
-    Register { username: String, password: String },
+    Validate { username: String },
+    Register { username: String },
     Unlock { username: String },
 }
 
@@ -30,29 +30,19 @@ async fn main() -> Result<(), valet::db::Error> {
     let cli = Cli::parse();
     let db = Database::new(valet::db::DEFAULT_URL).await?;
 
+    let password = get_password();
+
     match &cli.command {
-        Command::Validate { username, password } => {
-            let user = valet::db::Users::get(&db, &username, &password).await?;
+        Command::Validate { username } => {
+            let user = valet::db::Users::get(&db, &username, password).await?;
             println!("{} validated", user.username);
         }
-        Command::Register { username, password } => {
-            let user = valet::db::Users::register(&db, &username, &password).await?;
+        Command::Register { username } => {
+            let user = valet::db::Users::register(&db, &username, password).await?;
             println!("{} registered", user.username);
         }
         Command::Unlock { username } => {
-            print!("Password: ");
-            // TODO: Error handling.
-            io::stdout().flush().ok();
-            // TODO: Is there a better way to try to hide the password in memory?
-            let password = Box::new(rpassword::read_password().unwrap());
-            let user;
-            if let Ok(u) = valet::db::Users::get(&db, &username, &password).await {
-                user = u;
-            } else {
-                println!("Error getting user.");
-                return Ok(());
-            }
-            drop(password);
+            let user = get_user(&db, &username, password).await?;
 
             let prompt = DefaultPrompt {
                 left_prompt: DefaultPromptSegment::Basic("valet".to_owned()),
@@ -85,4 +75,24 @@ async fn main() -> Result<(), valet::db::Error> {
     }
 
     Ok(())
+}
+
+// TODO: Error handling.
+fn get_password() -> String {
+    print!("Password: ");
+    io::stdout().flush().ok();
+    // TODO: Is there a better way to try to hide the password in memory?
+    rpassword::read_password().unwrap()
+}
+
+async fn get_user(
+    db: &Database,
+    username: &str,
+    password: String,
+) -> Result<User, valet::user::Error> {
+    if let Ok(u) = valet::db::Users::get(&db, &username, password).await {
+        return Ok(u);
+    } else {
+        return Err(valet::user::Error::InvalidUsernamePassword);
+    }
 }
