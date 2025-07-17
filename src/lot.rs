@@ -87,26 +87,52 @@ impl UnlockedLot {
     }
 }
 
-#[test]
-fn unlock_edit_lock() {
+#[cfg(test)]
+mod tests {
+    use super::*;
     use crate::user::User;
-    let user = User::new("nixpulvis", "password").expect("failed make user");
 
-    let mut unlocked = UnlockedLot::new(&user.username);
-    unlocked.add(Record::plain("test", "secret"));
-    unlocked.add(Record::domain(
-        "test",
-        HashMap::from_iter([("a".into(), "y".into()), ("b".into(), "z".into())]),
-    ));
+    #[test]
+    fn many_plain_records() {
+        let user = User::new("nixpulvis", "password").expect("failed to make user");
+        let passwords = [
+            ("a", "this is a password"),
+            ("foo.com", "another password"),
+            ("bar.foo.com", "o45dwOG8HKpcvdichxwt9iHikijemMeRvN6WVCoou"),
+        ];
 
-    let locked = unlocked.lock(&user.key()).expect("failed to lock lot");
-    assert_eq!(unlocked.username, locked.username);
-    assert_eq!(unlocked.uuid, locked.uuid);
-    assert_eq!(unlocked.main, locked.main);
+        let mut lot = UnlockedLot::new(&user.username);
+        passwords.map(|p| lot.add(Record::plain(p.0, p.1)));
+        for (index, password) in passwords.iter() {
+            match lot.get(index) {
+                Record::Plain(_, d) => {
+                    assert_eq!(*password, d);
+                }
+                _ => assert!(false),
+            }
+        }
+    }
 
-    let reunlocked = locked.unlock(&user.key()).expect("failed to unlock lot");
-    assert_eq!(unlocked.username, reunlocked.username);
-    assert_eq!(unlocked.uuid, reunlocked.uuid);
-    assert_eq!(unlocked.main, reunlocked.main);
-    assert_eq!(unlocked.records, reunlocked.records);
+    #[test]
+    fn unlock_edit_lock() {
+        let user = User::new("nixpulvis", "password").expect("failed to make user");
+
+        let mut unlocked = UnlockedLot::new(&user.username);
+        unlocked.add(Record::plain("test", "secret"));
+        unlocked.add(Record::domain(
+            "test",
+            HashMap::from_iter([("a".into(), "y".into()), ("b".into(), "z".into())]),
+        ));
+
+        let locked = unlocked.lock(&user.key()).expect("failed to lock lot");
+        assert_eq!(unlocked.username, locked.username);
+        assert_eq!(unlocked.uuid, locked.uuid);
+        assert_eq!(unlocked.main, locked.main);
+
+        let reunlocked = locked.unlock(&user.key()).expect("failed to unlock lot");
+        assert_eq!(unlocked.username, reunlocked.username);
+        assert_eq!(unlocked.uuid, reunlocked.uuid);
+        assert_eq!(unlocked.main, reunlocked.main);
+        assert_eq!(unlocked.records, reunlocked.records);
+    }
 }
