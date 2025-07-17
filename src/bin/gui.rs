@@ -180,7 +180,7 @@ impl eframe::App for ValetApp {
                         let tx = self.login_inbox.sender();
                         self.rt.spawn(async move {
                             let db = Database::new(&db_url).await.expect("error getting DB");
-                            let user = Users::get(&db, &username, &password).await.expect("TODO");
+                            let user = Users::get(&db, &username, password).await.expect("TODO");
                             if user.validate() {
                                 let encrypted = Lots::get(&db, &username).await.expect("TODO");
                                 let data = user
@@ -200,7 +200,7 @@ impl eframe::App for ValetApp {
                         let tx = self.login_inbox.sender();
                         self.rt.spawn(async move {
                             let db = Database::new(&db_url).await.expect("error getting DB");
-                            let user = Users::register(&db, &username, &password)
+                            let user = Users::register(&db, &username, password)
                                 .await
                                 .expect("TODO");
                             Lots::create(&db, &username, &user.validation)

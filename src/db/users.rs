@@ -69,8 +69,7 @@ impl Users {
     }
 
     // We make no attempt to create valid UTF-8 strings here, this is
-    // just to protect the memory, after this is called no uses of
-    // `password` should be made.
+    // just to protect the memory.
     unsafe fn clobber_password(mut password: String) {
         unsafe {
             let bytes = password.as_mut_vec();
