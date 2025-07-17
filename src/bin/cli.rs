@@ -35,7 +35,7 @@ async fn main() -> Result<(), valet::db::Error> {
 
     match &cli.command {
         Command::Validate { username } => {
-            let user = valet::db::Users::get(&db, &username, password).await?;
+            let user = get_user(&db, &username, password).await?;
             println!("{} validated", user.username);
         }
         Command::Register { username } => {
