@@ -7,5 +7,3 @@ pub mod encrypt;
 pub mod lot;
 pub mod prelude;
 pub mod user;
-
-mod gui;
