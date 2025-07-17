@@ -109,7 +109,9 @@ impl eframe::App for ValetApp {
                     if let Some(ref mut msg) = self.lot {
                         let mut size = ui.available_size();
                         let changed;
-                        if let Some(ref saved_msg) = self.saved_lot && msg != saved_msg {
+                        if let Some(ref saved_msg) = self.saved_lot
+                            && msg != saved_msg
+                        {
                             changed = true;
                         } else {
                             changed = false;
@@ -118,7 +120,9 @@ impl eframe::App for ValetApp {
                             size[1] -= 20.;
                         }
                         ui.add_sized(size, egui::TextEdit::multiline(msg));
-                        if let Some(ref saved_msg) = self.saved_lot && msg != saved_msg {
+                        if let Some(ref saved_msg) = self.saved_lot
+                            && msg != saved_msg
+                        {
                             if ui.add(egui::Button::new("Save")).clicked() {
                                 let username = self.username.clone();
                                 let encrypted = user
@@ -128,7 +132,8 @@ impl eframe::App for ValetApp {
                                 let db_url = self.db_url.clone();
                                 let tx = self.save_inbox.sender();
                                 self.rt.spawn(async move {
-                                    let db = Database::new(&db_url).await.expect("error getting DB");
+                                    let db =
+                                        Database::new(&db_url).await.expect("error getting DB");
                                     Lots::create(&db, &username, &encrypted)
                                         .await
                                         .expect("TODO");

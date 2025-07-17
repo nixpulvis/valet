@@ -2,20 +2,19 @@
 name = "valet"
 version = "0.1.0"
 edition = "2024"
-default-run = "valet"
+default-run = "cli"
 
-# [[bin]]
-# name = "gui"
-# required-features = ["gui"]
+[[bin]]
+name = "gui"
+required-features = ["gui"]
 
-# [features]
-# gui = ["dep:eframe"]
+[features]
+gui = ["dep:eframe"]
 
 [dependencies]
 aes-siv = "0.7"
 argon2 = "0.5"
-# eframe = { version = "0.32", optional = true }
-eframe = "0.32"
+eframe = { version = "0.32", optional = true }
 egui_inbox = "0.9"
 rand = "0.6"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
