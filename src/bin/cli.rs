@@ -23,6 +23,7 @@ enum Command {
 enum Repl {
     Put { data: String },
     Get,
+    Lock,
 }
 
 #[tokio::main]
@@ -68,6 +69,10 @@ async fn main() -> Result<(), valet::db::Error> {
                         let data = std::str::from_utf8(&bytes).expect("failed to parse data");
                         println!("{}", data);
                     }
+                }
+                Repl::Lock => {
+                    // TODO: There has to be a way to break out of `repl_async`...
+                    std::process::exit(0);
                 }
             })
             .await;
