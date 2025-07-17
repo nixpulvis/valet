@@ -1,3 +1,5 @@
+use rand::{Rng, rngs::OsRng};
+
 use crate::db::{Database, Error};
 use crate::encrypt::{Encrypted, SALT_SIZE};
 use crate::user::User;
@@ -27,9 +29,7 @@ impl Users {
         .fetch_one(db.pool())
         .await?;
 
-        let salt: [u8; SALT_SIZE] = salt.try_into().map_err(|_| Error::SaltError)?;
-        let validation = Encrypted { data, nonce };
-        Ok(User::load(username, &password, salt, validation)?)
+        Self::load_and_clobber_user(username, password, salt, data, nonce)
     }
 
     /// TODO
@@ -49,8 +49,37 @@ impl Users {
         .fetch_one(db.pool())
         .await?;
 
+        Self::load_and_clobber_user(username, password, salt, data, nonce)
+    }
+
+    fn load_and_clobber_user(
+        username: String,
+        password: String,
+        salt: Vec<u8>,
+        data: Vec<u8>,
+        nonce: Vec<u8>,
+    ) -> Result<User, Error> {
         let salt: [u8; SALT_SIZE] = salt.try_into().map_err(|_| Error::SaltError)?;
         let validation = Encrypted { data, nonce };
-        Ok(User::load(username, &password, salt, validation)?)
+        let user = User::load(username, &password, salt, validation)?;
+        unsafe {
+            Self::clobber_password(password);
+        }
+        Ok(user)
+    }
+
+    // We make no attempt to create valid UTF-8 strings here, this is
+    // just to protect the memory, after this is called no uses of
+    // `password` should be made.
+    unsafe fn clobber_password(mut password: String) {
+        unsafe {
+            let bytes = password.as_mut_vec();
+            if let Ok(mut rng) = OsRng::new()
+                && let Ok(_) = rng.try_fill(&mut bytes[..])
+            {
+            } else {
+                panic!("Critical failure.")
+            }
+        }
     }
 }
