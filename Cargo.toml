@@ -2,11 +2,15 @@
 name = "valet"
 version = "0.1.0"
 edition = "2024"
-default-run = "cli"
+default-run = "valet"
 
 [[bin]]
 name = "gui"
 required-features = ["gui"]
+
+[[bin]]
+name = "valet"
+path = "src/bin/cli.rs"
 
 [features]
 gui = ["dep:eframe"]
