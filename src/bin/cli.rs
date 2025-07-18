@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use clap_repl::ClapEditor;
-use clap_repl::reedline::{DefaultPrompt, DefaultPromptSegment};
+use clap_repl::reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory};
 use std::io::{self, Write};
 use tokio;
 use valet::prelude::*;
@@ -50,6 +50,9 @@ async fn main() -> Result<(), valet::db::Error> {
                 ..DefaultPrompt::default()
             };
             let rl = ClapEditor::<Repl>::builder()
+                .with_editor_hook(|reed| {
+                    reed.with_history(Box::new(FileBackedHistory::new(0).unwrap()))
+                })
                 .with_prompt(Box::new(prompt.clone()))
                 .build();
 

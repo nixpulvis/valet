@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 default-run = "valet"
 
+[package.metadata.bundle.bin.gui]
+name = "Valet"
+
 [[bin]]
 name = "gui"
 required-features = ["gui"]
