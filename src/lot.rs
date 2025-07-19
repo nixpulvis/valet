@@ -1,7 +1,8 @@
 use crate::encrypt::{self, Encrypted, Key};
+use bitcode::{Decode, Encode};
 use std::collections::HashMap;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Encode, Decode, Debug, Eq, PartialEq)]
 pub enum Record {
     Domain(String, HashMap<String, String>),
     Plain(String, String),
@@ -134,5 +135,13 @@ mod tests {
         assert_eq!(unlocked.uuid, reunlocked.uuid);
         assert_eq!(unlocked.main, reunlocked.main);
         assert_eq!(unlocked.records, reunlocked.records);
+    }
+
+    #[test]
+    fn encode_decode() {
+        let record = Record::plain("index", "secret");
+        let encoded = bitcode::encode(&record);
+        let decoded = bitcode::decode(&encoded).unwrap();
+        assert_eq!(record, decoded);
     }
 }
