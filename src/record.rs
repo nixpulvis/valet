@@ -3,7 +3,7 @@ use bitcode::{Decode, Encode};
 use std::collections::HashMap;
 use std::io;
 
-#[derive(Encode, Decode, Debug, Eq, PartialEq)]
+#[derive(Encode, Decode, Clone, Debug, Eq, PartialEq)]
 pub enum Record {
     Domain(String, HashMap<String, String>),
     Plain(String, String),

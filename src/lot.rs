@@ -56,7 +56,7 @@ impl UnlockedLot {
             encrypted,
         })
     }
-    pub fn add(&mut self, record: Record) {
+    pub fn put(&mut self, record: Record) {
         self.records.insert(record.label().into(), record);
     }
 
@@ -72,33 +72,31 @@ mod tests {
     use crate::user::User;
 
     #[test]
-    fn many_plain_records() {
+    fn put_get() {
         let user = User::new("nixpulvis", "password").expect("failed to make user");
-        let passwords = [
-            ("a", "this is a password"),
-            ("foo.com", "another password"),
-            ("bar.foo.com", "o45dwOG8HKpcvdichxwt9iHikijemMeRvN6WVCoou"),
+        let mut lot = UnlockedLot::new(&user.username);
+
+        let records = [
+            Record::plain("a", "b"),
+            Record::domain("a.com", HashMap::from([("foo".into(), "bar".into())])),
         ];
 
-        let mut lot = UnlockedLot::new(&user.username);
-        passwords.map(|p| lot.add(Record::plain(p.0, p.1)));
-        for (index, password) in passwords.iter() {
-            match lot.get(index) {
-                Record::Plain(_, d) => {
-                    assert_eq!(*password, d);
-                }
-                _ => assert!(false),
-            }
+        for record in records.iter().cloned() {
+            lot.put(record);
+        }
+
+        for record in records.iter() {
+            assert_eq!(record, lot.get(record.label()));
         }
     }
 
     #[test]
     fn lock_unlock() {
         let user = User::new("nixpulvis", "password").expect("failed to make user");
-
         let mut unlocked = UnlockedLot::new(&user.username);
-        unlocked.add(Record::plain("test", "secret"));
-        unlocked.add(Record::domain(
+
+        unlocked.put(Record::plain("test", "secret"));
+        unlocked.put(Record::domain(
             "test",
             HashMap::from_iter([("a".into(), "y".into()), ("b".into(), "z".into())]),
         ));
