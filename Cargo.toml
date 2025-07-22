@@ -29,5 +29,6 @@ eframe = { version = "0.32", optional = true }
 egui_inbox = "0.9"
 rand = "0.6"
 rpassword = "7.4"
+snap = "1.1.1"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 tokio = { version = "1.46", features = ["full"] }

@@ -144,4 +144,21 @@ mod tests {
         let decoded = bitcode::decode(&encoded).unwrap();
         assert_eq!(record, decoded);
     }
+
+    #[test]
+    fn compress_decompress() {
+        let record = Record::plain("index", "secret");
+        let encoded = bitcode::encode(&record);
+
+        let mut compressed = Vec::new();
+        let mut encoder = snap::read::FrameEncoder::new(encoded.as_slice());
+        io::copy(&mut encoder, &mut compressed).expect("failed to encode");
+
+        let mut decompressed = Vec::new();
+        let mut decoder = snap::read::FrameDecoder::new(compressed.as_slice());
+        io::copy(&mut decoder, &mut decompressed).expect("failed to decode");
+
+        let decoded = bitcode::decode(&decompressed).unwrap();
+        assert_eq!(record, decoded);
+    }
 }
