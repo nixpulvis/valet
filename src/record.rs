@@ -30,7 +30,7 @@ impl Record {
     }
 
     pub fn decode(buf: &[u8]) -> Result<Self, Error> {
-        bitcode::decode(buf).map_err(|e| e.into())
+        bitcode::decode(buf).map_err(|e| Error::Encoding(e))
     }
 
     pub fn compress(&self) -> Result<Vec<u8>, Error> {
@@ -48,23 +48,29 @@ impl Record {
         let decoded = Record::decode(&decompressed)?;
         Ok(decoded)
     }
+
+    pub fn encrypt(&self, key: &Key) -> Result<Encrypted, Error> {
+        let compressed = self.compress()?;
+        key.encrypt(&compressed).map_err(|e| Error::Encryption(e))
+    }
+
+    pub fn decrypt(buf: &Encrypted, key: &Key) -> Result<Self, Error> {
+        let decrypted = key.decrypt(buf).map_err(|e| Error::Encryption(e))?;
+        Self::decompress(&decrypted)
+    }
 }
 
 #[derive(Debug)]
 pub enum Error {
     Encoding(bitcode::Error),
     Compression(io::Error),
-}
-
-impl From<bitcode::Error> for Error {
-    fn from(err: bitcode::Error) -> Self {
-        Error::Encoding(err)
-    }
+    Encryption(encrypt::Error),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::user::User;
 
     #[test]
     fn encode_decode() {
@@ -83,5 +89,11 @@ mod tests {
     }
 
     #[test]
-    fn encrypt_decrypt() {}
+    fn encrypt_decrypt() {
+        let user = User::new("nixpulvis", "password").expect("failed to make user");
+        let record = Record::plain("index", "secret");
+        let encrypted = record.encrypt(user.key()).expect("failed to encrypt");
+        let decrypted = Record::decrypt(&encrypted, user.key()).expect("failed to decrypt");
+        assert_eq!(record, decrypted);
+    }
 }
