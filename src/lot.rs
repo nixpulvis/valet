@@ -1,29 +1,6 @@
 use crate::encrypt::{self, Encrypted, Key};
-use bitcode::{Decode, Encode};
+use crate::record::Record;
 use std::collections::HashMap;
-
-#[derive(Encode, Decode, Debug, Eq, PartialEq)]
-pub enum Record {
-    Domain(String, HashMap<String, String>),
-    Plain(String, String),
-}
-
-impl Record {
-    fn label(&self) -> &str {
-        match self {
-            Record::Domain(s, _) => &s,
-            Record::Plain(s, _) => &s,
-        }
-    }
-
-    pub fn domain(index: &str, values: HashMap<String, String>) -> Self {
-        Self::Domain(index.into(), values)
-    }
-
-    pub fn plain(index: &str, value: &str) -> Self {
-        Self::Plain(index.into(), value.into())
-    }
-}
 
 /// An encrypted collection of secrets.
 pub struct Lot {
@@ -91,6 +68,7 @@ impl UnlockedLot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record::Record;
     use crate::user::User;
 
     #[test]
@@ -115,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn unlock_edit_lock() {
+    fn lock_unlock() {
         let user = User::new("nixpulvis", "password").expect("failed to make user");
 
         let mut unlocked = UnlockedLot::new(&user.username);
@@ -135,30 +113,5 @@ mod tests {
         assert_eq!(unlocked.uuid, reunlocked.uuid);
         assert_eq!(unlocked.main, reunlocked.main);
         assert_eq!(unlocked.records, reunlocked.records);
-    }
-
-    #[test]
-    fn encode_decode() {
-        let record = Record::plain("index", "secret");
-        let encoded = bitcode::encode(&record);
-        let decoded = bitcode::decode(&encoded).unwrap();
-        assert_eq!(record, decoded);
-    }
-
-    #[test]
-    fn compress_decompress() {
-        let record = Record::plain("index", "secret");
-        let encoded = bitcode::encode(&record);
-
-        let mut compressed = Vec::new();
-        let mut encoder = snap::read::FrameEncoder::new(encoded.as_slice());
-        io::copy(&mut encoder, &mut compressed).expect("failed to encode");
-
-        let mut decompressed = Vec::new();
-        let mut decoder = snap::read::FrameDecoder::new(compressed.as_slice());
-        io::copy(&mut decoder, &mut decompressed).expect("failed to decode");
-
-        let decoded = bitcode::decode(&decompressed).unwrap();
-        assert_eq!(record, decoded);
     }
 }
