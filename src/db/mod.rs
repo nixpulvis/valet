@@ -1,4 +1,3 @@
-use crate::user;
 use sqlx::{Pool, Sqlite, SqlitePool};
 
 pub const DEFAULT_URL: &'static str = "sqlite://valet.sqlite?mode=rwc";
@@ -24,15 +23,7 @@ impl Database {
 
 #[derive(Debug)]
 pub enum Error {
-    User(user::Error),
     Sqlx(sqlx::Error),
-    SaltError,
-}
-
-impl From<user::Error> for Error {
-    fn from(err: user::Error) -> Self {
-        Error::User(err)
-    }
 }
 
 impl From<sqlx::Error> for Error {
@@ -41,7 +32,6 @@ impl From<sqlx::Error> for Error {
     }
 }
 
-mod users;
-pub use self::users::Users;
-mod lots;
-pub use self::lots::Lots;
+pub(crate) mod lots;
+pub(crate) mod records;
+pub(crate) mod users;

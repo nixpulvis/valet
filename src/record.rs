@@ -1,15 +1,35 @@
 use crate::encrypt::{self, Encrypted, Key};
+use crate::lot::Lot;
 use bitcode::{Decode, Encode};
 use std::collections::HashMap;
 use std::io;
+use uuid::Uuid;
 
-#[derive(Encode, Decode, Clone, Debug, Eq, PartialEq)]
-pub enum Record {
+#[derive(Debug, PartialEq, Eq)]
+pub struct Record {
+    pub lot: Uuid,
+    pub uuid: Uuid,
+    pub data: RecordData,
+}
+
+impl Record {
+    pub fn new(lot: &Lot, data: RecordData) -> Self {
+        let uuid = Uuid::now_v7();
+        Record {
+            lot: lot.uuid.clone(),
+            uuid,
+            data,
+        }
+    }
+}
+
+#[derive(Encode, Decode, Debug, Eq, PartialEq)]
+pub enum RecordData {
     Domain(String, HashMap<String, String>),
     Plain(String, String),
 }
 
-impl Record {
+impl RecordData {
     pub fn domain(index: &str, values: HashMap<String, String>) -> Self {
         Self::Domain(index.into(), values)
     }
@@ -20,8 +40,8 @@ impl Record {
 
     pub fn label(&self) -> &str {
         match self {
-            Record::Domain(s, _) => &s,
-            Record::Plain(s, _) => &s,
+            RecordData::Domain(s, _) => &s,
+            RecordData::Plain(s, _) => &s,
         }
     }
 
@@ -45,7 +65,7 @@ impl Record {
         let mut decompressed = Vec::new();
         let mut decoder = snap::read::FrameDecoder::new(buf);
         io::copy(&mut decoder, &mut decompressed).map_err(|e| Error::Compression(e))?;
-        let decoded = Record::decode(&decompressed)?;
+        let decoded = RecordData::decode(&decompressed)?;
         Ok(decoded)
     }
 
@@ -62,9 +82,16 @@ impl Record {
 
 #[derive(Debug)]
 pub enum Error {
+    Uuid(uuid::Error),
     Encoding(bitcode::Error),
     Compression(io::Error),
     Encryption(encrypt::Error),
+}
+
+impl From<uuid::Error> for Error {
+    fn from(err: uuid::Error) -> Self {
+        Error::Uuid(err)
+    }
 }
 
 #[cfg(test)]
@@ -73,27 +100,43 @@ mod tests {
     use crate::user::User;
 
     #[test]
+    fn new() {
+        let user = User::new("alice", "password").expect("failed to create user");
+        let lot = Lot::new(&user);
+        let record = Record::new(&lot, RecordData::plain("foo", "bar"));
+        assert_eq!(lot.uuid, record.lot);
+        assert_eq!(36, record.uuid.to_string().len());
+        match record.data {
+            RecordData::Plain(label, value) => {
+                assert_eq!("foo", label);
+                assert_eq!("bar", value);
+            }
+            _ => assert!(false),
+        }
+    }
+
+    #[test]
     fn encode_decode() {
-        let record = Record::plain("index", "secret");
-        let encoded = record.encode();
-        let decoded = Record::decode(&encoded).expect("failed to decode");
-        assert_eq!(record, decoded);
+        let record_data = RecordData::plain("index", "secret");
+        let encoded = record_data.encode();
+        let decoded = RecordData::decode(&encoded).expect("failed to decode");
+        assert_eq!(record_data, decoded);
     }
 
     #[test]
     fn compress_decompress() {
-        let record = Record::plain("index", "secret");
-        let compressed = record.compress().expect("failed to compress");
-        let decompressed = Record::decompress(&compressed).expect("failed to decompress");
-        assert_eq!(record, decompressed);
+        let record_data = RecordData::plain("index", "secret");
+        let compressed = record_data.compress().expect("failed to compress");
+        let decompressed = RecordData::decompress(&compressed).expect("failed to decompress");
+        assert_eq!(record_data, decompressed);
     }
 
     #[test]
     fn encrypt_decrypt() {
         let user = User::new("nixpulvis", "password").expect("failed to make user");
-        let record = Record::plain("index", "secret");
-        let encrypted = record.encrypt(user.key()).expect("failed to encrypt");
-        let decrypted = Record::decrypt(&encrypted, user.key()).expect("failed to decrypt");
-        assert_eq!(record, decrypted);
+        let record_data = RecordData::plain("index", "secret");
+        let encrypted = record_data.encrypt(user.key()).expect("failed to encrypt");
+        let decrypted = RecordData::decrypt(&encrypted, user.key()).expect("failed to decrypt");
+        assert_eq!(record_data, decrypted);
     }
 }

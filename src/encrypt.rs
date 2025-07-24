@@ -10,12 +10,16 @@ pub const NONCE_SIZE: usize = 16;
 pub const KEY_SIZE: usize = 64;
 
 /// Represents some encrypted data.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Encrypted {
     pub data: Vec<u8>,
     pub nonce: Vec<u8>,
 }
 
 /// A key is generated from a user record's salt and thier password.
+//
+// TODO: #6 keys should not be clonable.
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Key(AesKey<Aes256SivAead>);
 
 impl Key {

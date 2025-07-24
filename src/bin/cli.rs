@@ -62,16 +62,16 @@ async fn main() -> Result<(), valet::db::Error> {
                         .key()
                         .encrypt(data.as_bytes())
                         .expect("failed to encrypt");
-                    valet::db::Lots::create(&db, &user.username, &encrypted)
-                        .await
-                        .ok();
+                    // valet::db::Lots::create(&db, &user.username, &encrypted)
+                    //     .await
+                    //     .ok();
                 }
                 Repl::Get => {
-                    if let Ok(encrypted) = valet::db::Lots::get(&db, &user.username).await {
-                        let bytes = user.key().decrypt(&encrypted).expect("failed to decrypt");
-                        let data = std::str::from_utf8(&bytes).expect("failed to parse data");
-                        println!("{}", data);
-                    }
+                    // if let Ok(encrypted) = valet::db::Lots::get(&db, &user.username).await {
+                    //     let bytes = user.key().decrypt(&encrypted).expect("failed to decrypt");
+                    //     let data = std::str::from_utf8(&bytes).expect("failed to parse data");
+                    //     println!("{}", data);
+                    // }
                 }
                 Repl::Lock => {
                     // TODO: There has to be a way to break out of `repl_async`...

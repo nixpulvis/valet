@@ -1,35 +1,38 @@
-use crate::db::{Database, Error};
+use crate::db::Database;
+use crate::db::Error;
 use sqlx::prelude::FromRow;
 
 #[derive(FromRow, Debug, PartialEq, Eq)]
-pub(crate) struct SqlLot {
-    pub(crate) username: String,
+pub(crate) struct SqlRecord {
+    pub(crate) lot: String,
     pub(crate) uuid: String,
+    pub(crate) data: Vec<u8>,
+    pub(crate) nonce: Vec<u8>,
 }
 
-impl SqlLot {
-    #[must_use]
-    pub async fn insert(&self, db: &Database) -> Result<SqlLot, Error> {
+impl SqlRecord {
+    pub(crate) async fn upsert(&self, db: &Database) -> Result<SqlRecord, Error> {
         sqlx::query_as(
             r"
-            INSERT INTO lots (username, uuid)
-            VALUES (?, ?)
-            RETURNING username, uuid
+            INSERT INTO records (lot, uuid, data, nonce)
+            VALUES (?, ?, ?, ?)
+            RETURNING lot, uuid, data, nonce
             ",
         )
-        .bind(&self.username)
+        .bind(&self.lot)
         .bind(&self.uuid)
+        .bind(&self.data[..])
+        .bind(&self.nonce[..])
         .fetch_one(db.pool())
         .await
         .map_err(|e| e.into())
     }
 
-    #[must_use]
-    pub async fn select_by_uuid(db: &Database, uuid: &str) -> Result<SqlLot, Error> {
+    pub(crate) async fn select_by_uuid(db: &Database, uuid: &str) -> Result<SqlRecord, Error> {
         sqlx::query_as(
             r"
-            SELECT username, uuid
-            FROM lots
+            SELECT lot, uuid, data, nonce
+            FROM records
             WHERE uuid = ?
             ",
         )
@@ -39,16 +42,15 @@ impl SqlLot {
         .map_err(|e| e.into())
     }
 
-    #[must_use]
-    pub async fn select_by_user(db: &Database, username: &str) -> Result<Vec<SqlLot>, Error> {
+    pub(crate) async fn select_by_lot(db: &Database, lot: &str) -> Result<Vec<SqlRecord>, Error> {
         sqlx::query_as(
             r"
-            SELECT username, uuid
-            FROM lots
-            WHERE username = ?
+            SELECT lot, uuid, data, nonce
+            FROM records
+            WHERE lot = ?
             ",
         )
-        .bind(username)
+        .bind(lot)
         .fetch_all(db.pool())
         .await
         .map_err(|e| e.into())
@@ -58,10 +60,10 @@ impl SqlLot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{Database, users::SqlUser};
+    use crate::db::{Database, lots::SqlLot, users::SqlUser};
 
     #[tokio::test]
-    async fn insert() {
+    async fn upsert() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
@@ -76,8 +78,15 @@ mod tests {
             username: user.username.clone(),
             uuid: "a_lot".into(),
         };
-        let inserted = lot.insert(&db).await.expect("failed to insert lot");
-        assert_eq!(inserted, lot);
+        lot.insert(&db).await.expect("failed to insert lot");
+        let record = SqlRecord {
+            lot: lot.uuid.clone(),
+            uuid: "a_record".into(),
+            data: b"encrypted".into(),
+            nonce: b"something".into(),
+        };
+        let upserted = record.upsert(&db).await.expect("failed to upsert record");
+        assert_eq!(upserted, record);
     }
 
     #[tokio::test]
@@ -97,14 +106,21 @@ mod tests {
             uuid: "a_lot".into(),
         };
         lot.insert(&db).await.expect("failed to insert lot");
-        let selected = SqlLot::select_by_uuid(&db, &lot.uuid)
+        let record = SqlRecord {
+            lot: lot.uuid.clone(),
+            uuid: "a_record".into(),
+            data: b"encrypted".into(),
+            nonce: b"something".into(),
+        };
+        record.upsert(&db).await.expect("failed to upsert record");
+        let selected = SqlRecord::select_by_uuid(&db, &record.uuid)
             .await
             .expect("failed to get uuid");
-        assert_eq!(selected, lot);
+        assert_eq!(selected, record);
     }
 
     #[tokio::test]
-    async fn select_by_user() {
+    async fn select_by_lot() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
@@ -115,19 +131,28 @@ mod tests {
             validation_nonce: b"not".into(),
         };
         user.insert(&db).await.expect("failed to insert user");
-        let lot_a = SqlLot {
+        let lot = SqlLot {
             username: user.username.clone(),
             uuid: "a_lot".into(),
         };
-        lot_a.insert(&db).await.expect("failed to insert lot");
-        let lot_b = SqlLot {
-            username: user.username.clone(),
-            uuid: "b_lot".into(),
+        lot.insert(&db).await.expect("failed to insert lot");
+        let record_a = SqlRecord {
+            lot: lot.uuid.clone(),
+            uuid: "a_record".into(),
+            data: b"encrypted".into(),
+            nonce: b"something".into(),
         };
-        lot_b.insert(&db).await.expect("failed to insert lot");
-        let selected = SqlLot::select_by_user(&db, &lot_a.username)
+        record_a.upsert(&db).await.expect("failed to upsert record");
+        let record_b = SqlRecord {
+            lot: lot.uuid.clone(),
+            uuid: "b_record".into(),
+            data: b"encrypted".into(),
+            nonce: b"something".into(),
+        };
+        record_b.upsert(&db).await.expect("failed to upsert record");
+        let selected = SqlRecord::select_by_lot(&db, &lot.uuid)
             .await
             .expect("failed to get uuid");
-        assert_eq!(selected, vec![lot_a, lot_b]);
+        assert_eq!(selected, vec![record_a, record_b]);
     }
 }
