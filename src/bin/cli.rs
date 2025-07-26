@@ -8,11 +8,11 @@ use valet::prelude::*;
 #[derive(Parser)]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: ValetCommand,
 }
 
 #[derive(Subcommand)]
-enum Command {
+enum ValetCommand {
     // TODO: Remove password from CLI, it should be prompted.
     Validate { username: String },
     Register { username: String },
@@ -21,29 +21,45 @@ enum Command {
 
 #[derive(Parser)]
 enum Repl {
-    Put { data: String },
-    Get,
+    #[command(subcommand)]
+    Lot(LotCommand),
+    Put {
+        lot: String,
+        data: String,
+    },
+    Get {
+        lot: String,
+    },
     Lock,
 }
 
+#[derive(Subcommand)]
+enum LotCommand {
+    Create { name: String },
+    List { name: String },
+    // Share { name: String, users: Vec<String> },
+    // Unshare { name: String, users: Vec<String> },
+    Delete { name: String },
+}
+
 #[tokio::main]
-async fn main() -> Result<(), valet::db::Error> {
+async fn main() -> Result<(), valet::user::Error> {
     let cli = Cli::parse();
     let db = Database::new(valet::db::DEFAULT_URL).await?;
 
     let password = get_password();
 
     match &cli.command {
-        Command::Validate { username } => {
-            let user = get_user(&db, &username, password).await?;
+        ValetCommand::Validate { username } => {
+            let user = User::load(&db, &username, password).await?;
             println!("{} validated", user.username);
         }
-        Command::Register { username } => {
-            let user = valet::db::Users::register(&db, &username, password).await?;
-            println!("{} registered", user.username);
+        ValetCommand::Register { username } => {
+            User::new(&username, password)?.register(&db).await?;
+            println!("{} registered", username);
         }
-        Command::Unlock { username } => {
-            let user = get_user(&db, &username, password).await?;
+        ValetCommand::Unlock { username } => {
+            let user = User::load(&db, &username, password).await?;
 
             let prompt = DefaultPrompt {
                 left_prompt: DefaultPromptSegment::Basic("valet".to_owned()),
@@ -57,21 +73,44 @@ async fn main() -> Result<(), valet::db::Error> {
                 .build();
 
             rl.repl_async(async |command| match &command {
-                Repl::Put { data } => {
-                    let encrypted = user
-                        .key()
-                        .encrypt(data.as_bytes())
-                        .expect("failed to encrypt");
-                    // valet::db::Lots::create(&db, &user.username, &encrypted)
-                    //     .await
-                    //     .ok();
+                Repl::Lot(LotCommand::Create { name }) => {
+                    Lot::new(&name)
+                        .expect("failed to create lot")
+                        .save(&db)
+                        .await
+                        .expect("failed to save lot");
                 }
-                Repl::Get => {
-                    // if let Ok(encrypted) = valet::db::Lots::get(&db, &user.username).await {
-                    //     let bytes = user.key().decrypt(&encrypted).expect("failed to decrypt");
-                    //     let data = std::str::from_utf8(&bytes).expect("failed to parse data");
-                    //     println!("{}", data);
-                    // }
+                Repl::Lot(LotCommand::List { name }) => {
+                    // TODO: user_lot_keys
+                    dbg!(name);
+                    unimplemented!();
+                }
+                Repl::Lot(LotCommand::Delete { name }) => {
+                    dbg!(name);
+                    unimplemented!();
+                }
+                Repl::Put { lot, data } => {
+                    let lot = Lot::load(&db, &lot, &user)
+                        .await
+                        .expect("failed to load lot");
+                    lot.insert_record(&db, RecordData::plain("data", &data))
+                        .await
+                        .expect("failed to insert record");
+                }
+                Repl::Get { lot } => {
+                    let lot = Lot::load(&db, &lot, &user)
+                        .await
+                        .expect("failed to load lot");
+                    for record in lot.records.borrow().iter() {
+                        match &record.borrow().data {
+                            RecordData::Plain(label, value) => {
+                                println!("{}: {}", label, value);
+                            }
+                            RecordData::Domain(label, value) => {
+                                println!("{}: {:?}", label, value);
+                            }
+                        }
+                    }
                 }
                 Repl::Lock => {
                     // TODO: There has to be a way to break out of `repl_async`...
@@ -91,16 +130,4 @@ fn get_password() -> String {
     io::stdout().flush().ok();
     // TODO: Is there a better way to try to hide the password in memory?
     rpassword::read_password().unwrap()
-}
-
-async fn get_user(
-    db: &Database,
-    username: &str,
-    password: String,
-) -> Result<User, valet::user::Error> {
-    if let Ok(u) = valet::db::Users::get(&db, &username, password).await {
-        return Ok(u);
-    } else {
-        return Err(valet::user::Error::InvalidUsernamePassword);
-    }
 }

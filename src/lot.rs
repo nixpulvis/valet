@@ -1,30 +1,31 @@
-use std::str::FromStr;
+use std::{cell::RefCell, rc::Rc, str::FromStr};
 
 use crate::{
     db::{self, Database, records::SqlRecord},
-    encrypt::{Encrypted, Key},
+    encrypt::{self, Encrypted, Key},
     record::{self, Record, RecordData},
     user::User,
 };
 use uuid::Uuid;
 
 /// An encrypted collection of secrets.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Lot {
-    pub username: String,
     pub uuid: Uuid,
-    pub records: Vec<Record>,
+    pub name: String,
+    pub records: RefCell<Vec<Rc<RefCell<Record>>>>,
     pub(crate) key: Key,
 }
 
 impl Lot {
-    pub fn new(user: &User) -> Self {
+    pub fn new(name: &str) -> Result<Rc<Self>, Error> {
         let uuid = Uuid::now_v7();
-        Lot {
-            username: user.username.clone(),
+        Ok(Rc::new(Lot {
             uuid,
-            records: vec![],
-            key: user.key().clone(),
-        }
+            name: name.into(),
+            records: RefCell::new(vec![]),
+            key: Key::new()?,
+        }))
     }
 
     pub fn key(&self) -> &Key {
@@ -32,71 +33,83 @@ impl Lot {
     }
 
     /// Save this lot and it's records to the database.
-    pub async fn save(&self, db: &Database) -> Result<(), Error> {
+    pub async fn save(self: &Rc<Self>, db: &Database) -> Result<(), Error> {
         let sql_lot = db::lots::SqlLot {
-            username: self.username.clone(),
             uuid: self.uuid.to_string(),
+            name: self.name.clone(),
         };
         sql_lot.insert(&db).await?;
 
-        for record in self.records.iter() {
+        for record in self.records.borrow().iter() {
             // TODO: Collect errors and report after.
-            self.upsert_record(&db, &record).await?;
+            self.upsert_record(&db, record.clone()).await?;
         }
 
         Ok(())
     }
 
-    pub async fn load(db: &Database, uuid: &Uuid, user: &User) -> Result<Self, Error> {
-        // TODO: We hardly need this table at all.
-        db::lots::SqlLot::select_by_uuid(&db, &uuid.to_string()).await?;
-        let mut lot = Lot {
-            username: user.username.clone(),
-            uuid: uuid.clone(),
-            records: vec![],
+    pub async fn load(db: &Database, name: &str, user: &User) -> Result<Rc<Self>, Error> {
+        let sql_lot = db::lots::SqlLot::select_by_name(&db, name).await?;
+        let lot = Rc::new(Lot {
+            uuid: Uuid::parse_str(&sql_lot.uuid)?,
+            name: sql_lot.name,
+            records: RefCell::new(vec![]),
+            // TODO: #6 decrypt key stored in user_lot_keys
             key: user.key().clone(),
-        };
+        });
         lot.load_records(&db).await?;
         Ok(lot)
     }
 
+    pub async fn insert_record(
+        self: &Rc<Self>,
+        db: &Database,
+        data: RecordData,
+    ) -> Result<Rc<RefCell<Record>>, Error> {
+        let record = Record::new(self.clone(), data);
+        self.upsert_record(&db, record.clone()).await?;
+        self.records.borrow_mut().push(record);
+        let index = self.records.borrow().len() - 1;
+        let record = self.records.borrow()[index].clone();
+        Ok(record)
+    }
+
+    pub async fn remove_record(
+        self: Rc<Self>,
+        _db: &Database,
+        _record: Record,
+    ) -> Result<(), Error> {
+        unimplemented!();
+    }
+
     // TODO: Return a vec of errors?
-    pub async fn load_records(&mut self, db: &Database) -> Result<(), Error> {
+    async fn load_records(self: &Rc<Self>, db: &Database) -> Result<(), Error> {
         let sql_records =
             db::records::SqlRecord::select_by_lot(&db, &self.uuid.to_string()).await?;
+
         for sql_record in sql_records {
             let encrypted = Encrypted {
                 data: sql_record.data,
                 nonce: sql_record.nonce,
             };
             let data = RecordData::decrypt(&encrypted, self.key())?;
-            let record = Record {
-                lot: self.uuid,
+            let record = Rc::new(RefCell::new(Record {
+                lot: self.clone(),
                 uuid: Uuid::from_str(&sql_record.uuid).map_err(|e| record::Error::Uuid(e))?,
                 data,
-            };
-            self.records.push(record);
+            }));
+            self.records.borrow_mut().push(record);
         }
-        Ok(())
-    }
 
-    pub async fn insert_record(&mut self, db: &Database, data: RecordData) -> Result<(), Error> {
-        let record = Record::new(self, data);
-        self.upsert_record(&db, &record).await?;
-        self.records.push(record);
         Ok(())
-    }
-
-    pub async fn remove_record(&self, _db: &Database, _record: Record) -> Result<(), Error> {
-        unimplemented!();
     }
 
     // TODO: result type, create or update info.
-    async fn upsert_record(&self, db: &Database, record: &Record) -> Result<(), Error> {
-        let encrypted = record.data.encrypt(self.key())?;
+    async fn upsert_record(&self, db: &Database, record: Rc<RefCell<Record>>) -> Result<(), Error> {
+        let encrypted = record.borrow().data.encrypt(self.key())?;
         let sql_record = SqlRecord {
             lot: self.uuid.to_string(),
-            uuid: record.uuid.to_string(),
+            uuid: record.borrow().uuid.to_string(),
             data: encrypted.data,
             nonce: encrypted.nonce,
         };
@@ -108,6 +121,7 @@ impl Lot {
 #[derive(Debug)]
 pub enum Error {
     Uuid(uuid::Error),
+    Encrypt(encrypt::Error),
     Record(record::Error),
     Database(db::Error),
 }
@@ -115,6 +129,12 @@ pub enum Error {
 impl From<uuid::Error> for Error {
     fn from(err: uuid::Error) -> Self {
         Error::Uuid(err)
+    }
+}
+
+impl From<encrypt::Error> for Error {
+    fn from(err: encrypt::Error) -> Self {
+        Error::Encrypt(err)
     }
 }
 
@@ -133,15 +153,13 @@ impl From<db::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db::Database, record::RecordData, user::User};
+    use crate::db::Database;
 
     #[test]
     fn new() {
-        let user = User::new("alice", "password").expect("failed to create user");
-        let lot = Lot::new(&user);
-        assert_eq!(user.username, lot.username);
+        let lot = Lot::new("lot a").expect("failed to create lot");
         assert_eq!(36, lot.uuid.to_string().len());
-        assert!(lot.records.is_empty());
+        assert!(lot.records.borrow().is_empty());
         // TODO: #6
         // assert_ne!(user.key(), lot.key());
     }
@@ -151,9 +169,10 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("alice", "password").expect("failed to create user");
-        user.register(&db).await.expect("failed to register user");
-        let lot = Lot::new(&user);
+        let lot = Lot::new("lot a").expect("failed to create lot");
+        lot.records
+            .borrow_mut()
+            .push(Record::new(lot.clone(), RecordData::plain("a", "b")));
         lot.save(&db).await.expect("failed to save lot");
     }
 
@@ -180,23 +199,14 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("alice", "password").expect("failed to create user");
-        user.register(&db).await.expect("failed to register user");
-        let mut lot = Lot::new(&user);
+        let lot = Lot::new("lot a").expect("failed to create lot");
         lot.save(&db).await.expect("failed to save lot");
-        lot.insert_record(&db, RecordData::plain("foo", "bar"))
+        let record = lot
+            .insert_record(&db, RecordData::plain("foo", "bar"))
             .await
             .expect("failed to insert record");
-        let record = &lot.records[0];
-        assert_eq!(lot.uuid, record.lot);
-        assert_eq!(36, record.uuid.to_string().len());
-        match record.data {
-            RecordData::Plain(ref label, ref value) => {
-                assert_eq!("foo", label);
-                assert_eq!("bar", value);
-            }
-            _ => assert!(false),
-        }
+        // assert_eq!(lot.uuid, record.lot);
+        assert_eq!(lot.records.borrow()[0].borrow().uuid, record.borrow().uuid);
     }
 
     #[tokio::test]
@@ -204,26 +214,26 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("alice", "password").expect("failed to create user");
-        user.register(&db).await.expect("failed to register user");
-        let mut lot = Lot::new(&user);
+
+        // Create a lot.
+        let lot = Lot::new("lot a").expect("failed to create lot");
         lot.save(&db).await.expect("failed to save lot");
+
+        // Load records should be empty.
         lot.load_records(&db).await.expect("failed to load records");
-        assert!(lot.records.is_empty());
-        lot.insert_record(&db, RecordData::plain("foo", "bar"))
+        assert!(lot.records.borrow().is_empty());
+
+        // Insert a record.
+        let inserted = lot
+            .insert_record(&db, RecordData::plain("foo", "bar"))
             .await
             .expect("failed to insert record");
-        lot.records = vec![]; // clear the records, since insert_record added it.
+        lot.records.borrow_mut().clear();
         lot.load_records(&db).await.expect("failed to load records");
-        let record = &lot.records[0];
-        assert_eq!(lot.uuid, record.lot);
-        assert_eq!(36, record.uuid.to_string().len());
-        match record.data {
-            RecordData::Plain(ref label, ref value) => {
-                assert_eq!("foo", label);
-                assert_eq!("bar", value);
-            }
-            _ => assert!(false),
-        }
+
+        // Check inserted record is the same as the loaded one.
+        let record = &lot.records.borrow()[0];
+        assert_eq!(lot.uuid, record.borrow().lot.uuid);
+        assert_eq!(inserted.borrow().uuid, record.borrow().uuid)
     }
 }

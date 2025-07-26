@@ -1,11 +1,7 @@
-use std::str::FromStr;
-
-use uuid::Uuid;
-
 use crate::{
     db::{self, Database},
     encrypt::{self, Encrypted, Key, SALT_SIZE},
-    lot::{self, Lot},
+    lot,
 };
 
 const VALIDATION: &[u8] = b"VALID";
@@ -24,9 +20,9 @@ pub struct User {
 
 impl User {
     // TODO: Zeroize password
-    pub fn new(username: &str, password: &str) -> Result<Self, Error> {
+    pub fn new(username: &str, password: String) -> Result<Self, Error> {
         let salt = Key::generate_salt()?;
-        let key = Key::new(password, &salt)?;
+        let key = Key::from_password(password, &salt)?;
         let validation = key.encrypt(VALIDATION)?;
         Ok(User {
             username: username.into(),
@@ -60,9 +56,9 @@ impl User {
     }
 
     // TODO: Zeroize password
-    pub async fn load(db: &Database, username: &str, password: &str) -> Result<Self, Error> {
+    pub async fn load(db: &Database, username: &str, password: String) -> Result<Self, Error> {
         let sql_user = db::users::SqlUser::select(&db, &username).await?;
-        let key = Key::new(password, &sql_user.salt[..])?;
+        let key = Key::from_password(password, &sql_user.salt[..])?;
         let validation = Encrypted {
             data: sql_user.validation_data,
             nonce: sql_user.validation_nonce,
@@ -80,21 +76,22 @@ impl User {
         }
     }
 
-    pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {
-        let sql_lots = db::lots::SqlLot::select_by_user(&db, &self.username).await?;
-        let mut lots = vec![];
-        for sql_lot in sql_lots {
-            let mut lot = Lot {
-                username: sql_lot.username,
-                uuid: Uuid::from_str(&sql_lot.uuid).map_err(|e| lot::Error::Uuid(e))?,
-                records: vec![],
-                key: self.key.clone(),
-            };
-            lot.load_records(&db).await?;
-            lots.push(lot);
-        }
-        Ok(lots)
-    }
+    // TODO: Use user_lot_keys join table
+    // pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {
+    //     let sql_lots = db::lots::SqlLot::select_by_user(&db, &self.username).await?;
+    //     let mut lots = vec![];
+    //     for sql_lot in sql_lots {
+    //         let mut lot = Lot {
+    //             username: sql_lot.username,
+    //             uuid: Uuid::from_str(&sql_lot.uuid).map_err(|e| lot::Error::Uuid(e))?,
+    //             records: vec![],
+    //             key: self.key.clone(),
+    //         };
+    //         // lot.load_records(&db).await?;
+    //         lots.push(lot);
+    //     }
+    //     Ok(lots)
+    // }
 }
 
 // fn load_and_clobber_user(sql_user: SqlUser, password: String) -> Result<User, Error> {
@@ -158,7 +155,7 @@ mod tests {
 
     #[test]
     fn new_validate() {
-        let user = User::new("alice", "password").expect("failed to create user");
+        let user = User::new("alice", "password".into()).expect("failed to create user");
         assert!(user.validate());
     }
 
@@ -166,14 +163,14 @@ mod tests {
 
     #[tokio::test]
     async fn register_load() {
-        let password = "password";
-        let user = User::new("alice", password).expect("failed to create user");
+        let password = "password".to_string();
+        let user = User::new("alice", password.clone()).expect("failed to create user");
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
         user.register(&db).await.expect("failed to register user");
 
-        let loaded = User::load(&db, &user.username, &password)
+        let loaded = User::load(&db, &user.username, password)
             .await
             .expect("failed to load user");
         assert_eq!(user, loaded);

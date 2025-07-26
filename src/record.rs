@@ -1,25 +1,33 @@
 use crate::encrypt::{self, Encrypted, Key};
 use crate::lot::Lot;
 use bitcode::{Decode, Encode};
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io;
+use std::rc::Rc;
+use std::{fmt, io};
 use uuid::Uuid;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct Record {
-    pub lot: Uuid,
+    pub lot: Rc<Lot>,
     pub uuid: Uuid,
     pub data: RecordData,
 }
 
 impl Record {
-    pub fn new(lot: &Lot, data: RecordData) -> Self {
+    pub fn new(lot: Rc<Lot>, data: RecordData) -> Rc<RefCell<Self>> {
         let uuid = Uuid::now_v7();
-        Record {
-            lot: lot.uuid.clone(),
-            uuid,
-            data,
-        }
+        Rc::new(RefCell::new(Record { lot, uuid, data }))
+    }
+}
+
+impl fmt::Debug for Record {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Record")
+            .field("lot", &self.lot.uuid)
+            .field("uuid", &self.uuid)
+            .field("data", &self.data)
+            .finish()
     }
 }
 
@@ -101,13 +109,12 @@ mod tests {
 
     #[test]
     fn new() {
-        let user = User::new("alice", "password").expect("failed to create user");
-        let lot = Lot::new(&user);
-        let record = Record::new(&lot, RecordData::plain("foo", "bar"));
-        assert_eq!(lot.uuid, record.lot);
-        assert_eq!(36, record.uuid.to_string().len());
-        match record.data {
-            RecordData::Plain(label, value) => {
+        let lot = Lot::new("lot a").expect("failed to create lot");
+        let record = Record::new(lot.clone(), RecordData::plain("foo", "bar"));
+        assert_eq!(lot.uuid, record.borrow().lot.uuid);
+        assert_eq!(36, record.borrow().uuid.to_string().len());
+        match record.borrow().data {
+            RecordData::Plain(ref label, ref value) => {
                 assert_eq!("foo", label);
                 assert_eq!("bar", value);
             }
@@ -116,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_decode() {
+    fn data_encode_decode() {
         let record_data = RecordData::plain("index", "secret");
         let encoded = record_data.encode();
         let decoded = RecordData::decode(&encoded).expect("failed to decode");
@@ -124,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn compress_decompress() {
+    fn data_compress_decompress() {
         let record_data = RecordData::plain("index", "secret");
         let compressed = record_data.compress().expect("failed to compress");
         let decompressed = RecordData::decompress(&compressed).expect("failed to decompress");
@@ -132,8 +139,8 @@ mod tests {
     }
 
     #[test]
-    fn encrypt_decrypt() {
-        let user = User::new("nixpulvis", "password").expect("failed to make user");
+    fn data_encrypt_decrypt() {
+        let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
         let record_data = RecordData::plain("index", "secret");
         let encrypted = record_data.encrypt(user.key()).expect("failed to encrypt");
         let decrypted = RecordData::decrypt(&encrypted, user.key()).expect("failed to decrypt");

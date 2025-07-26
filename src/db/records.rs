@@ -11,6 +11,20 @@ pub(crate) struct SqlRecord {
 }
 
 impl SqlRecord {
+    pub(crate) async fn select_by_lot(db: &Database, lot: &str) -> Result<Vec<SqlRecord>, Error> {
+        sqlx::query_as(
+            r"
+            SELECT lot, uuid, data, nonce
+            FROM records
+            WHERE lot = ?
+            ",
+        )
+        .bind(lot)
+        .fetch_all(db.pool())
+        .await
+        .map_err(|e| e.into())
+    }
+
     pub(crate) async fn upsert(&self, db: &Database) -> Result<SqlRecord, Error> {
         sqlx::query_as(
             r"
@@ -27,56 +41,21 @@ impl SqlRecord {
         .await
         .map_err(|e| e.into())
     }
-
-    pub(crate) async fn select_by_uuid(db: &Database, uuid: &str) -> Result<SqlRecord, Error> {
-        sqlx::query_as(
-            r"
-            SELECT lot, uuid, data, nonce
-            FROM records
-            WHERE uuid = ?
-            ",
-        )
-        .bind(uuid)
-        .fetch_one(db.pool())
-        .await
-        .map_err(|e| e.into())
-    }
-
-    pub(crate) async fn select_by_lot(db: &Database, lot: &str) -> Result<Vec<SqlRecord>, Error> {
-        sqlx::query_as(
-            r"
-            SELECT lot, uuid, data, nonce
-            FROM records
-            WHERE lot = ?
-            ",
-        )
-        .bind(lot)
-        .fetch_all(db.pool())
-        .await
-        .map_err(|e| e.into())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{Database, lots::SqlLot, users::SqlUser};
+    use crate::db::{Database, lots::SqlLot};
 
     #[tokio::test]
     async fn upsert() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = SqlUser {
-            username: "alice".into(),
-            salt: b"low sodium".into(),
-            validation_data: b"test".into(),
-            validation_nonce: b"not".into(),
-        };
-        user.insert(&db).await.expect("failed to insert user");
         let lot = SqlLot {
-            username: user.username.clone(),
-            uuid: "a_lot".into(),
+            uuid: "123".into(),
+            name: "a lot".into(),
         };
         lot.insert(&db).await.expect("failed to insert lot");
         let record = SqlRecord {
@@ -90,50 +69,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_by_uuid() {
-        let db = Database::new("sqlite://:memory:")
-            .await
-            .expect("failed to create database");
-        let user = SqlUser {
-            username: "alice".into(),
-            salt: b"low sodium".into(),
-            validation_data: b"test".into(),
-            validation_nonce: b"not".into(),
-        };
-        user.insert(&db).await.expect("failed to insert user");
-        let lot = SqlLot {
-            username: user.username.clone(),
-            uuid: "a_lot".into(),
-        };
-        lot.insert(&db).await.expect("failed to insert lot");
-        let record = SqlRecord {
-            lot: lot.uuid.clone(),
-            uuid: "a_record".into(),
-            data: b"encrypted".into(),
-            nonce: b"something".into(),
-        };
-        record.upsert(&db).await.expect("failed to upsert record");
-        let selected = SqlRecord::select_by_uuid(&db, &record.uuid)
-            .await
-            .expect("failed to get uuid");
-        assert_eq!(selected, record);
-    }
-
-    #[tokio::test]
     async fn select_by_lot() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = SqlUser {
-            username: "alice".into(),
-            salt: b"low sodium".into(),
-            validation_data: b"test".into(),
-            validation_nonce: b"not".into(),
-        };
-        user.insert(&db).await.expect("failed to insert user");
         let lot = SqlLot {
-            username: user.username.clone(),
-            uuid: "a_lot".into(),
+            uuid: "123".into(),
+            name: "a lot".into(),
         };
         lot.insert(&db).await.expect("failed to insert lot");
         let record_a = SqlRecord {

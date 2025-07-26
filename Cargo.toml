@@ -22,14 +22,18 @@ gui = ["dep:eframe"]
 aes-siv = "0.7"
 argon2 = "0.5"
 bitcode = "0.6.6"
-clap = { version = "4.5", features = ["derive"] }
-# TODO: I'll probably need to implement something like this myself.
-clap-repl = { version = "0.3", features = ["async"] }
-eframe = { version = "0.32", optional = true }
-egui_inbox = "0.9"
 rand = "0.6"
 rpassword = "7.4"
 snap = "1.1.1"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 tokio = { version = "1.46", features = ["full"] }
 uuid = { version = "1.17", features = ["v7"] }
+
+# CLI Dependencies
+clap = { version = "4.5", features = ["derive"] }
+# TODO: I'll probably need to implement something like this myself.
+clap-repl = { version = "0.3", features = ["async"] }
+
+# GUI Dependencies
+eframe = { version = "0.32", optional = true }
+egui_inbox = { version = "0.9", optional = true }

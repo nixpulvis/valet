@@ -31,7 +31,18 @@ impl Key {
         Ok(salt)
     }
 
-    pub fn new(password: &str, salt: &[u8]) -> Result<Self, Error> {
+    pub fn new() -> Result<Self, Error> {
+        let mut output_key_material = [0u8; KEY_SIZE];
+        let mut rng = OsRng::new().map_err(|e| Error::KeyGeneration(e.msg.into()))?;
+        rng.try_fill(&mut output_key_material)
+            .map_err(|e| Error::KeyGeneration(e.msg.into()))?;
+        Ok(Key(AesKey::<Aes256SivAead>::clone_from_slice(
+            &output_key_material,
+        )))
+    }
+
+    // TODO: Zeroize password
+    pub fn from_password(password: String, salt: &[u8]) -> Result<Self, Error> {
         let argon2 = Argon2::default();
         assert_eq!(KEY_SIZE, Aes256SivAead::key_size());
         let mut output_key_material = [0u8; KEY_SIZE];
@@ -75,26 +86,31 @@ impl Key {
 #[derive(Debug)]
 pub enum Error {
     KeyDerivation(String),
+    KeyGeneration(String),
     Encryption(String),
     Decryption(String),
 }
 
-#[test]
-fn new_credential() {
-    let salt = Key::generate_salt().expect("error generating salt");
-    let credential = Key::new("user1password", &salt).expect("error generating credential");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    assert_eq!(KEY_SIZE, credential.0.len());
-}
+    #[test]
+    fn from_password() {
+        let salt = Key::generate_salt().expect("error generating salt");
+        let key = Key::from_password("user1password".into(), &salt).expect("error generating key");
 
-#[test]
-fn encrypt_decrypt_test() {
-    let salt = Key::generate_salt().expect("error generating salt");
-    let credential = Key::new("user1password", &salt).expect("error generating credentials");
+        assert_eq!(KEY_SIZE, key.0.len());
+    }
 
-    let plaintext = b"this is a secret";
-    let encrypted = credential.encrypt(plaintext).expect("error encrypting");
-    let decrypted = credential.decrypt(&encrypted).expect("error dencrypting");
+    #[test]
+    fn encrypt_decrypt_test() {
+        let key = Key::new().expect("error generating key");
 
-    assert_eq!(plaintext, &decrypted[..]);
+        let plaintext = b"this is a secret";
+        let encrypted = key.encrypt(plaintext).expect("error encrypting");
+        let decrypted = key.decrypt(&encrypted).expect("error dencrypting");
+
+        assert_eq!(plaintext, &decrypted[..]);
+    }
 }
