@@ -36,7 +36,7 @@ enum Repl {
 #[derive(Subcommand)]
 enum LotCommand {
     Create { name: String },
-    List { name: String },
+    List,
     // Share { name: String, users: Vec<String> },
     // Unshare { name: String, users: Vec<String> },
     Delete { name: String },
@@ -80,13 +80,12 @@ async fn main() -> Result<(), valet::user::Error> {
                         .await
                         .expect("failed to save lot");
                 }
-                Repl::Lot(LotCommand::List { name }) => {
+                Repl::Lot(LotCommand::List) => {
                     // TODO: user_lot_keys
-                    dbg!(name);
                     unimplemented!();
                 }
                 Repl::Lot(LotCommand::Delete { name }) => {
-                    dbg!(name);
+                    dbg!(&name);
                     unimplemented!();
                 }
                 Repl::Put { lot, data } => {
