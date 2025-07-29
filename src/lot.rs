@@ -8,6 +8,8 @@ use crate::{
 };
 use uuid::Uuid;
 
+pub const DEFAULT_LOT: &'static str = "main";
+
 /// An encrypted collection of secrets.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Lot {

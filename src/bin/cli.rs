@@ -3,7 +3,7 @@ use clap_repl::ClapEditor;
 use clap_repl::reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory};
 use std::io::{self, Write};
 use tokio;
-use valet::prelude::*;
+use valet::{lot, prelude::*};
 
 #[derive(Parser)]
 struct Cli {
@@ -23,12 +23,16 @@ enum ValetCommand {
 enum Repl {
     #[command(subcommand)]
     Lot(LotCommand),
+    List {
+        #[clap(default_value = "")]
+        path: String,
+    },
     Put {
-        lot: String,
+        path: String,
         data: String,
     },
     Get {
-        lot: String,
+        path: String,
     },
     Lock,
 }
@@ -68,6 +72,7 @@ async fn main() -> Result<(), valet::user::Error> {
             let rl = ClapEditor::<Repl>::builder()
                 .with_editor_hook(|reed| {
                     reed.with_history(Box::new(FileBackedHistory::new(0).unwrap()))
+                        .use_bracketed_paste(true)
                 })
                 .with_prompt(Box::new(prompt.clone()))
                 .build();
@@ -88,27 +93,45 @@ async fn main() -> Result<(), valet::user::Error> {
                     dbg!(&name);
                     unimplemented!();
                 }
-                Repl::Put { lot, data } => {
-                    let lot = Lot::load(&db, &lot, &user)
+                Repl::List { path } => {
+                    let path = Path::parse(&path);
+                    let lot = Lot::load(&db, &path.lot, &user)
                         .await
                         .expect("failed to load lot");
-                    lot.insert_record(&db, RecordData::plain("data", &data))
+
+                    // TODO: lot.records() : IntoIter
+                    for record in lot.records.borrow().iter() {
+                        let record = record.borrow();
+                        let label = record.data.label();
+                        if label.starts_with(&path.label) {
+                            // TODO: impl Display for Path.
+                            println!("{:?}", Path::new(&path.lot, label));
+                        }
+                    }
+                }
+                Repl::Put { path, data } => {
+                    let path = Path::parse(&path);
+                    let lot = Lot::load(&db, &path.lot, &user)
+                        .await
+                        .expect("failed to load lot");
+                    // TODO: Delete old record if it exists.
+                    // TODO: Add deleted record to new record's history.
+                    lot.insert_record(&db, RecordData::plain(&path.label, &data))
                         .await
                         .expect("failed to insert record");
                 }
-                Repl::Get { lot } => {
-                    let lot = Lot::load(&db, &lot, &user)
+                Repl::Get { path } => {
+                    let path = Path::parse(&path);
+                    let lot = Lot::load(&db, &path.lot, &user)
                         .await
                         .expect("failed to load lot");
-                    for record in lot.records.borrow().iter() {
-                        match &record.borrow().data {
-                            RecordData::Plain(label, value) => {
-                                println!("{}: {}", label, value);
-                            }
-                            RecordData::Domain(label, value) => {
-                                println!("{}: {:?}", label, value);
-                            }
-                        }
+                    if let Some(record) = lot
+                        .records
+                        .borrow()
+                        .iter()
+                        .find(|r| r.borrow().data.label() == path.label)
+                    {
+                        println!("{}", record.borrow());
                     }
                 }
                 Repl::Lock => {
@@ -121,6 +144,85 @@ async fn main() -> Result<(), valet::user::Error> {
     }
 
     Ok(())
+}
+
+// TODO: Move into lib.
+#[derive(Debug, PartialEq, Eq)]
+struct Path {
+    lot: String,
+    label: String,
+}
+
+impl Path {
+    fn new(lot: &str, label: &str) -> Self {
+        Path {
+            lot: lot.into(),
+            label: label.into(),
+        }
+    }
+
+    fn parse(path: &str) -> Self {
+        let parts: Vec<&str> = path.rsplitn(2, "::").collect();
+        if parts.len() == 1 || (parts.len() == 2 && parts[1] == "") {
+            Path {
+                lot: lot::DEFAULT_LOT.into(),
+                label: parts[0].into(),
+            }
+        } else if parts.len() > 1 {
+            Path {
+                lot: parts[1].into(),
+                label: parts[0].into(),
+            }
+        } else {
+            unreachable!();
+        }
+    }
+}
+
+#[test]
+fn test_parse_path() {
+    assert_eq!(
+        Path {
+            lot: "main".into(),
+            label: "".into()
+        },
+        Path::parse("")
+    );
+    assert_eq!(
+        Path {
+            lot: "main".into(),
+            label: "".into()
+        },
+        Path::parse("::")
+    );
+    assert_eq!(
+        Path {
+            lot: "lot".into(),
+            label: "".into(),
+        },
+        Path::parse("lot::")
+    );
+    assert_eq!(
+        Path {
+            lot: "main".into(),
+            label: "label".into()
+        },
+        Path::parse("label")
+    );
+    assert_eq!(
+        Path {
+            lot: "lot".into(),
+            label: "label".into()
+        },
+        Path::parse("lot::label")
+    );
+    assert_eq!(
+        Path {
+            lot: "lot::sublot".into(),
+            label: "label".into()
+        },
+        Path::parse("lot::sublot::label")
+    );
 }
 
 // TODO: Error handling.

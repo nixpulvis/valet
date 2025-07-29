@@ -21,6 +21,12 @@ impl Record {
     }
 }
 
+impl fmt::Display for Record {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}::{}", self.lot.name, self.data)
+    }
+}
+
 impl fmt::Debug for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Record")
@@ -35,6 +41,27 @@ impl fmt::Debug for Record {
 pub enum RecordData {
     Domain(String, HashMap<String, String>),
     Plain(String, String),
+}
+
+impl fmt::Display for RecordData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RecordData::Domain(label, attributes) => {
+                write!(f, "{label}")?;
+                for attribute in attributes {
+                    write!(f, "{:?}", attribute)?;
+                }
+                Ok(())
+            }
+            RecordData::Plain(label, text) => {
+                if text.contains("\n") {
+                    write!(f, "{label}\n{text}")
+                } else {
+                    write!(f, "{label}: {text}")
+                }
+            }
+        }
+    }
 }
 
 impl RecordData {
