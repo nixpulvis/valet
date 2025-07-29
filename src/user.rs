@@ -45,14 +45,15 @@ impl User {
     }
 
     // TODO: Return type, insert or update info.
-    pub async fn register(&self, db: &Database) -> Result<(), Error> {
+    pub async fn register(self, db: &Database) -> Result<Self, Error> {
         let sql_user = db::users::SqlUser {
             username: self.username.clone(),
             salt: self.salt.to_vec(),
             validation_data: self.validation.data.clone(),
             validation_nonce: self.validation.nonce.clone(),
         };
-        sql_user.insert(&db).await.map(|_| ()).map_err(|e| e.into())
+        sql_user.insert(&db).await?;
+        Ok(self)
     }
 
     // TODO: Zeroize password
@@ -163,16 +164,21 @@ mod tests {
 
     #[tokio::test]
     async fn register_load() {
-        let password = "password".to_string();
-        let user = User::new("alice", password.clone()).expect("failed to create user");
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        user.register(&db).await.expect("failed to register user");
+
+        let password = "password".to_string();
+        let user = User::new("alice", password.clone())
+            .expect("failed to create user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
 
         let loaded = User::load(&db, &user.username, password)
             .await
             .expect("failed to load user");
+
         assert_eq!(user, loaded);
     }
 }
