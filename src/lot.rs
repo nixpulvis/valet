@@ -1,4 +1,4 @@
-use std::{cell::RefCell, ops::Deref, rc::Rc, str::FromStr};
+use std::{cell::RefCell, fmt, ops::Deref, rc::Rc, str::FromStr};
 
 use crate::{
     db::{self, Database, records::SqlRecord},
@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub const DEFAULT_LOT: &'static str = "main";
 
 /// An encrypted collection of secrets.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct Lot {
     pub uuid: Uuid,
     pub name: String,
@@ -138,6 +138,16 @@ impl Lot {
         };
         sql_record.upsert(&db).await?;
         Ok(())
+    }
+}
+
+impl fmt::Debug for Lot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Lot")
+            .field("uuid", &self.uuid)
+            .field("name", &self.name)
+            .field("records", &self.records)
+            .finish()
     }
 }
 

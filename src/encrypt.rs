@@ -19,7 +19,7 @@ pub struct Encrypted {
 /// A key is generated from a user record's salt and thier password.
 //
 // TODO: #6 keys should not be clonable.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone)]
 pub struct Key(AesKey<Aes256SivAead>);
 
 impl Key {
