@@ -1,9 +1,10 @@
 use eframe::egui::{self, RichText, ViewportCommand};
 use egui_inbox::UiInbox;
-use std::env;
+use std::{collections::HashMap, env, rc::Rc};
 use tokio::runtime;
-use valet::db::{Database, Lots, Users};
-use valet::user::User;
+use valet::{db, prelude::*};
+// use valet::db::{Database, Lots, Users};
+// use valet::user::User;
 
 const MIN_SIZE: [f32; 2] = [200., 160.];
 const MAX_SIZE: [f32; 2] = [400., 350.];
@@ -31,6 +32,8 @@ struct ValetApp {
     show_password: bool,
     login_inbox: UiInbox<(User, String)>,
     save_inbox: UiInbox<bool>,
+    // TODO: Delete me.
+    mock_inbox: UiInbox<Vec<Rc<Lot>>>,
     rt: runtime::Runtime,
     user: Option<User>,
     lot: Option<String>,
@@ -58,6 +61,7 @@ impl ValetApp {
                 .unwrap(),
             login_inbox: UiInbox::new(),
             save_inbox: UiInbox::new(),
+            mock_inbox: UiInbox::new(),
             user: None,
             lot: None,
             saved_lot: None,
@@ -97,6 +101,25 @@ impl eframe::App for ValetApp {
             });
         });
         if self.logged_in {
+            // XXX: Generate and send mocks.
+            let db_url = self.db_url.clone();
+            self.rt.spawn(async move {
+                let db = Database::new(&db_url)
+                    .await
+                    .expect("error getting database");
+                let lot_main = Lot::new("main");
+                lot_main.save(&db).await;
+                lot_main.insert_record(&db, RecordData::plain("foo", "secret"));
+                lot_main.insert_record(&db, RecordData::plain("bar", "password"));
+                let domain_data = HashMap::from([
+                    ("username".into(), "alice@example.com".into()),
+                    ("password".into(), "123".into()),
+                ]);
+                lot_main.insert_record(&db, RecordData::domain("example.com", domain_data));
+                let lot_alt = Lot::new("alt");
+                let lots = vec![lot_main, lot_alt];
+            });
+
             egui::CentralPanel::default().show(ctx, |ui| {
                 if let Some(save) = self.save_inbox.read(ui).last() {
                     if save {
@@ -132,11 +155,11 @@ impl eframe::App for ValetApp {
                                 let db_url = self.db_url.clone();
                                 let tx = self.save_inbox.sender();
                                 self.rt.spawn(async move {
-                                    let db =
-                                        Database::new(&db_url).await.expect("error getting DB");
-                                    Lots::create(&db, &username, &encrypted)
-                                        .await
-                                        .expect("TODO");
+                                    // let db =
+                                    //     Database::new(&db_url).await.expect("error getting database");
+                                    // Lots::create(&db, &username, &encrypted)
+                                    //     .await
+                                    //     .expect("TODO");
                                     tx.send(true).ok();
                                 });
                             }
@@ -179,17 +202,17 @@ impl eframe::App for ValetApp {
                         let db_url = self.db_url.clone();
                         let tx = self.login_inbox.sender();
                         self.rt.spawn(async move {
-                            let db = Database::new(&db_url).await.expect("error getting DB");
-                            let user = Users::get(&db, &username, password).await.expect("TODO");
-                            if user.validate() {
-                                let encrypted = Lots::get(&db, &username).await.expect("TODO");
-                                let data = user
-                                    .key()
-                                    .decrypt(&encrypted)
-                                    .expect("error decrypting load");
-                                let msg = std::str::from_utf8(&data).expect("error parsing string");
-                                tx.send((user, msg.into())).ok();
-                            }
+                            // let db = Database::new(&db_url).await.expect("error getting database");
+                            // let user = Users::get(&db, &username, password).await.expect("TODO");
+                            // if user.validate() {
+                            //     let encrypted = Lots::get(&db, &username).await.expect("TODO");
+                            //     let data = user
+                            //         .key()
+                            //         .decrypt(&encrypted)
+                            //         .expect("error decrypting load");
+                            //     let msg = std::str::from_utf8(&data).expect("error parsing string");
+                            //     tx.send((user, msg.into())).ok();
+                            // }
                         });
                     }
                     if ui.add(egui::Button::new("Create")).clicked() {
@@ -199,22 +222,22 @@ impl eframe::App for ValetApp {
                         let db_url = self.db_url.clone();
                         let tx = self.login_inbox.sender();
                         self.rt.spawn(async move {
-                            let db = Database::new(&db_url).await.expect("error getting DB");
-                            let user = Users::register(&db, &username, password)
-                                .await
-                                .expect("TODO");
-                            Lots::create(&db, &username, &user.validation)
-                                .await
-                                .expect("TODO");
-                            if user.validate() {
-                                let encrypted = Lots::get(&db, &username).await.expect("TODO");
-                                let data = user
-                                    .key()
-                                    .decrypt(&encrypted)
-                                    .expect("error decrypting load");
-                                let msg = std::str::from_utf8(&data).expect("error parsing string");
-                                tx.send((user, msg.into())).ok();
-                            }
+                            // let db = Database::new(&db_url).await.expect("error getting DB");
+                            // let user = Users::register(&db, &username, password)
+                            //     .await
+                            //     .expect("TODO");
+                            // Lots::create(&db, &username, &user.validation)
+                            //     .await
+                            //     .expect("TODO");
+                            // if user.validate() {
+                            //     let encrypted = Lots::get(&db, &username).await.expect("TODO");
+                            //     let data = user
+                            //         .key()
+                            //         .decrypt(&encrypted)
+                            //         .expect("error decrypting load");
+                            //     let msg = std::str::from_utf8(&data).expect("error parsing string");
+                            //     tx.send((user, msg.into())).ok();
+                            // }
                         });
                     }
                 })

@@ -3,7 +3,7 @@ use crate::lot::Lot;
 use bitcode::{Decode, Encode};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, Weak};
 use std::{fmt, io};
 use uuid::Uuid;
 
@@ -14,9 +14,9 @@ pub struct Record {
 }
 
 impl Record {
-    pub fn new(lot: Weak<Lot>, data: RecordData) -> Rc<RefCell<Self>> {
+    pub fn new(lot: Weak<Lot>, data: RecordData) -> Arc<RefCell<Self>> {
         let uuid = Uuid::now_v7();
-        Rc::new(RefCell::new(Record { lot, uuid, data }))
+        Arc::new(RefCell::new(Record { lot, uuid, data }))
     }
 
     pub fn encrypt(&self) -> Result<Encrypted, Error> {
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn new() {
         let lot = Lot::new("lot a");
-        let record = Record::new(Rc::downgrade(&lot), RecordData::plain("foo", "bar"));
+        let record = Record::new(Arc::downgrade(&lot), RecordData::plain("foo", "bar"));
         assert_eq!(
             lot.uuid,
             record
