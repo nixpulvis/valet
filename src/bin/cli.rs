@@ -3,7 +3,7 @@ use clap_repl::ClapEditor;
 use clap_repl::reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory};
 use std::io::{self, Write};
 use tokio;
-use valet::{lot, prelude::*};
+use valet::prelude::*;
 
 #[derive(Parser)]
 struct Cli {
@@ -67,6 +67,11 @@ async fn main() -> Result<(), valet::user::Error> {
         }
         ValetCommand::Register { username } => {
             User::new(&username, password)?.register(&db).await?;
+            Lot::new(DEFAULT_LOT)
+                .expect("failed to create lot")
+                .save(&db)
+                .await
+                .expect("failed to save lot");
             println!("{} registered", username);
         }
         ValetCommand::Unlock { username } => {
@@ -86,8 +91,6 @@ async fn main() -> Result<(), valet::user::Error> {
 
             rl.repl_async(async |command| match &command {
                 Repl::Lot(LotCommand::Create { name }) => {
-                    // TODO: Probably don't need a .save method, we need a
-                    // create method which also makes the join table entry.
                     Lot::new(&name)
                         .expect("failed to create lot")
                         .save(&db)
@@ -182,7 +185,7 @@ impl Path {
         let parts: Vec<&str> = path.rsplitn(2, "::").collect();
         if parts.len() == 1 || (parts.len() == 2 && parts[1] == "") {
             Path {
-                lot: lot::DEFAULT_LOT.into(),
+                lot: DEFAULT_LOT.into(),
                 label: parts[0].into(),
             }
         } else if parts.len() > 1 {

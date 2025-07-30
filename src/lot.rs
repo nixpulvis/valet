@@ -35,6 +35,8 @@ impl Lot {
     }
 
     /// Save this lot and it's records to the database.
+    // TODO: Probably don't need a .save method, we need a
+    // create method which also makes the join table entry.
     pub async fn save(self: &Rc<Self>, db: &Database) -> Result<(), Error> {
         let sql_lot = db::lots::SqlLot {
             uuid: self.uuid.to_string(),
