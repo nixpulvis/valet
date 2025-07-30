@@ -183,18 +183,22 @@ impl Path {
 
     fn parse(path: &str) -> Self {
         let parts: Vec<&str> = path.rsplitn(2, "::").collect();
-        if parts.len() == 1 || (parts.len() == 2 && parts[1] == "") {
+        // NOTE: parts will always have at least 1 element.
+        if parts.len() == 1 && parts[0] == "" {
+            Path {
+                lot: "".into(),
+                label: "".into(),
+            }
+        } else if parts.len() == 1 || parts.len() == 2 && parts[1] == "" {
             Path {
                 lot: DEFAULT_LOT.into(),
                 label: parts[0].into(),
             }
-        } else if parts.len() > 1 {
+        } else {
             Path {
                 lot: parts[1].into(),
                 label: parts[0].into(),
             }
-        } else {
-            unreachable!();
         }
     }
 }
