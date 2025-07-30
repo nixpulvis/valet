@@ -15,8 +15,8 @@ const VALIDATION: &[u8] = b"VALID";
 #[derive(PartialEq, Eq)]
 pub struct User {
     pub username: String,
-    pub salt: [u8; SALT_SIZE],
-    pub validation: Encrypted,
+    salt: [u8; SALT_SIZE],
+    validation: Encrypted,
     key: Key,
 }
 

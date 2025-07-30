@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn new() {
-        let lot = Lot::new("lot a").expect("failed to create lot");
+        let lot = Lot::new("lot a");
         let record = Record::new(lot.clone(), RecordData::plain("foo", "bar"));
         assert_eq!(lot.uuid, record.borrow().lot.uuid);
         assert_eq!(36, record.borrow().uuid.to_string().len());

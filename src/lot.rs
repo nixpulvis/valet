@@ -20,14 +20,14 @@ pub struct Lot {
 }
 
 impl Lot {
-    pub fn new(name: &str) -> Result<Rc<Self>, Error> {
+    pub fn new(name: &str) -> Rc<Self> {
         let uuid = Uuid::now_v7();
-        Ok(Rc::new(Lot {
+        Rc::new(Lot {
             uuid,
             name: name.into(),
             records: RefCell::new(vec![]),
-            key: Key::new()?,
-        }))
+            key: Key::new(),
+        })
     }
 
     pub fn key(&self) -> &Key {
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn new() {
-        let lot = Lot::new("lot a").expect("failed to create lot");
+        let lot = Lot::new("lot a");
         assert_eq!(36, lot.uuid.to_string().len());
         assert!(lot.records.borrow().is_empty());
         // TODO: #6
@@ -202,7 +202,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let lot = Lot::new("lot a").expect("failed to create lot");
+        let lot = Lot::new("lot a");
         lot.records
             .borrow_mut()
             .push(Record::new(lot.clone(), RecordData::plain("a", "b")));
@@ -232,7 +232,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let lot = Lot::new("lot a").expect("failed to create lot");
+        let lot = Lot::new("lot a");
         lot.save(&db).await.expect("failed to save lot");
         let record = lot
             .insert_record(&db, RecordData::plain("foo", "bar"))
@@ -249,7 +249,7 @@ mod tests {
             .expect("failed to create database");
 
         // Create a lot.
-        let lot = Lot::new("lot a").expect("failed to create lot");
+        let lot = Lot::new("lot a");
         lot.save(&db).await.expect("failed to save lot");
 
         // Load records should be empty.

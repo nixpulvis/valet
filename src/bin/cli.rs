@@ -68,7 +68,6 @@ async fn main() -> Result<(), valet::user::Error> {
         ValetCommand::Register { username } => {
             User::new(&username, password)?.register(&db).await?;
             Lot::new(DEFAULT_LOT)
-                .expect("failed to create lot")
                 .save(&db)
                 .await
                 .expect("failed to save lot");
@@ -91,11 +90,7 @@ async fn main() -> Result<(), valet::user::Error> {
 
             rl.repl_async(async |command| match &command {
                 Repl::Lot(LotCommand::Create { name }) => {
-                    Lot::new(&name)
-                        .expect("failed to create lot")
-                        .save(&db)
-                        .await
-                        .expect("failed to save lot");
+                    Lot::new(&name).save(&db).await.expect("failed to save lot");
                 }
                 Repl::Lot(LotCommand::List { path }) => {
                     let path = Path::parse(&path);

@@ -5,9 +5,9 @@ use aes_siv::{
 use argon2::Argon2;
 use rand_core::{OsRng, RngCore};
 
-pub const SALT_SIZE: usize = 16;
-pub const NONCE_SIZE: usize = 16;
-pub const KEY_SIZE: usize = 64; // 512 bit-key size, 256-bit security.
+pub(crate) const SALT_SIZE: usize = 16;
+const NONCE_SIZE: usize = 16;
+const KEY_SIZE: usize = 64; // 512 bit-key size, 256-bit security.
 
 /// Represents some encrypted data.
 #[derive(PartialEq, Eq)]
@@ -23,8 +23,8 @@ pub struct Encrypted {
 pub struct Key(AesKey<Aes256SivAead>);
 
 impl Key {
-    pub fn new() -> Result<Self, Error> {
-        Ok(Key(Aes256SivAead::generate_key(&mut OsRng)))
+    pub fn new() -> Self {
+        Key(Aes256SivAead::generate_key(&mut OsRng))
     }
 
     // TODO: Zeroize password
@@ -88,18 +88,15 @@ mod tests {
     fn from_password() {
         let salt = Key::generate_salt();
         let key = Key::from_password("user1password".into(), &salt).expect("error generating key");
-
         assert_eq!(KEY_SIZE, key.0.len());
     }
 
     #[test]
     fn encrypt_decrypt_test() {
-        let key = Key::new().expect("error generating key");
-
+        let key = Key::new();
         let plaintext = b"this is a secret";
         let encrypted = key.encrypt(plaintext).expect("error encrypting");
         let decrypted = key.decrypt(&encrypted).expect("error dencrypting");
-
         assert_eq!(plaintext, &decrypted[..]);
     }
 }
