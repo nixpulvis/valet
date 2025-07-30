@@ -18,6 +18,14 @@ impl Record {
         let uuid = Uuid::now_v7();
         Rc::new(RefCell::new(Record { lot, uuid, data }))
     }
+
+    pub fn encrypt(&self) -> Result<Encrypted, Error> {
+        if let Some(lot) = self.lot.upgrade() {
+            self.data.encrypt(lot.key())
+        } else {
+            Err(Error::MissingLot)
+        }
+    }
 }
 
 impl PartialEq for Record {
@@ -133,6 +141,7 @@ impl RecordData {
 
 #[derive(Debug)]
 pub enum Error {
+    MissingLot,
     Uuid(uuid::Error),
     Encoding(bitcode::Error),
     Compression(io::Error),
