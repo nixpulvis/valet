@@ -3,35 +3,51 @@ use crate::lot::Lot;
 use bitcode::{Decode, Encode};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::{fmt, io};
 use uuid::Uuid;
 
-#[derive(PartialEq, Eq)]
 pub struct Record {
-    pub lot: Rc<Lot>,
+    pub lot: Weak<Lot>,
     pub uuid: Uuid,
     pub data: RecordData,
 }
 
 impl Record {
-    pub fn new(lot: Rc<Lot>, data: RecordData) -> Rc<RefCell<Self>> {
+    pub fn new(lot: Weak<Lot>, data: RecordData) -> Rc<RefCell<Self>> {
         let uuid = Uuid::now_v7();
         Rc::new(RefCell::new(Record { lot, uuid, data }))
     }
 }
 
+impl PartialEq for Record {
+    fn eq(&self, other: &Self) -> bool {
+        self.uuid == other.uuid && self.data == other.data
+    }
+}
+impl Eq for Record {}
+
 impl fmt::Display for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}::{}", self.lot.name, self.data)
+        if let Some(lot) = self.lot.upgrade() {
+            write!(f, "{}::{}", lot.name, self.data)
+        } else {
+            write!(f, "<missing>::{}", self.data)
+        }
     }
 }
 
 impl fmt::Debug for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let lot = if let Some(lot) = self.lot.upgrade() {
+            &lot.name.clone()
+        } else {
+            "<missing>"
+        };
         f.debug_struct("Record")
-            .field("lot", &self.lot.uuid)
             .field("uuid", &self.uuid)
+            .field("lot", &lot)
+            .field("lot", &"<missing>")
             .field("data", &self.data)
             .finish()
     }
@@ -137,8 +153,16 @@ mod tests {
     #[test]
     fn new() {
         let lot = Lot::new("lot a");
-        let record = Record::new(lot.clone(), RecordData::plain("foo", "bar"));
-        assert_eq!(lot.uuid, record.borrow().lot.uuid);
+        let record = Record::new(Rc::downgrade(&lot), RecordData::plain("foo", "bar"));
+        assert_eq!(
+            lot.uuid,
+            record
+                .borrow()
+                .lot
+                .upgrade()
+                .expect("record's lot exists")
+                .uuid
+        );
         assert_eq!(36, record.borrow().uuid.to_string().len());
         match record.borrow().data {
             RecordData::Plain(ref label, ref value) => {
@@ -147,6 +171,15 @@ mod tests {
             }
             _ => assert!(false),
         }
+    }
+
+    #[test]
+    fn formatting_without_lot() {
+        let record = Record::new(Weak::new(), RecordData::plain("foo", "bar"));
+        let debug = format!("{:?}", &record);
+        assert!(debug.contains("<missing>"));
+        let display = format!("{}", &record.borrow());
+        assert!(display.contains("<missing>"));
     }
 
     #[test]

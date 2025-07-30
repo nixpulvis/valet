@@ -89,7 +89,7 @@ impl Lot {
         db: &Database,
         data: RecordData,
     ) -> Result<Rc<RefCell<Record>>, Error> {
-        let record = Record::new(self.clone(), data);
+        let record = Record::new(Rc::downgrade(self), data);
         self.upsert_record(&db, record.clone()).await?;
         self.records.borrow_mut().push(record);
         let index = self.records.borrow().len() - 1;
@@ -117,7 +117,7 @@ impl Lot {
             };
             let data = RecordData::decrypt(&encrypted, self.key())?;
             let record = Rc::new(RefCell::new(Record {
-                lot: self.clone(),
+                lot: Rc::downgrade(self),
                 uuid: Uuid::from_str(&sql_record.uuid).map_err(|e| record::Error::Uuid(e))?,
                 data,
             }));
@@ -213,9 +213,10 @@ mod tests {
             .await
             .expect("failed to create database");
         let lot = Lot::new("lot a");
-        lot.records
-            .borrow_mut()
-            .push(Record::new(lot.clone(), RecordData::plain("a", "b")));
+        lot.records.borrow_mut().push(Record::new(
+            Rc::downgrade(&lot),
+            RecordData::plain("a", "b"),
+        ));
         lot.save(&db).await.expect("failed to save lot");
     }
 
@@ -276,7 +277,15 @@ mod tests {
 
         // Check inserted record is the same as the loaded one.
         let record = &lot.records.borrow()[0];
-        assert_eq!(lot.uuid, record.borrow().lot.uuid);
+        assert_eq!(
+            lot.uuid,
+            record
+                .borrow()
+                .lot
+                .upgrade()
+                .expect("record's lot exists")
+                .uuid
+        );
         assert_eq!(inserted.borrow().uuid, record.borrow().uuid)
     }
 }
