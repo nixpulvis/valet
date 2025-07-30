@@ -1,1 +1,4 @@
 /target
+valet.sqlite
+.zed
+.DS_Store
