@@ -1,7 +1,9 @@
+use std::rc::Rc;
+
 use crate::{
     db::{self, Database},
     encrypt::{self, Encrypted, Key, SALT_SIZE},
-    lot,
+    lot::{self, Lot},
 };
 
 const VALIDATION: &[u8] = b"VALID";
@@ -78,21 +80,9 @@ impl User {
     }
 
     // TODO: Use user_lot_keys join table
-    // pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {
-    //     let sql_lots = db::lots::SqlLot::select_by_user(&db, &self.username).await?;
-    //     let mut lots = vec![];
-    //     for sql_lot in sql_lots {
-    //         let mut lot = Lot {
-    //             username: sql_lot.username,
-    //             uuid: Uuid::from_str(&sql_lot.uuid).map_err(|e| lot::Error::Uuid(e))?,
-    //             records: vec![],
-    //             key: self.key.clone(),
-    //         };
-    //         // lot.load_records(&db).await?;
-    //         lots.push(lot);
-    //     }
-    //     Ok(lots)
-    // }
+    pub async fn lots(&self, db: &Database) -> Result<Vec<Rc<Lot>>, Error> {
+        Ok(Lot::load_all(&db, self).await?)
+    }
 }
 
 // fn load_and_clobber_user(sql_user: SqlUser, password: String) -> Result<User, Error> {

@@ -63,6 +63,25 @@ impl Lot {
         Ok(lot)
     }
 
+    pub async fn load_all(db: &Database, user: &User) -> Result<Vec<Rc<Self>>, Error> {
+        // let sql_lots = db::lots::SqlLot::select_by_user(&db, &self.username).await?;
+        // let mut lots = vec![];
+        // for sql_lot in sql_lots {
+        //     let mut lot = Lot {
+        //         username: sql_lot.username,
+        //         uuid: Uuid::from_str(&sql_lot.uuid).map_err(|e| lot::Error::Uuid(e))?,
+        //         records: vec![],
+        //         key: self.key.clone(),
+        //     };
+        //     // lot.load_records(&db).await?;
+        //     lots.push(lot);
+        // }
+        // Ok(lots)
+
+        let lot = Self::load(&db, DEFAULT_LOT, &user).await?;
+        Ok(vec![lot])
+    }
+
     pub async fn insert_record(
         self: &Rc<Self>,
         db: &Database,

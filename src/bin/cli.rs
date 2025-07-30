@@ -39,11 +39,18 @@ enum Repl {
 
 #[derive(Subcommand)]
 enum LotCommand {
-    Create { name: String },
-    List,
+    Create {
+        name: String,
+    },
+    List {
+        #[clap(default_value = "")]
+        path: String,
+    },
     // Share { name: String, users: Vec<String> },
     // Unshare { name: String, users: Vec<String> },
-    Delete { name: String },
+    Delete {
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -79,15 +86,21 @@ async fn main() -> Result<(), valet::user::Error> {
 
             rl.repl_async(async |command| match &command {
                 Repl::Lot(LotCommand::Create { name }) => {
+                    // TODO: Probably don't need a .save method, we need a
+                    // create method which also makes the join table entry.
                     Lot::new(&name)
                         .expect("failed to create lot")
                         .save(&db)
                         .await
                         .expect("failed to save lot");
                 }
-                Repl::Lot(LotCommand::List) => {
-                    // TODO: user_lot_keys
-                    unimplemented!();
+                Repl::Lot(LotCommand::List { path }) => {
+                    let path = Path::parse(&path);
+                    for lot in user.lots(&db).await.expect("failed to load lots").iter() {
+                        if lot.name.starts_with(&path.lot) {
+                            println!("{}::", lot.name);
+                        }
+                    }
                 }
                 Repl::Lot(LotCommand::Delete { name }) => {
                     dbg!(&name);
@@ -95,17 +108,21 @@ async fn main() -> Result<(), valet::user::Error> {
                 }
                 Repl::List { path } => {
                     let path = Path::parse(&path);
-                    let lot = Lot::load(&db, &path.lot, &user)
-                        .await
-                        .expect("failed to load lot");
+                    for lot in user.lots(&db).await.expect("failed to load lots").iter() {
+                        if lot.name.starts_with(&path.lot) {
+                            let lot = Lot::load(&db, &path.lot, &user)
+                                .await
+                                .expect("failed to load lot");
 
-                    // TODO: lot.records() : IntoIter
-                    for record in lot.records.borrow().iter() {
-                        let record = record.borrow();
-                        let label = record.data.label();
-                        if label.starts_with(&path.label) {
-                            // TODO: impl Display for Path.
-                            println!("{:?}", Path::new(&path.lot, label));
+                            // TODO: lot.records() : IntoIter
+                            for record in lot.records.borrow().iter() {
+                                let record = record.borrow();
+                                let label = record.data.label();
+                                if label.starts_with(&path.label) {
+                                    // TODO: impl Display for Path.
+                                    println!("{:?}", Path::new(&path.lot, label));
+                                }
+                            }
                         }
                     }
                 }
@@ -180,10 +197,10 @@ impl Path {
 }
 
 #[test]
-fn test_parse_path() {
+fn test_path_parse() {
     assert_eq!(
         Path {
-            lot: "main".into(),
+            lot: "".into(),
             label: "".into()
         },
         Path::parse("")
