@@ -1,5 +1,6 @@
 use aes_siv::{
     Aes256SivAead, KeySizeUser, Nonce,
+    aead::generic_array::typenum::Unsigned,
     aead::{Aead, Key as AesKey, KeyInit},
 };
 use argon2::Argon2;
@@ -7,7 +8,6 @@ use rand_core::{OsRng, RngCore};
 
 pub(crate) const SALT_SIZE: usize = 16;
 const NONCE_SIZE: usize = 16;
-const KEY_SIZE: usize = 64; // 512 bit-key size, 256-bit security.
 
 /// Represents some encrypted data.
 #[derive(PartialEq, Eq)]
@@ -17,6 +17,8 @@ pub struct Encrypted {
 }
 
 /// A key is generated from a user record's salt and thier password.
+///
+/// Aes256 has a 512-bit key size, and achieves 256-bit security.
 //
 // TODO: #6 keys should not be clonable.
 #[derive(PartialEq, Eq, Clone)]
@@ -30,8 +32,7 @@ impl Key {
     // TODO: Zeroize password
     pub fn from_password(password: String, salt: &[u8]) -> Result<Self, Error> {
         let argon2 = Argon2::default();
-        assert_eq!(KEY_SIZE, Aes256SivAead::key_size());
-        let mut output_key_material = [0u8; KEY_SIZE];
+        let mut output_key_material = [0u8; <Aes256SivAead as KeySizeUser>::KeySize::USIZE];
         argon2
             .hash_password_into(password.as_bytes(), salt, &mut output_key_material)
             .map_err(|e| Error::KeyDerivation(format!("{}", e)))?;
@@ -48,7 +49,8 @@ impl Key {
     }
 
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Encrypted, Error> {
-        // TODO: Better security will be achieved by storing a unique counter for this somewhere.
+        // TODO: Better security will be achieved by storing a unique counter
+        // for this somewhere.
         let mut nonce_bytes = [0; NONCE_SIZE];
         OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -88,7 +90,7 @@ mod tests {
     fn from_password() {
         let salt = Key::generate_salt();
         let key = Key::from_password("user1password".into(), &salt).expect("error generating key");
-        assert_eq!(KEY_SIZE, key.0.len());
+        assert_eq!(512 / 8, key.0.len());
     }
 
     #[test]
