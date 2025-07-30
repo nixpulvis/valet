@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc, str::FromStr};
+use std::{cell::RefCell, ops::Deref, rc::Rc, str::FromStr};
 
 use crate::{
     db::{self, Database, records::SqlRecord},
@@ -138,6 +138,16 @@ impl Lot {
         };
         sql_record.upsert(&db).await?;
         Ok(())
+    }
+}
+
+pub struct LotKey(Key);
+
+impl Deref for LotKey {
+    type Target = Key;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 

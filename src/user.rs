@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{fmt::Debug, fmt::Formatter, ops::Deref, rc::Rc};
 
 use crate::{
     db::{self, Database},
@@ -12,7 +12,7 @@ const VALIDATION: &[u8] = b"VALID";
 ///
 /// A short validation string is also saved which is used to authenticate the
 /// user.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct User {
     pub username: String,
     pub salt: [u8; SALT_SIZE],
@@ -23,7 +23,7 @@ pub struct User {
 impl User {
     // TODO: Zeroize password
     pub fn new(username: &str, password: String) -> Result<Self, Error> {
-        let salt = Key::generate_salt()?;
+        let salt = Key::generate_salt();
         let key = Key::from_password(password, &salt)?;
         let validation = key.encrypt(VALIDATION)?;
         Ok(User {
@@ -85,6 +85,14 @@ impl User {
     }
 }
 
+impl Debug for User {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("User")
+            .field("username", &self.username)
+            .finish()
+    }
+}
+
 // fn load_and_clobber_user(sql_user: SqlUser, password: String) -> Result<User, Error> {
 //     let salt: [u8; SALT_SIZE] = sql_user.salt.try_into().map_err(|_| Error::SaltError)?;
 //     let validation = Encrypted {
@@ -111,6 +119,16 @@ impl User {
 //         }
 //     }
 // }
+
+pub struct UserKey(Key);
+
+impl Deref for UserKey {
+    type Target = Key;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 #[derive(Debug)]
 pub enum Error {

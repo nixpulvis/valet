@@ -22,7 +22,7 @@ gui = ["dep:eframe"]
 aes-siv = "0.7"
 argon2 = "0.5"
 bitcode = "0.6.6"
-rand = "0.6"
+rand_core = "0.6"
 rpassword = "7.4"
 snap = "1.1.1"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }

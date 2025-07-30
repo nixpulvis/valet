@@ -3,17 +3,17 @@ use aes_siv::{
     aead::{Aead, Key as AesKey, KeyInit},
 };
 use argon2::Argon2;
-use rand::{Rng, rngs::OsRng};
+use rand_core::{OsRng, RngCore};
 
 pub const SALT_SIZE: usize = 16;
 pub const NONCE_SIZE: usize = 16;
-pub const KEY_SIZE: usize = 64;
+pub const KEY_SIZE: usize = 64; // 512 bit-key size, 256-bit security.
 
 /// Represents some encrypted data.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct Encrypted {
-    pub data: Vec<u8>,
-    pub nonce: Vec<u8>,
+    pub(crate) data: Vec<u8>,
+    pub(crate) nonce: Vec<u8>,
 }
 
 /// A key is generated from a user record's salt and thier password.
@@ -23,22 +23,8 @@ pub struct Encrypted {
 pub struct Key(AesKey<Aes256SivAead>);
 
 impl Key {
-    pub(crate) fn generate_salt() -> Result<[u8; SALT_SIZE], Error> {
-        let mut salt = [0; SALT_SIZE];
-        let mut rng = OsRng::new().map_err(|e| Error::KeyDerivation(e.msg.into()))?;
-        rng.try_fill(&mut salt)
-            .map_err(|e| Error::KeyDerivation(e.msg.into()))?;
-        Ok(salt)
-    }
-
     pub fn new() -> Result<Self, Error> {
-        let mut output_key_material = [0u8; KEY_SIZE];
-        let mut rng = OsRng::new().map_err(|e| Error::KeyGeneration(e.msg.into()))?;
-        rng.try_fill(&mut output_key_material)
-            .map_err(|e| Error::KeyGeneration(e.msg.into()))?;
-        Ok(Key(AesKey::<Aes256SivAead>::clone_from_slice(
-            &output_key_material,
-        )))
+        Ok(Key(Aes256SivAead::generate_key(&mut OsRng)))
     }
 
     // TODO: Zeroize password
@@ -55,12 +41,16 @@ impl Key {
         )))
     }
 
+    pub(crate) fn generate_salt() -> [u8; SALT_SIZE] {
+        let mut salt = [0; SALT_SIZE];
+        OsRng.fill_bytes(&mut salt);
+        salt
+    }
+
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Encrypted, Error> {
         // TODO: Better security will be achieved by storing a unique counter for this somewhere.
         let mut nonce_bytes = [0; NONCE_SIZE];
-        let mut rng = OsRng::new().map_err(|e| Error::Encryption(format!("{}", e)))?;
-        rng.try_fill(&mut nonce_bytes)
-            .map_err(|e| Error::Encryption(format!("{}", e)))?;
+        OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let cipher = Aes256SivAead::new(&self.0);
@@ -86,7 +76,6 @@ impl Key {
 #[derive(Debug)]
 pub enum Error {
     KeyDerivation(String),
-    KeyGeneration(String),
     Encryption(String),
     Decryption(String),
 }
@@ -97,7 +86,7 @@ mod tests {
 
     #[test]
     fn from_password() {
-        let salt = Key::generate_salt().expect("error generating salt");
+        let salt = Key::generate_salt();
         let key = Key::from_password("user1password".into(), &salt).expect("error generating key");
 
         assert_eq!(KEY_SIZE, key.0.len());

@@ -16,7 +16,7 @@ impl Database {
         Ok(Database(pool))
     }
 
-    pub fn pool(&self) -> &SqlitePool {
+    pub(crate) fn pool(&self) -> &SqlitePool {
         &self.0
     }
 }
