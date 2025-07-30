@@ -34,6 +34,24 @@ impl Lot {
         &self.key
     }
 
+    pub fn new_record(self: &Rc<Self>, data: RecordData) -> Rc<RefCell<Record>> {
+        Record::new(Rc::downgrade(self), data)
+    }
+
+    /// Decrypt a record from this lot.
+    ///
+    /// This function returns a *new* record with a unique UUID.
+    // TODO: Each time you save a record it's new, with history preserved.
+    pub fn decrypt_record(
+        self: &Rc<Self>,
+        encrypted: &Encrypted,
+    ) -> Result<Rc<RefCell<Record>>, Error> {
+        Ok(Record::new(
+            Rc::downgrade(self),
+            RecordData::decrypt(encrypted, self.key())?,
+        ))
+    }
+
     /// Save this lot and it's records to the database.
     // TODO: Probably don't need a .save method, we need a
     // create method which also makes the join table entry.

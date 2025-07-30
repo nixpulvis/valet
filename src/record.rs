@@ -55,7 +55,6 @@ impl fmt::Debug for Record {
         f.debug_struct("Record")
             .field("uuid", &self.uuid)
             .field("lot", &lot)
-            .field("lot", &"<missing>")
             .field("data", &self.data)
             .finish()
     }
@@ -71,6 +70,7 @@ impl fmt::Display for RecordData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RecordData::Domain(label, attributes) => {
+                // TODO
                 write!(f, "{label}")?;
                 for attribute in attributes {
                     write!(f, "{:?}", attribute)?;
@@ -180,6 +180,24 @@ mod tests {
             }
             _ => assert!(false),
         }
+    }
+
+    #[test]
+    fn encrypt_decrypt() {
+        let lot = Lot::new("lot a");
+        let record = lot.new_record(RecordData::plain("foo", "bar"));
+        let encrypted = record.borrow().encrypt().expect("failed to encrypt");
+        let decrypted = lot.decrypt_record(&encrypted).expect("failed to decrypt");
+        if let (Some(a), Some(b)) = (
+            record.borrow().lot.upgrade(),
+            decrypted.borrow().lot.upgrade(),
+        ) {
+            assert_eq!(a, b);
+        } else {
+            assert!(false);
+        }
+        assert_ne!(record.borrow().uuid, decrypted.borrow().uuid);
+        assert_eq!(record.borrow().data, decrypted.borrow().data);
     }
 
     #[test]
