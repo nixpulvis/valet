@@ -65,12 +65,12 @@ impl fmt::Display for RecordData {
 }
 
 impl RecordData {
-    pub fn domain(index: &str, values: HashMap<String, String>) -> Self {
-        Self::Domain(index.into(), values)
+    pub fn domain(label: &str, values: HashMap<String, String>) -> Self {
+        Self::Domain(label.into(), values)
     }
 
-    pub fn plain(index: &str, value: &str) -> Self {
-        Self::Plain(index.into(), value.into())
+    pub fn plain(label: &str, value: &str) -> Self {
+        Self::Plain(label.into(), value.into())
     }
 
     pub fn label(&self) -> &str {
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn data_encode_decode() {
-        let data = RecordData::plain("index", "secret");
+        let data = RecordData::plain("label", "secret");
         let encoded = data.encode();
         let decoded = RecordData::decode(&encoded).expect("failed to decode");
         assert_eq!(data, decoded);
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn data_compress_decompress() {
-        let data = RecordData::plain("index", "secret");
+        let data = RecordData::plain("label", "secret");
         let compressed = data.compress().expect("failed to compress");
         let decompressed = RecordData::decompress(&compressed).expect("failed to decompress");
         assert_eq!(data, decompressed);
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn data_encrypt_decrypt() {
         let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
-        let data = RecordData::plain("index", "secret");
+        let data = RecordData::plain("label", "secret");
         let encrypted = data.encrypt(user.key()).expect("failed to encrypt");
         let decrypted = RecordData::decrypt(&encrypted, user.key()).expect("failed to decrypt");
         assert_eq!(data, decrypted);
