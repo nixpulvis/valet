@@ -150,27 +150,35 @@ mod tests {
     }
 
     #[test]
+    fn label() {
+        let data = RecordData::plain("plain", "secret");
+        assert_eq!("plain", data.label());
+        let data = RecordData::domain("domain", HashMap::new());
+        assert_eq!("domain", data.label());
+    }
+
+    #[test]
     fn data_encode_decode() {
-        let record_data = RecordData::plain("index", "secret");
-        let encoded = record_data.encode();
+        let data = RecordData::plain("index", "secret");
+        let encoded = data.encode();
         let decoded = RecordData::decode(&encoded).expect("failed to decode");
-        assert_eq!(record_data, decoded);
+        assert_eq!(data, decoded);
     }
 
     #[test]
     fn data_compress_decompress() {
-        let record_data = RecordData::plain("index", "secret");
-        let compressed = record_data.compress().expect("failed to compress");
+        let data = RecordData::plain("index", "secret");
+        let compressed = data.compress().expect("failed to compress");
         let decompressed = RecordData::decompress(&compressed).expect("failed to decompress");
-        assert_eq!(record_data, decompressed);
+        assert_eq!(data, decompressed);
     }
 
     #[test]
     fn data_encrypt_decrypt() {
         let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
-        let record_data = RecordData::plain("index", "secret");
-        let encrypted = record_data.encrypt(user.key()).expect("failed to encrypt");
+        let data = RecordData::plain("index", "secret");
+        let encrypted = data.encrypt(user.key()).expect("failed to encrypt");
         let decrypted = RecordData::decrypt(&encrypted, user.key()).expect("failed to decrypt");
-        assert_eq!(record_data, decrypted);
+        assert_eq!(data, decrypted);
     }
 }
