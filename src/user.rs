@@ -1,4 +1,4 @@
-use std::{fmt::Debug, fmt::Formatter, ops::Deref, sync::Arc};
+use std::{fmt::Debug, fmt::Formatter, ops::Deref};
 
 use crate::{
     db::{self, Database},
@@ -80,7 +80,7 @@ impl User {
     }
 
     // TODO: Use user_lot_keys join table
-    pub async fn lots(&self, db: &Database) -> Result<Vec<Arc<Lot>>, Error> {
+    pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {
         Ok(Lot::load_all(&db, self).await?)
     }
 }

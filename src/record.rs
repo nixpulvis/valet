@@ -1,60 +1,60 @@
 use crate::encrypt::{self, Encrypted, Key};
-use crate::lot::Lot;
 use bitcode::{Decode, Encode};
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Weak};
 use std::{fmt, io};
 use uuid::Uuid;
 
 pub struct Record {
-    pub lot: Weak<Lot>,
-    pub uuid: Uuid,
-    pub data: RecordData,
+    pub(crate) lot: Uuid,
+    pub(crate) uuid: Uuid,
+    pub(crate) data: RecordData,
 }
 
 impl Record {
-    pub fn new(lot: Weak<Lot>, data: RecordData) -> Arc<RefCell<Self>> {
-        let uuid = Uuid::now_v7();
-        Arc::new(RefCell::new(Record { lot, uuid, data }))
+    pub fn new(lot: Uuid, data: RecordData) -> Self {
+        Record {
+            lot,
+            uuid: Uuid::now_v7(),
+            data,
+        }
     }
 
-    pub fn encrypt(&self) -> Result<Encrypted, Error> {
-        if let Some(lot) = self.lot.upgrade() {
-            self.data.encrypt(lot.key())
-        } else {
-            Err(Error::MissingLot)
-        }
+    pub fn lot(&self) -> &Uuid {
+        &self.lot
+    }
+
+    pub fn uuid(&self) -> &Uuid {
+        &self.uuid
+    }
+
+    pub fn data(&self) -> &RecordData {
+        &self.data
+    }
+
+    pub fn encrypt(&self, key: &Key) -> Result<Encrypted, Error> {
+        self.data.encrypt(key)
     }
 }
 
 impl PartialEq for Record {
     fn eq(&self, other: &Self) -> bool {
-        self.uuid == other.uuid && self.data == other.data
+        self.uuid == other.uuid && self.data == other.data && self.lot == other.lot
     }
 }
 impl Eq for Record {}
 
 impl fmt::Display for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(lot) = self.lot.upgrade() {
-            write!(f, "{}::{}", lot.name, self.data)
-        } else {
-            write!(f, "<missing>::{}", self.data)
-        }
+        // Only display label and data, as we don't have a reference to the lot name.
+        write!(f, "{}::{}", self.lot, self.data)
     }
 }
 
 impl fmt::Debug for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let lot = if let Some(lot) = self.lot.upgrade() {
-            &lot.name.clone()
-        } else {
-            "<missing>"
-        };
         f.debug_struct("Record")
             .field("uuid", &self.uuid)
-            .field("lot", &lot)
+            .field("lot_uuid", &self.lot)
             .field("data", &self.data)
             .finish()
     }
@@ -158,22 +158,15 @@ impl From<uuid::Error> for Error {
 mod tests {
     use super::*;
     use crate::user::User;
+    use uuid::Uuid;
 
     #[test]
     fn new() {
-        let lot = Lot::new("lot a");
-        let record = Record::new(Arc::downgrade(&lot), RecordData::plain("foo", "bar"));
-        assert_eq!(
-            lot.uuid,
-            record
-                .borrow()
-                .lot
-                .upgrade()
-                .expect("record's lot exists")
-                .uuid
-        );
-        assert_eq!(36, record.borrow().uuid.to_string().len());
-        match record.borrow().data {
+        let lot_uuid = Uuid::now_v7();
+        let record = Record::new(lot_uuid, RecordData::plain("foo", "bar"));
+        assert_eq!(lot_uuid, record.lot);
+        assert_eq!(36, record.uuid.to_string().len());
+        match record.data {
             RecordData::Plain(ref label, ref value) => {
                 assert_eq!("foo", label);
                 assert_eq!("bar", value);
@@ -184,29 +177,12 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt() {
-        let lot = Lot::new("lot a");
-        let record = lot.new_record(RecordData::plain("foo", "bar"));
-        let encrypted = record.borrow().encrypt().expect("failed to encrypt");
-        let decrypted = lot.decrypt_record(&encrypted).expect("failed to decrypt");
-        if let (Some(a), Some(b)) = (
-            record.borrow().lot.upgrade(),
-            decrypted.borrow().lot.upgrade(),
-        ) {
-            assert_eq!(a, b);
-        } else {
-            assert!(false);
-        }
-        assert_ne!(record.borrow().uuid, decrypted.borrow().uuid);
-        assert_eq!(record.borrow().data, decrypted.borrow().data);
-    }
-
-    #[test]
-    fn formatting_without_lot() {
-        let record = Record::new(Weak::new(), RecordData::plain("foo", "bar"));
-        let debug = format!("{:?}", &record);
-        assert!(debug.contains("<missing>"));
-        let display = format!("{}", &record.borrow());
-        assert!(display.contains("<missing>"));
+        let lot_uuid = Uuid::now_v7();
+        let key = Key::new();
+        let record = Record::new(lot_uuid, RecordData::plain("foo", "bar"));
+        let encrypted = record.encrypt(&key).expect("failed to encrypt");
+        let decrypted_data = RecordData::decrypt(&encrypted, &key).expect("failed to decrypt");
+        assert_eq!(record.data, decrypted_data);
     }
 
     #[test]

@@ -95,8 +95,8 @@ async fn main() -> Result<(), valet::user::Error> {
                 Repl::Lot(LotCommand::List { path }) => {
                     let path = Path::parse(&path);
                     for lot in user.lots(&db).await.expect("failed to load lots").iter() {
-                        if lot.name.starts_with(&path.lot) {
-                            println!("{}::", lot.name);
+                        if lot.name().starts_with(&path.lot) {
+                            println!("{}::", lot.name());
                         }
                     }
                 }
@@ -107,26 +107,25 @@ async fn main() -> Result<(), valet::user::Error> {
                 Repl::List { path } => {
                     let path = Path::parse(&path);
                     for lot in user.lots(&db).await.expect("failed to load lots").iter() {
-                        if lot.name.starts_with(&path.lot) {
-                            let lot = Lot::load(&db, &path.lot, &user)
-                                .await
-                                .expect("failed to load lot");
-
-                            // TODO: lot.records() : IntoIter
-                            for record in lot.records.borrow().iter() {
-                                let record = record.borrow();
-                                let label = record.data.label();
-                                if label.starts_with(&path.label) {
-                                    // TODO: impl Display for Path.
-                                    println!("{:?}", Path::new(&path.lot, label));
+                        if lot.name().starts_with(&path.lot) {
+                            if let Ok(lot) = Lot::load(&db, &path.lot, &user).await {
+                                // TODO: lot.records() : IntoIter
+                                for record in lot.records().iter() {
+                                    let label = record.data().label();
+                                    if label.starts_with(&path.label) {
+                                        // TODO: impl Display for Path.
+                                        println!("{:?}", Path::new(&path.lot, label));
+                                    }
                                 }
+                            } else {
+                                println!("Failed to load lot: {}", path.lot);
                             }
                         }
                     }
                 }
                 Repl::Put { path, data } => {
                     let path = Path::parse(&path);
-                    let lot = Lot::load(&db, &path.lot, &user)
+                    let mut lot = Lot::load(&db, &path.lot, &user)
                         .await
                         .expect("failed to load lot");
                     // TODO: Delete old record if it exists.
@@ -141,12 +140,11 @@ async fn main() -> Result<(), valet::user::Error> {
                         .await
                         .expect("failed to load lot");
                     if let Some(record) = lot
-                        .records
-                        .borrow()
+                        .records()
                         .iter()
-                        .find(|r| r.borrow().data.label() == path.label)
+                        .find(|r| r.data().label() == path.label)
                     {
-                        println!("{}", record.borrow());
+                        println!("{}", record);
                     }
                 }
                 Repl::Lock => {
@@ -179,12 +177,7 @@ impl Path {
     fn parse(path: &str) -> Self {
         let parts: Vec<&str> = path.rsplitn(2, "::").collect();
         // NOTE: parts will always have at least 1 element.
-        if parts.len() == 1 && parts[0] == "" {
-            Path {
-                lot: "".into(),
-                label: "".into(),
-            }
-        } else if parts.len() == 1 || parts.len() == 2 && parts[1] == "" {
+        if parts.len() == 1 || parts.len() == 2 && parts[1] == "" {
             Path {
                 lot: DEFAULT_LOT.into(),
                 label: parts[0].into(),
@@ -202,7 +195,7 @@ impl Path {
 fn test_path_parse() {
     assert_eq!(
         Path {
-            lot: "".into(),
+            lot: "main".into(),
             label: "".into()
         },
         Path::parse("")
