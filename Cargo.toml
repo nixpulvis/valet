@@ -16,7 +16,7 @@ name = "valet"
 path = "src/bin/cli.rs"
 
 [features]
-gui = ["dep:eframe"]
+gui = ["dep:eframe", "dep:egui_inbox"]
 
 [dependencies]
 aes-siv = "0.7"
