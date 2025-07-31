@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_LOT"],"enum":["Error"],"struct":["Lot","LotKey"]};
