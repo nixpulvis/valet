@@ -1,5 +1,7 @@
+use crate::db::records::SqlRecord;
+use crate::db::{self, Database};
 use crate::encrypt::{self, Encrypted};
-use crate::lot::LotKey;
+use crate::lot::{Lot, LotKey};
 use bitcode::{Decode, Encode};
 use std::collections::HashMap;
 use std::{fmt, io};
@@ -12,9 +14,9 @@ pub struct Record {
 }
 
 impl Record {
-    pub fn new(lot: Uuid, data: RecordData) -> Self {
+    pub fn new(lot: &Lot, data: RecordData) -> Self {
         Record {
-            lot,
+            lot: lot.uuid().clone(),
             uuid: Uuid::now_v7(),
             data,
         }
@@ -34,6 +36,50 @@ impl Record {
 
     pub fn encrypt(&self, key: &LotKey) -> Result<Encrypted, Error> {
         self.data.encrypt(key)
+    }
+
+    /// Save this record to the database.
+    pub async fn save(&self, db: &Database, lot: &Lot) -> Result<Uuid, Error> {
+        let uuid = self.uuid.clone();
+        let encrypted = self.data.encrypt(lot.key())?;
+        let sql_record = SqlRecord {
+            lot: self.lot.to_string(),
+            uuid: self.uuid.to_string(),
+            data: encrypted.data,
+            nonce: encrypted.nonce,
+        };
+        sql_record.upsert(&db).await?;
+        Ok(uuid)
+    }
+
+    /// Insert this record into a lot and save it to the database.
+    pub async fn insert(self, db: &Database, lot: &mut Lot) -> Result<Uuid, Error> {
+        let uuid = self.save(&db, lot).await?;
+        lot.records_mut().push(self);
+        Ok(uuid)
+    }
+
+    // TODO: Return a vec of errors?
+    pub async fn load_all(db: &Database, lot: &Lot) -> Result<Vec<Self>, Error> {
+        let sql_records =
+            db::records::SqlRecord::select_by_lot(&db, &lot.uuid().to_string()).await?;
+
+        let mut records = Vec::new();
+        for sql_record in sql_records {
+            let encrypted = Encrypted {
+                data: sql_record.data,
+                nonce: sql_record.nonce,
+            };
+            let data = RecordData::decrypt(&encrypted, lot.key())?;
+            let record = Record {
+                lot: lot.uuid().clone(),
+                uuid: Uuid::parse_str(&sql_record.uuid)?,
+                data,
+            };
+            records.push(record);
+        }
+
+        Ok(records)
     }
 }
 
@@ -144,6 +190,7 @@ impl RecordData {
 pub enum Error {
     MissingLot,
     Uuid(uuid::Error),
+    Database(db::Error),
     Encoding(bitcode::Error),
     Compression(io::Error),
     Encryption(encrypt::Error),
@@ -155,20 +202,26 @@ impl From<uuid::Error> for Error {
     }
 }
 
+impl From<db::Error> for Error {
+    fn from(err: db::Error) -> Self {
+        Error::Database(err)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
         encrypt::Key,
         lot::{Lot, LotKey},
+        user::User,
     };
-    use uuid::Uuid;
 
     #[test]
     fn new() {
-        let lot_uuid = Uuid::now_v7();
-        let record = Record::new(lot_uuid, RecordData::plain("foo", "bar"));
-        assert_eq!(lot_uuid, record.lot);
+        let lot = Lot::new("test");
+        let record = Record::new(&lot, RecordData::plain("foo", "bar"));
+        assert_eq!(lot.uuid(), &record.lot);
         assert_eq!(36, record.uuid.to_string().len());
         match record.data {
             RecordData::Plain(ref label, ref value) => {
@@ -179,18 +232,59 @@ mod tests {
         }
     }
 
+    // TODO: Record::decrypt
     #[test]
     fn encrypt_decrypt() {
-        let lot_uuid = Uuid::now_v7();
+        let lot = Lot::new("test");
         let key = LotKey(Key::new());
-        let record = Record::new(lot_uuid, RecordData::plain("foo", "bar"));
+        let record = Record::new(&lot, RecordData::plain("foo", "bar"));
         let encrypted = record.encrypt(&key).expect("failed to encrypt");
         let decrypted_data = RecordData::decrypt(&encrypted, &key).expect("failed to decrypt");
         assert_eq!(record.data, decrypted_data);
     }
 
+    #[tokio::test]
+    #[ignore]
+    async fn save() {}
+
+    #[tokio::test]
+    async fn insert() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
+        let mut lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        let inserted_uuid = Record::new(&lot, RecordData::plain("foo", "bar"))
+            .insert(&db, &mut lot)
+            .await
+            .expect("failed to insert record");
+        assert_eq!(lot.uuid(), &lot.records()[0].lot);
+        assert_eq!(inserted_uuid, lot.records()[0].uuid);
+    }
+
+    #[tokio::test]
+    async fn load_all() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
+        let mut lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        let record = Record::new(&lot, RecordData::plain("foo", "bar"));
+        let inserted_uuid = record
+            .insert(&db, &mut lot)
+            .await
+            .expect("failed to insert record");
+        let records = Record::load_all(&db, &lot)
+            .await
+            .expect("failed to load records");
+        assert_eq!(lot.uuid(), &records[0].lot);
+        assert_eq!(inserted_uuid, records[0].uuid);
+    }
+
     #[test]
-    fn label() {
+    fn data_label() {
         let data = RecordData::plain("plain", "secret");
         assert_eq!("plain", data.label());
         let data = RecordData::domain("domain", HashMap::new());

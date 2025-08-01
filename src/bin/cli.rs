@@ -133,7 +133,8 @@ async fn main() -> Result<(), valet::user::Error> {
                         .expect("failed to load lot");
                     // TODO: Delete old record if it exists.
                     // TODO: Add deleted record to new record's history.
-                    lot.insert_record(&db, RecordData::plain(&path.label, &data))
+                    Record::new(&lot, RecordData::plain(&path.label, &data))
+                        .insert(&db, &mut lot)
                         .await
                         .expect("failed to insert record");
                 }

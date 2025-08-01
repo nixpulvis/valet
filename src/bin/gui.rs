@@ -109,20 +109,20 @@ impl eframe::App for ValetApp {
                         .await
                         .expect("failed to load main lot");
                     // lot_main.save(&db).await.expect("error saving main lot");
-                    lot_main
-                        .insert_record(&db, RecordData::plain("foo", "secret"))
+                    Record::new(&lot_main, RecordData::plain("foo", "secret"))
+                        .insert(&db, &mut lot_main)
                         .await
                         .expect("failed to insert record");
-                    lot_main
-                        .insert_record(&db, RecordData::plain("bar", "password"))
+                    Record::new(&lot_main, RecordData::plain("bar", "password"))
+                        .insert(&db, &mut lot_main)
                         .await
                         .expect("failed to insert record");
                     let domain_data = HashMap::from([
                         ("username".into(), "alice@example.com".into()),
                         ("password".into(), "123".into()),
                     ]);
-                    lot_main
-                        .insert_record(&db, RecordData::domain("example.com", domain_data))
+                    Record::new(&lot_main, RecordData::domain("example.com", domain_data))
+                        .insert(&db, &mut lot_main)
                         .await
                         .expect("failed to insert record");
                     let lot_alt = Lot::new("alt");
