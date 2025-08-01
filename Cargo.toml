@@ -15,8 +15,18 @@ required-features = ["gui"]
 name = "valet"
 path = "src/bin/cli.rs"
 
+[[bench]]
+name = "encrypt"
+harness = false
+[[bench]]
+name = "record"
+harness = false
+
 [features]
 gui = ["dep:eframe", "dep:egui_inbox"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [dependencies]
 aes-siv = "0.7"
