@@ -20,12 +20,12 @@ impl Record {
         }
     }
 
-    pub fn lot(&self) -> &Uuid {
-        &self.lot
-    }
-
     pub fn uuid(&self) -> &Uuid {
         &self.uuid
+    }
+
+    pub fn lot(&self) -> &Uuid {
+        &self.lot
     }
 
     pub fn data(&self) -> &RecordData {
