@@ -169,6 +169,19 @@ mod tests {
         assert!(user.validate());
     }
 
+    #[test]
+    fn invalid() {
+        let mut user = User::new("alice", "password".into()).expect("failed to create user");
+        user.validation = user.key().encrypt(b"invalid").expect("failed to encrypt");
+        assert!(!user.validate());
+        let imposter = User::new("charlie", "password".into()).expect("failed to create user");
+        user.validation = imposter
+            .key()
+            .encrypt(VALIDATION)
+            .expect("failed to encrypt");
+        assert!(!user.validate());
+    }
+
     // TODO: Test key derivation time.
 
     #[tokio::test]
