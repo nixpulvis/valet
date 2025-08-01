@@ -196,7 +196,7 @@ impl eframe::App for ValetApp {
                                 .await
                                 .expect("TODO");
                             Lot::new(DEFAULT_LOT)
-                                .save(&db)
+                                .save(&db, &user)
                                 .await
                                 .expect("failed to save lot");
                             if user.validate() {

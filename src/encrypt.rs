@@ -10,7 +10,7 @@ pub(crate) const SALT_SIZE: usize = 16;
 const NONCE_SIZE: usize = 16;
 
 /// Represents some encrypted data.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Encrypted {
     pub(crate) data: Vec<u8>,
     pub(crate) nonce: Vec<u8>,
@@ -40,6 +40,16 @@ impl Key {
         Ok(Key(AesKey::<Aes256SivAead>::clone_from_slice(
             &output_key_material,
         )))
+    }
+
+    /// Construct a Key from a slice of bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Key(AesKey::<Aes256SivAead>::clone_from_slice(bytes))
+    }
+
+    /// Returns this key as a slice of bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_slice()
     }
 
     pub(crate) fn generate_salt() -> [u8; SALT_SIZE] {
@@ -100,5 +110,26 @@ mod tests {
         let encrypted = key.encrypt(plaintext).expect("error encrypting");
         let decrypted = key.decrypt(&encrypted).expect("error dencrypting");
         assert_eq!(plaintext, &decrypted[..]);
+    }
+
+    #[test]
+    fn as_from_bytes_test() {
+        let key_a = Key::new();
+        let bytes = key_a.as_bytes();
+        let key_b = Key::from_bytes(bytes);
+        // The same key still shouldn't produce the same ciphertext. We
+        // shouldn't panic though.
+        assert_ne!(
+            key_a.encrypt(b"").expect("error encrypting"),
+            key_b.encrypt(b"").expect("error encrypting")
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn from_bytes_panic_test() {
+        let key = Key::new();
+        let bytes = key.as_bytes();
+        Key::from_bytes(&bytes[0..5]);
     }
 }

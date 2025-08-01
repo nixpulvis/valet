@@ -16,7 +16,7 @@ pub struct Lot {
     uuid: Uuid,
     name: String,
     records: Vec<Record>,
-    key: Key,
+    key: LotKey,
 }
 
 impl Lot {
@@ -25,7 +25,7 @@ impl Lot {
             uuid: Uuid::now_v7(),
             name: name.into(),
             records: Vec::new(),
-            key: Key::new(),
+            key: LotKey(Key::new()),
         }
     }
 
@@ -37,7 +37,7 @@ impl Lot {
         &self.name
     }
 
-    pub fn key(&self) -> &Key {
+    pub fn key(&self) -> &LotKey {
         &self.key
     }
 
@@ -46,11 +46,15 @@ impl Lot {
     }
 
     /// Save this lot and its records to the database.
-    pub async fn save(&self, db: &Database) -> Result<(), Error> {
+    pub async fn save(&self, db: &Database, user: &User) -> Result<(), Error> {
+        let encrypted = user.key().encrypt(self.key.0.as_bytes())?;
         let sql_lot = db::lots::SqlLot {
             uuid: self.uuid.to_string(),
             name: self.name.clone(),
+            key_data: encrypted.data,
+            key_nonce: encrypted.nonce,
         };
+        // TODO: Should be an upsert.
         sql_lot.insert(&db).await?;
 
         // TODO: Collect errors and report after.
@@ -63,12 +67,16 @@ impl Lot {
 
     pub async fn load(db: &Database, name: &str, user: &User) -> Result<Self, Error> {
         let sql_lot = db::lots::SqlLot::select_by_name(&db, name).await?;
+        let encrypted = Encrypted {
+            data: sql_lot.key_data,
+            nonce: sql_lot.key_nonce,
+        };
+        let key_bytes = user.key().decrypt(&encrypted)?;
         let mut lot = Lot {
             uuid: Uuid::parse_str(&sql_lot.uuid)?,
             name: sql_lot.name,
             records: Vec::new(),
-            // TODO: #6 decrypt key stored in user_lot_keys
-            key: user.key().clone(),
+            key: LotKey(Key::from_bytes(&key_bytes)),
         };
         lot.load_records(&db).await?;
         Ok(lot)
@@ -164,7 +172,8 @@ impl fmt::Debug for Lot {
     }
 }
 
-pub struct LotKey(Key);
+#[derive(PartialEq, Eq)]
+pub struct LotKey(pub(crate) Key);
 
 impl Deref for LotKey {
     type Target = Key;
@@ -225,10 +234,11 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
         let mut lot = Lot::new("lot a");
         lot.records
             .push(Record::new(lot.uuid, RecordData::plain("a", "b")));
-        lot.save(&db).await.expect("failed to save lot");
+        lot.save(&db, &user).await.expect("failed to save lot");
     }
 
     #[tokio::test]
@@ -254,8 +264,9 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
         let mut lot = Lot::new("lot a");
-        lot.save(&db).await.expect("failed to save lot");
+        lot.save(&db, &user).await.expect("failed to save lot");
         let record_uuid = lot
             .insert_record(&db, RecordData::plain("foo", "bar"))
             .await
@@ -269,9 +280,11 @@ mod tests {
             .await
             .expect("failed to create database");
 
+        let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
+
         // Create a lot.
         let mut lot = Lot::new("lot a");
-        lot.save(&db).await.expect("failed to save lot");
+        lot.save(&db, &user).await.expect("failed to save lot");
 
         // Load records should be empty.
         lot.load_records(&db).await.expect("failed to load records");

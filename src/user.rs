@@ -17,14 +17,14 @@ pub struct User {
     pub username: String,
     salt: [u8; SALT_SIZE],
     validation: Encrypted,
-    key: Key,
+    key: UserKey,
 }
 
 impl User {
     // TODO: Zeroize password
     pub fn new(username: &str, password: String) -> Result<Self, Error> {
         let salt = Key::generate_salt();
-        let key = Key::from_password(password, &salt)?;
+        let key = UserKey(Key::from_password(password, &salt)?);
         let validation = key.encrypt(VALIDATION)?;
         Ok(User {
             username: username.into(),
@@ -34,7 +34,7 @@ impl User {
         })
     }
 
-    pub fn key(&self) -> &Key {
+    pub fn key(&self) -> &UserKey {
         &self.key
     }
 
@@ -61,7 +61,7 @@ impl User {
     // TODO: Zeroize password
     pub async fn load(db: &Database, username: &str, password: String) -> Result<Self, Error> {
         let sql_user = db::users::SqlUser::select(&db, &username).await?;
-        let key = Key::from_password(password, &sql_user.salt[..])?;
+        let key = UserKey(Key::from_password(password, &sql_user.salt[..])?);
         let validation = Encrypted {
             data: sql_user.validation_data,
             nonce: sql_user.validation_nonce,
@@ -120,7 +120,8 @@ impl Debug for User {
 //     }
 // }
 
-pub struct UserKey(Key);
+#[derive(PartialEq, Eq)]
+pub struct UserKey(pub(crate) Key);
 
 impl Deref for UserKey {
     type Target = Key;

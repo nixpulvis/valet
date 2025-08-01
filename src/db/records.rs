@@ -56,6 +56,8 @@ mod tests {
         let lot = SqlLot {
             uuid: "123".into(),
             name: "a lot".into(),
+            key_data: b"keydata".to_vec(),
+            key_nonce: b"keynonce".to_vec(),
         };
         lot.insert(&db).await.expect("failed to insert lot");
         let record = SqlRecord {
@@ -76,6 +78,8 @@ mod tests {
         let lot = SqlLot {
             uuid: "123".into(),
             name: "a lot".into(),
+            key_data: b"keydata".to_vec(),
+            key_nonce: b"keynonce".to_vec(),
         };
         lot.insert(&db).await.expect("failed to insert lot");
         let record_a = SqlRecord {

@@ -1,4 +1,5 @@
-use crate::encrypt::{self, Encrypted, Key};
+use crate::encrypt::{self, Encrypted};
+use crate::lot::LotKey;
 use bitcode::{Decode, Encode};
 use std::collections::HashMap;
 use std::{fmt, io};
@@ -31,7 +32,7 @@ impl Record {
         &self.data
     }
 
-    pub fn encrypt(&self, key: &Key) -> Result<Encrypted, Error> {
+    pub fn encrypt(&self, key: &LotKey) -> Result<Encrypted, Error> {
         self.data.encrypt(key)
     }
 }
@@ -128,12 +129,12 @@ impl RecordData {
         Ok(decoded)
     }
 
-    pub fn encrypt(&self, key: &Key) -> Result<Encrypted, Error> {
+    pub fn encrypt(&self, key: &LotKey) -> Result<Encrypted, Error> {
         let compressed = self.compress()?;
         key.encrypt(&compressed).map_err(|e| Error::Encryption(e))
     }
 
-    pub fn decrypt(buf: &Encrypted, key: &Key) -> Result<Self, Error> {
+    pub fn decrypt(buf: &Encrypted, key: &LotKey) -> Result<Self, Error> {
         let decrypted = key.decrypt(buf).map_err(|e| Error::Encryption(e))?;
         Self::decompress(&decrypted)
     }
@@ -157,7 +158,10 @@ impl From<uuid::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::user::User;
+    use crate::{
+        encrypt::Key,
+        lot::{Lot, LotKey},
+    };
     use uuid::Uuid;
 
     #[test]
@@ -178,7 +182,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt() {
         let lot_uuid = Uuid::now_v7();
-        let key = Key::new();
+        let key = LotKey(Key::new());
         let record = Record::new(lot_uuid, RecordData::plain("foo", "bar"));
         let encrypted = record.encrypt(&key).expect("failed to encrypt");
         let decrypted_data = RecordData::decrypt(&encrypted, &key).expect("failed to decrypt");
@@ -211,10 +215,10 @@ mod tests {
 
     #[test]
     fn data_encrypt_decrypt() {
-        let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
+        let lot = Lot::new("test");
         let data = RecordData::plain("label", "secret");
-        let encrypted = data.encrypt(user.key()).expect("failed to encrypt");
-        let decrypted = RecordData::decrypt(&encrypted, user.key()).expect("failed to decrypt");
+        let encrypted = data.encrypt(lot.key()).expect("failed to encrypt");
+        let decrypted = RecordData::decrypt(&encrypted, lot.key()).expect("failed to decrypt");
         assert_eq!(data, decrypted);
     }
 }

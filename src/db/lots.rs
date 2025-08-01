@@ -5,20 +5,24 @@ use sqlx::prelude::FromRow;
 pub(crate) struct SqlLot {
     pub(crate) uuid: String,
     pub(crate) name: String,
+    pub(crate) key_data: Vec<u8>,
+    pub(crate) key_nonce: Vec<u8>,
 }
 
 impl SqlLot {
     #[must_use]
     pub async fn insert(&self, db: &Database) -> Result<SqlLot, Error> {
         sqlx::query_as(
-            r"
-            INSERT INTO lots (uuid, name)
-            VALUES (?, ?)
-            RETURNING uuid, name
-            ",
+            r#"
+            INSERT INTO lots (uuid, name, key_data, key_nonce)
+            VALUES (?, ?, ?, ?)
+            RETURNING uuid, name, key_data, key_nonce
+            "#,
         )
         .bind(&self.uuid)
         .bind(&self.name)
+        .bind(&self.key_data)
+        .bind(&self.key_nonce)
         .fetch_one(db.pool())
         .await
         .map_err(|e| e.into())
@@ -28,7 +32,7 @@ impl SqlLot {
     pub async fn select_by_name(db: &Database, name: &str) -> Result<SqlLot, Error> {
         sqlx::query_as(
             r"
-            SELECT uuid, name
+            SELECT uuid, name, key_data, key_nonce
             FROM lots
             WHERE name = ?
             ",
@@ -69,6 +73,8 @@ mod tests {
         let lot = SqlLot {
             uuid: "123".into(),
             name: "a lot".into(),
+            key_data: b"keydata".to_vec(),
+            key_nonce: b"keynonce".to_vec(),
         };
         let inserted = lot.insert(&db).await.expect("failed to insert lot");
         assert_eq!(inserted, lot);
@@ -82,6 +88,8 @@ mod tests {
         let lot = SqlLot {
             uuid: "123".into(),
             name: "a lot".into(),
+            key_data: b"keydata".to_vec(),
+            key_nonce: b"keynonce".to_vec(),
         };
         lot.insert(&db).await.expect("failed to insert lot");
         let selected = SqlLot::select_by_name(&db, &lot.name)
