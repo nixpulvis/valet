@@ -162,6 +162,7 @@ impl From<lot::Error> for Error {
 mod tests {
     use super::*;
     use crate::db::Database;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn new_validate() {
@@ -182,7 +183,13 @@ mod tests {
         assert!(!user.validate());
     }
 
-    // TODO: Test key derivation time.
+    #[test]
+    fn new_is_slow() {
+        let start = Instant::now();
+        User::new("alice", "password".into()).expect("failed to create user");
+        let duration = start.elapsed();
+        assert!(duration > Duration::from_millis(200));
+    }
 
     #[tokio::test]
     async fn register_load() {
