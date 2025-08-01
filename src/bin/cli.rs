@@ -63,7 +63,7 @@ async fn main() -> Result<(), valet::user::Error> {
     match &cli.command {
         ValetCommand::Validate { username } => {
             let user = User::load(&db, &username, password).await?;
-            println!("{} validated", user.username);
+            println!("{} validated", user.username());
         }
         ValetCommand::Register { username } => {
             let user = User::new(&username, password)?.register(&db).await?;
