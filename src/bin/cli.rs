@@ -13,7 +13,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum ValetCommand {
-    // TODO: Remove password from CLI, it should be prompted.
     Validate { username: String },
     Register { username: String },
     Unlock { username: String },
