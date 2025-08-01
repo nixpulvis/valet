@@ -56,45 +56,49 @@
 <a href=#56 id=56 data-nosnippet>56</a>        <span class="kw">let </span>lot = SqlLot {
 <a href=#57 id=57 data-nosnippet>57</a>            uuid: <span class="string">"123"</span>.into(),
 <a href=#58 id=58 data-nosnippet>58</a>            name: <span class="string">"a lot"</span>.into(),
-<a href=#59 id=59 data-nosnippet>59</a>        };
-<a href=#60 id=60 data-nosnippet>60</a>        lot.insert(<span class="kw-2">&amp;</span>db).<span class="kw">await</span>.expect(<span class="string">"failed to insert lot"</span>);
-<a href=#61 id=61 data-nosnippet>61</a>        <span class="kw">let </span>record = SqlRecord {
-<a href=#62 id=62 data-nosnippet>62</a>            lot: lot.uuid.clone(),
-<a href=#63 id=63 data-nosnippet>63</a>            uuid: <span class="string">"a_record"</span>.into(),
-<a href=#64 id=64 data-nosnippet>64</a>            data: <span class="string">b"encrypted"</span>.into(),
-<a href=#65 id=65 data-nosnippet>65</a>            nonce: <span class="string">b"something"</span>.into(),
-<a href=#66 id=66 data-nosnippet>66</a>        };
-<a href=#67 id=67 data-nosnippet>67</a>        <span class="kw">let </span>upserted = record.upsert(<span class="kw-2">&amp;</span>db).<span class="kw">await</span>.expect(<span class="string">"failed to upsert record"</span>);
-<a href=#68 id=68 data-nosnippet>68</a>        <span class="macro">assert_eq!</span>(upserted, record);
-<a href=#69 id=69 data-nosnippet>69</a>    }
-<a href=#70 id=70 data-nosnippet>70</a>
-<a href=#71 id=71 data-nosnippet>71</a>    <span class="attr">#[tokio::test]
-<a href=#72 id=72 data-nosnippet>72</a>    </span><span class="kw">async fn </span>select_by_lot() {
-<a href=#73 id=73 data-nosnippet>73</a>        <span class="kw">let </span>db = Database::new(<span class="string">"sqlite://:memory:"</span>)
-<a href=#74 id=74 data-nosnippet>74</a>            .<span class="kw">await
-<a href=#75 id=75 data-nosnippet>75</a>            </span>.expect(<span class="string">"failed to create database"</span>);
-<a href=#76 id=76 data-nosnippet>76</a>        <span class="kw">let </span>lot = SqlLot {
-<a href=#77 id=77 data-nosnippet>77</a>            uuid: <span class="string">"123"</span>.into(),
-<a href=#78 id=78 data-nosnippet>78</a>            name: <span class="string">"a lot"</span>.into(),
-<a href=#79 id=79 data-nosnippet>79</a>        };
-<a href=#80 id=80 data-nosnippet>80</a>        lot.insert(<span class="kw-2">&amp;</span>db).<span class="kw">await</span>.expect(<span class="string">"failed to insert lot"</span>);
-<a href=#81 id=81 data-nosnippet>81</a>        <span class="kw">let </span>record_a = SqlRecord {
-<a href=#82 id=82 data-nosnippet>82</a>            lot: lot.uuid.clone(),
-<a href=#83 id=83 data-nosnippet>83</a>            uuid: <span class="string">"a_record"</span>.into(),
-<a href=#84 id=84 data-nosnippet>84</a>            data: <span class="string">b"encrypted"</span>.into(),
-<a href=#85 id=85 data-nosnippet>85</a>            nonce: <span class="string">b"something"</span>.into(),
-<a href=#86 id=86 data-nosnippet>86</a>        };
-<a href=#87 id=87 data-nosnippet>87</a>        record_a.upsert(<span class="kw-2">&amp;</span>db).<span class="kw">await</span>.expect(<span class="string">"failed to upsert record"</span>);
-<a href=#88 id=88 data-nosnippet>88</a>        <span class="kw">let </span>record_b = SqlRecord {
-<a href=#89 id=89 data-nosnippet>89</a>            lot: lot.uuid.clone(),
-<a href=#90 id=90 data-nosnippet>90</a>            uuid: <span class="string">"b_record"</span>.into(),
-<a href=#91 id=91 data-nosnippet>91</a>            data: <span class="string">b"encrypted"</span>.into(),
-<a href=#92 id=92 data-nosnippet>92</a>            nonce: <span class="string">b"something"</span>.into(),
-<a href=#93 id=93 data-nosnippet>93</a>        };
-<a href=#94 id=94 data-nosnippet>94</a>        record_b.upsert(<span class="kw-2">&amp;</span>db).<span class="kw">await</span>.expect(<span class="string">"failed to upsert record"</span>);
-<a href=#95 id=95 data-nosnippet>95</a>        <span class="kw">let </span>selected = SqlRecord::select_by_lot(<span class="kw-2">&amp;</span>db, <span class="kw-2">&amp;</span>lot.uuid)
-<a href=#96 id=96 data-nosnippet>96</a>            .<span class="kw">await
-<a href=#97 id=97 data-nosnippet>97</a>            </span>.expect(<span class="string">"failed to get uuid"</span>);
-<a href=#98 id=98 data-nosnippet>98</a>        <span class="macro">assert_eq!</span>(selected, <span class="macro">vec!</span>[record_a, record_b]);
-<a href=#99 id=99 data-nosnippet>99</a>    }
-<a href=#100 id=100 data-nosnippet>100</a>}</code></pre></div></section></main></body></html>
+<a href=#59 id=59 data-nosnippet>59</a>            key_data: <span class="string">b"keydata"</span>.to_vec(),
+<a href=#60 id=60 data-nosnippet>60</a>            key_nonce: <span class="string">b"keynonce"</span>.to_vec(),
+<a href=#61 id=61 data-nosnippet>61</a>        };
+<a href=#62 id=62 data-nosnippet>62</a>        lot.insert(<span class="kw-2">&amp;</span>db).<span class="kw">await</span>.expect(<span class="string">"failed to insert lot"</span>);
+<a href=#63 id=63 data-nosnippet>63</a>        <span class="kw">let </span>record = SqlRecord {
+<a href=#64 id=64 data-nosnippet>64</a>            lot: lot.uuid.clone(),
+<a href=#65 id=65 data-nosnippet>65</a>            uuid: <span class="string">"a_record"</span>.into(),
+<a href=#66 id=66 data-nosnippet>66</a>            data: <span class="string">b"encrypted"</span>.into(),
+<a href=#67 id=67 data-nosnippet>67</a>            nonce: <span class="string">b"something"</span>.into(),
+<a href=#68 id=68 data-nosnippet>68</a>        };
+<a href=#69 id=69 data-nosnippet>69</a>        <span class="kw">let </span>upserted = record.upsert(<span class="kw-2">&amp;</span>db).<span class="kw">await</span>.expect(<span class="string">"failed to upsert record"</span>);
+<a href=#70 id=70 data-nosnippet>70</a>        <span class="macro">assert_eq!</span>(upserted, record);
+<a href=#71 id=71 data-nosnippet>71</a>    }
+<a href=#72 id=72 data-nosnippet>72</a>
+<a href=#73 id=73 data-nosnippet>73</a>    <span class="attr">#[tokio::test]
+<a href=#74 id=74 data-nosnippet>74</a>    </span><span class="kw">async fn </span>select_by_lot() {
+<a href=#75 id=75 data-nosnippet>75</a>        <span class="kw">let </span>db = Database::new(<span class="string">"sqlite://:memory:"</span>)
+<a href=#76 id=76 data-nosnippet>76</a>            .<span class="kw">await
+<a href=#77 id=77 data-nosnippet>77</a>            </span>.expect(<span class="string">"failed to create database"</span>);
+<a href=#78 id=78 data-nosnippet>78</a>        <span class="kw">let </span>lot = SqlLot {
+<a href=#79 id=79 data-nosnippet>79</a>            uuid: <span class="string">"123"</span>.into(),
+<a href=#80 id=80 data-nosnippet>80</a>            name: <span class="string">"a lot"</span>.into(),
+<a href=#81 id=81 data-nosnippet>81</a>            key_data: <span class="string">b"keydata"</span>.to_vec(),
+<a href=#82 id=82 data-nosnippet>82</a>            key_nonce: <span class="string">b"keynonce"</span>.to_vec(),
+<a href=#83 id=83 data-nosnippet>83</a>        };
+<a href=#84 id=84 data-nosnippet>84</a>        lot.insert(<span class="kw-2">&amp;</span>db).<span class="kw">await</span>.expect(<span class="string">"failed to insert lot"</span>);
+<a href=#85 id=85 data-nosnippet>85</a>        <span class="kw">let </span>record_a = SqlRecord {
+<a href=#86 id=86 data-nosnippet>86</a>            lot: lot.uuid.clone(),
+<a href=#87 id=87 data-nosnippet>87</a>            uuid: <span class="string">"a_record"</span>.into(),
+<a href=#88 id=88 data-nosnippet>88</a>            data: <span class="string">b"encrypted"</span>.into(),
+<a href=#89 id=89 data-nosnippet>89</a>            nonce: <span class="string">b"something"</span>.into(),
+<a href=#90 id=90 data-nosnippet>90</a>        };
+<a href=#91 id=91 data-nosnippet>91</a>        record_a.upsert(<span class="kw-2">&amp;</span>db).<span class="kw">await</span>.expect(<span class="string">"failed to upsert record"</span>);
+<a href=#92 id=92 data-nosnippet>92</a>        <span class="kw">let </span>record_b = SqlRecord {
+<a href=#93 id=93 data-nosnippet>93</a>            lot: lot.uuid.clone(),
+<a href=#94 id=94 data-nosnippet>94</a>            uuid: <span class="string">"b_record"</span>.into(),
+<a href=#95 id=95 data-nosnippet>95</a>            data: <span class="string">b"encrypted"</span>.into(),
+<a href=#96 id=96 data-nosnippet>96</a>            nonce: <span class="string">b"something"</span>.into(),
+<a href=#97 id=97 data-nosnippet>97</a>        };
+<a href=#98 id=98 data-nosnippet>98</a>        record_b.upsert(<span class="kw-2">&amp;</span>db).<span class="kw">await</span>.expect(<span class="string">"failed to upsert record"</span>);
+<a href=#99 id=99 data-nosnippet>99</a>        <span class="kw">let </span>selected = SqlRecord::select_by_lot(<span class="kw-2">&amp;</span>db, <span class="kw-2">&amp;</span>lot.uuid)
+<a href=#100 id=100 data-nosnippet>100</a>            .<span class="kw">await
+<a href=#101 id=101 data-nosnippet>101</a>            </span>.expect(<span class="string">"failed to get uuid"</span>);
+<a href=#102 id=102 data-nosnippet>102</a>        <span class="macro">assert_eq!</span>(selected, <span class="macro">vec!</span>[record_a, record_b]);
+<a href=#103 id=103 data-nosnippet>103</a>    }
+<a href=#104 id=104 data-nosnippet>104</a>}</code></pre></div></section></main></body></html>
