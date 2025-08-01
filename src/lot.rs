@@ -47,15 +47,15 @@ impl Lot {
 
     /// Save this lot and its records to the database.
     pub async fn save(&self, db: &Database, user: &User) -> Result<(), Error> {
-        let encrypted = user.key().encrypt(self.key.0.as_bytes())?;
+        let encrypted = user.key().encrypt(self.key.as_bytes())?;
         let sql_lot = db::lots::SqlLot {
             uuid: self.uuid.to_string(),
             name: self.name.clone(),
             key_data: encrypted.data,
             key_nonce: encrypted.nonce,
         };
-        // TODO: Should be an upsert.
-        sql_lot.insert(&db).await?;
+
+        sql_lot.upsert(&db).await?;
 
         // TODO: Collect errors and report after.
         for record in &self.records {
@@ -230,21 +230,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_empty() {
+    async fn save() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
         let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
         let mut lot = Lot::new("lot a");
         lot.records
-            .push(Record::new(lot.uuid, RecordData::plain("a", "b")));
+            .push(Record::new(lot.uuid, RecordData::plain("a", "1")));
         lot.save(&db, &user).await.expect("failed to save lot");
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn save_filled() {
-        unimplemented!();
+        lot.records
+            .push(Record::new(lot.uuid, RecordData::plain("b", "2")));
+        lot.save(&db, &user).await.expect("failed to save lot");
     }
 
     #[tokio::test]

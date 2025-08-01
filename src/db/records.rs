@@ -25,11 +25,19 @@ impl SqlRecord {
         .map_err(|e| e.into())
     }
 
+    /// Inserts or updates a record and it's encrypted data.
+    ///
+    /// This function, unlike [`db::lots::SqlLot::upsert`] will update the
+    /// record's encrypted data.
     pub(crate) async fn upsert(&self, db: &Database) -> Result<SqlRecord, Error> {
         sqlx::query_as(
             r"
             INSERT INTO records (lot, uuid, data, nonce)
             VALUES (?, ?, ?, ?)
+            ON CONFLICT(uuid) DO UPDATE SET
+                lot = excluded.lot,
+                data = excluded.data,
+                nonce = excluded.nonce
             RETURNING lot, uuid, data, nonce
             ",
         )
@@ -59,7 +67,7 @@ mod tests {
             key_data: b"keydata".to_vec(),
             key_nonce: b"keynonce".to_vec(),
         };
-        lot.insert(&db).await.expect("failed to insert lot");
+        lot.upsert(&db).await.expect("failed to insert lot");
         let record = SqlRecord {
             lot: lot.uuid.clone(),
             uuid: "a_record".into(),
@@ -81,7 +89,7 @@ mod tests {
             key_data: b"keydata".to_vec(),
             key_nonce: b"keynonce".to_vec(),
         };
-        lot.insert(&db).await.expect("failed to insert lot");
+        lot.upsert(&db).await.expect("failed to insert lot");
         let record_a = SqlRecord {
             lot: lot.uuid.clone(),
             uuid: "a_record".into(),

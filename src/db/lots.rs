@@ -10,12 +10,19 @@ pub(crate) struct SqlLot {
 }
 
 impl SqlLot {
+    /// Insert or update a lot.
+    ///
+    /// This function will only update the lots name if it already exists. The
+    /// UUID and key information will remain the same. See [`update_key`] for
+    /// details if you need to change a lots key.
     #[must_use]
-    pub async fn insert(&self, db: &Database) -> Result<SqlLot, Error> {
+    pub async fn upsert(&self, db: &Database) -> Result<SqlLot, Error> {
         sqlx::query_as(
             r#"
             INSERT INTO lots (uuid, name, key_data, key_nonce)
             VALUES (?, ?, ?, ?)
+            ON CONFLICT(uuid) DO UPDATE SET
+                name = excluded.name
             RETURNING uuid, name, key_data, key_nonce
             "#,
         )
@@ -26,6 +33,12 @@ impl SqlLot {
         .fetch_one(db.pool())
         .await
         .map_err(|e| e.into())
+    }
+
+    #[must_use]
+    #[allow(unused)]
+    pub async fn update_key(&self, db: &Database) {
+        unimplemented!()
     }
 
     #[must_use]
@@ -66,7 +79,7 @@ mod tests {
     use crate::db::Database;
 
     #[tokio::test]
-    async fn insert() {
+    async fn upsert() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
@@ -76,8 +89,11 @@ mod tests {
             key_data: b"keydata".to_vec(),
             key_nonce: b"keynonce".to_vec(),
         };
-        let inserted = lot.insert(&db).await.expect("failed to insert lot");
+        let mut inserted = lot.upsert(&db).await.expect("failed to insert lot");
         assert_eq!(inserted, lot);
+        inserted.name = "b lot".into();
+        let upserted = inserted.upsert(&db).await.expect("failed to insert lot");
+        assert_eq!("b lot", upserted.name);
     }
 
     #[tokio::test]
@@ -91,7 +107,7 @@ mod tests {
             key_data: b"keydata".to_vec(),
             key_nonce: b"keynonce".to_vec(),
         };
-        lot.insert(&db).await.expect("failed to insert lot");
+        lot.upsert(&db).await.expect("failed to insert lot");
         let selected = SqlLot::select_by_name(&db, &lot.name)
             .await
             .expect("failed to get name");
