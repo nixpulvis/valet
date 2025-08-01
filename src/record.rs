@@ -175,7 +175,7 @@ mod tests {
                 assert_eq!("foo", label);
                 assert_eq!("bar", value);
             }
-            _ => assert!(false),
+            _ => unreachable!(),
         }
     }
 

@@ -101,17 +101,6 @@ impl Lot {
         Ok(vec![lot])
     }
 
-    /// Decrypt a record from this lot.
-    ///
-    /// This function returns a *new* record with a unique UUID.
-    // TODO: Each time you save a record it's new, with history preserved.
-    pub fn decrypt_record(&self, encrypted: &Encrypted) -> Result<Record, Error> {
-        Ok(Record::new(
-            self.uuid,
-            RecordData::decrypt(encrypted, self.key())?,
-        ))
-    }
-
     /// Insert a new record into this lot, save to DB, and return a reference to it.
     pub async fn insert_record(&mut self, db: &Database, data: RecordData) -> Result<Uuid, Error> {
         let record = Record::new(self.uuid, data);
@@ -246,13 +235,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore]
-    async fn load_empty() {
-        unimplemented!();
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn load_filled() {
+    async fn load() {
         unimplemented!();
     }
 
