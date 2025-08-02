@@ -1,6 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
-use valet::prelude::Key;
+use valet::encrypt::Key;
 
 fn keygen(c: &mut Criterion) {
     c.bench_function("Key::new", |b| b.iter(|| Key::new()));
