@@ -72,10 +72,13 @@ pub struct Encrypted {
 /// A generic symmetric key used to achive privacy and integrity.
 ///
 /// This struct is generic over any type `T` to allow users to specify functions
-/// which expect spesific kinds of keys. For example,
-/// [`User::key`](crate::user::User::key) returns a [`Key<User>`], whereas
-/// [`Lot::key`](crate::lot::Lot::key) returns a [`Key<Lot>`]. This helps
+/// which expect spesific kinds of keys. For example, [`User::key`] returns a
+/// [`Key<User>`], whereas [`Lot::key`] returns a [`Key<Lot>`]. This helps
 /// prevent accidental misuse of keys.
+///
+/// [`User::key`]: crate::user::User::key
+/// [`Lot::key`]: crate::lot::Lot::key
+//
 // TODO: #15
 // Aes256 has a 512-bit key size, and achieves 256-bit security.
 #[derive(PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
