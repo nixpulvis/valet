@@ -8,7 +8,9 @@ use rand_core::{OsRng, RngCore};
 use std::{ops::Deref, pin::Pin};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// A safe wrapper for plaintext password strings.
+/// A safer wrapper for plaintext password strings.
+///
+/// This structure both pins it's reference and zeros the memory on drop.
 //
 // TODO: Is there a way in the GUI to avoid cloning the password to send it to
 // a async function?
