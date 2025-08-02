@@ -1,36 +1,38 @@
 use aes_siv::{
     Aes256SivAead, KeySizeUser, Nonce,
+    aead::generic_array::typenum::Unsigned,
     aead::{Aead, Key as AesKey, KeyInit},
 };
 use argon2::Argon2;
-use rand::{Rng, rngs::OsRng};
+use rand_core::{OsRng, RngCore};
 
-pub const SALT_SIZE: usize = 16;
-pub const NONCE_SIZE: usize = 16;
-pub const KEY_SIZE: usize = 64;
+pub(crate) const SALT_SIZE: usize = 16;
+const NONCE_SIZE: usize = 16;
 
 /// Represents some encrypted data.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Encrypted {
-    pub data: Vec<u8>,
-    pub nonce: Vec<u8>,
+    pub(crate) data: Vec<u8>,
+    pub(crate) nonce: Vec<u8>,
 }
 
 /// A key is generated from a user record's salt and thier password.
+///
+/// Aes256 has a 512-bit key size, and achieves 256-bit security.
+//
+// TODO: #6 keys should not be clonable.
+#[derive(PartialEq, Eq, Clone)]
 pub struct Key(AesKey<Aes256SivAead>);
 
 impl Key {
-    pub(crate) fn generate_salt() -> Result<[u8; SALT_SIZE], Error> {
-        let mut salt = [0; SALT_SIZE];
-        let mut rng = OsRng::new().map_err(|e| Error::KeyDerivation(e.msg.into()))?;
-        rng.try_fill(&mut salt)
-            .map_err(|e| Error::KeyDerivation(e.msg.into()))?;
-        Ok(salt)
+    pub fn new() -> Self {
+        Key(Aes256SivAead::generate_key(&mut OsRng))
     }
 
-    pub fn new(password: &str, salt: &[u8]) -> Result<Self, Error> {
+    // TODO: Zeroize password
+    pub fn from_password(password: String, salt: &[u8]) -> Result<Self, Error> {
         let argon2 = Argon2::default();
-        assert_eq!(KEY_SIZE, Aes256SivAead::key_size());
-        let mut output_key_material = [0u8; KEY_SIZE];
+        let mut output_key_material = [0u8; <Aes256SivAead as KeySizeUser>::KeySize::USIZE];
         argon2
             .hash_password_into(password.as_bytes(), salt, &mut output_key_material)
             .map_err(|e| Error::KeyDerivation(format!("{}", e)))?;
@@ -40,12 +42,27 @@ impl Key {
         )))
     }
 
+    /// Construct a Key from a slice of bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Key(AesKey::<Aes256SivAead>::clone_from_slice(bytes))
+    }
+
+    /// Returns this key as a slice of bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    pub(crate) fn generate_salt() -> [u8; SALT_SIZE] {
+        let mut salt = [0; SALT_SIZE];
+        OsRng.fill_bytes(&mut salt);
+        salt
+    }
+
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Encrypted, Error> {
-        // TODO: Better security will be achieved by storing a unique counter for this somewhere.
+        // TODO: Better security will be achieved by storing a unique counter
+        // for this somewhere.
         let mut nonce_bytes = [0; NONCE_SIZE];
-        let mut rng = OsRng::new().map_err(|e| Error::Encryption(format!("{}", e)))?;
-        rng.try_fill(&mut nonce_bytes)
-            .map_err(|e| Error::Encryption(format!("{}", e)))?;
+        OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let cipher = Aes256SivAead::new(&self.0);
@@ -75,22 +92,44 @@ pub enum Error {
     Decryption(String),
 }
 
-#[test]
-fn new_credential() {
-    let salt = Key::generate_salt().expect("error generating salt");
-    let credential = Key::new("user1password", &salt).expect("error generating credential");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    assert_eq!(KEY_SIZE, credential.0.len());
-}
+    #[test]
+    fn from_password() {
+        let salt = Key::generate_salt();
+        let key = Key::from_password("user1password".into(), &salt).expect("error generating key");
+        assert_eq!(512 / 8, key.0.len());
+    }
 
-#[test]
-fn encrypt_decrypt_test() {
-    let salt = Key::generate_salt().expect("error generating salt");
-    let credential = Key::new("user1password", &salt).expect("error generating credentials");
+    #[test]
+    fn encrypt_decrypt_test() {
+        let key = Key::new();
+        let plaintext = b"this is a secret";
+        let encrypted = key.encrypt(plaintext).expect("error encrypting");
+        let decrypted = key.decrypt(&encrypted).expect("error dencrypting");
+        assert_eq!(plaintext, &decrypted[..]);
+    }
 
-    let plaintext = b"this is a secret";
-    let encrypted = credential.encrypt(plaintext).expect("error encrypting");
-    let decrypted = credential.decrypt(&encrypted).expect("error dencrypting");
+    #[test]
+    fn as_from_bytes_test() {
+        let key_a = Key::new();
+        let bytes = key_a.as_bytes();
+        let key_b = Key::from_bytes(bytes);
+        // The same key still shouldn't produce the same ciphertext. We
+        // shouldn't panic though.
+        assert_ne!(
+            key_a.encrypt(b"").expect("error encrypting"),
+            key_b.encrypt(b"").expect("error encrypting")
+        );
+    }
 
-    assert_eq!(plaintext, &decrypted[..]);
+    #[test]
+    #[should_panic]
+    fn from_bytes_panic_test() {
+        let key = Key::new();
+        let bytes = key.as_bytes();
+        Key::from_bytes(&bytes[0..5]);
+    }
 }

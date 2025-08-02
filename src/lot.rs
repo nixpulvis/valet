@@ -1,115 +1,202 @@
-use crate::encrypt::{self, Encrypted, Key};
-use crate::record::Record;
-use std::collections::HashMap;
+use std::{fmt, ops::Deref};
+
+use crate::{
+    db::{self, Database},
+    encrypt::{self, Encrypted, Key},
+    record::{self, Record},
+    user::User,
+};
+use uuid::Uuid;
+
+pub const DEFAULT_LOT: &'static str = "main";
 
 /// An encrypted collection of secrets.
+#[derive(PartialEq, Eq)]
 pub struct Lot {
-    username: String,
-    uuid: String, // TODO: Uuid type
-    main: bool,
-    encrypted: Encrypted,
+    uuid: Uuid,
+    name: String,
+    records: Vec<Record>,
+    key: LotKey,
 }
 
 impl Lot {
-    pub fn unlock(&self, key: &Key) -> Result<UnlockedLot, encrypt::Error> {
-        let _bytes = key.decrypt(&self.encrypted)?;
-        // TODO: uncompress/deserialize
-        let records = HashMap::new();
-
-        Ok(UnlockedLot {
-            username: self.username.clone(),
-            uuid: self.uuid.clone(),
-            main: self.main.clone(),
-            records,
-        })
-    }
-}
-
-/// A decrypted collections of secrets.
-///
-/// Records are indexed by their label.
-pub struct UnlockedLot {
-    username: String,
-    uuid: String,
-    main: bool,
-    records: HashMap<String, Record>,
-}
-
-impl UnlockedLot {
-    pub fn new(username: &str) -> Self {
-        UnlockedLot {
-            username: username.into(),
-            // TODO: Generate actual Uuid
-            uuid: "1".into(),
-            main: false,
-            records: HashMap::new(),
+    pub fn new(name: &str) -> Self {
+        Lot {
+            uuid: Uuid::now_v7(),
+            name: name.into(),
+            records: Vec::new(),
+            key: LotKey(Key::new()),
         }
     }
 
-    pub fn lock(&self, key: &Key) -> Result<Lot, encrypt::Error> {
-        // TODO: serialize/compress
-        let encrypted = key.encrypt(b"TODO")?;
-        Ok(Lot {
-            username: self.username.clone(),
-            uuid: self.uuid.clone(),
-            main: self.main.clone(),
-            encrypted,
-        })
-    }
-    pub fn put(&mut self, record: Record) {
-        self.records.insert(record.label().into(), record);
+    pub fn uuid(&self) -> &Uuid {
+        &self.uuid
     }
 
-    pub fn get(&self, index: &str) -> &Record {
-        &self.records[index]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn key(&self) -> &LotKey {
+        &self.key
+    }
+
+    pub fn records(&self) -> &[Record] {
+        &self.records
+    }
+
+    pub fn records_mut(&mut self) -> &mut Vec<Record> {
+        &mut self.records
+    }
+
+    /// Save this lot and its records to the database.
+    pub async fn save(&self, db: &Database, user: &User) -> Result<(), Error> {
+        let encrypted = user.key().encrypt(self.key.as_bytes())?;
+        let sql_lot = db::lots::SqlLot {
+            uuid: self.uuid.to_string(),
+            name: self.name.clone(),
+            key_data: encrypted.data,
+            key_nonce: encrypted.nonce,
+        };
+
+        sql_lot.upsert(&db).await?;
+
+        // TODO: Collect errors and report after.
+        for record in &self.records {
+            record.save(&db, self).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn load(db: &Database, name: &str, user: &User) -> Result<Self, Error> {
+        let sql_lot = db::lots::SqlLot::select_by_name(&db, name).await?;
+        let encrypted = Encrypted {
+            data: sql_lot.key_data,
+            nonce: sql_lot.key_nonce,
+        };
+        let key_bytes = user.key().decrypt(&encrypted)?;
+        let mut lot = Lot {
+            uuid: Uuid::parse_str(&sql_lot.uuid)?,
+            name: sql_lot.name,
+            records: Vec::new(),
+            key: LotKey(Key::from_bytes(&key_bytes)),
+        };
+        lot.records = Record::load_all(&db, &lot).await?;
+        Ok(lot)
+    }
+
+    pub async fn load_all(db: &Database, user: &User) -> Result<Vec<Self>, Error> {
+        // let sql_lots = db::lots::SqlLot::select_by_user(&db, &self.username).await?;
+        // let mut lots = vec![];
+        // for sql_lot in sql_lots {
+        //     let mut lot = Lot {
+        //         username: sql_lot.username,
+        //         uuid: Uuid::from_str(&sql_lot.uuid).map_err(|e| lot::Error::Uuid(e))?,
+        //         records: vec![],
+        //         key: self.key.clone(),
+        //     };
+        //     // lot.load_records(&db).await?;
+        //     lots.push(lot);
+        // }
+        // Ok(lots)
+
+        let lot = Self::load(&db, DEFAULT_LOT, &user).await?;
+        Ok(vec![lot])
+    }
+}
+
+impl fmt::Debug for Lot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Lot")
+            .field("uuid", &self.uuid)
+            .field("name", &self.name)
+            .field("records", &self.records)
+            .finish()
+    }
+}
+
+#[derive(PartialEq, Eq)]
+pub struct LotKey(pub(crate) Key);
+
+impl Deref for LotKey {
+    type Target = Key;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Debug)]
+pub enum Error {
+    Uuid(uuid::Error),
+    Encrypt(encrypt::Error),
+    Record(record::Error),
+    Database(db::Error),
+}
+
+impl From<uuid::Error> for Error {
+    fn from(err: uuid::Error) -> Self {
+        Error::Uuid(err)
+    }
+}
+
+impl From<encrypt::Error> for Error {
+    fn from(err: encrypt::Error) -> Self {
+        Error::Encrypt(err)
+    }
+}
+
+impl From<record::Error> for Error {
+    fn from(err: record::Error) -> Self {
+        Error::Record(err)
+    }
+}
+
+impl From<db::Error> for Error {
+    fn from(err: db::Error) -> Self {
+        Error::Database(err)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::Record;
-    use crate::user::User;
+    use crate::{db::Database, record::RecordData};
 
     #[test]
-    fn put_get() {
-        let user = User::new("nixpulvis", "password").expect("failed to make user");
-        let mut lot = UnlockedLot::new(&user.username);
-
-        let records = [
-            Record::plain("a", "b"),
-            Record::domain("a.com", HashMap::from([("foo".into(), "bar".into())])),
-        ];
-
-        for record in records.iter().cloned() {
-            lot.put(record);
-        }
-
-        for record in records.iter() {
-            assert_eq!(record, lot.get(record.label()));
-        }
+    fn new() {
+        let lot = Lot::new("lot a");
+        assert_eq!(36, lot.uuid.to_string().len());
+        assert!(lot.records().is_empty());
+        // TODO: #6
+        // assert_ne!(user.key(), lot.key());
     }
 
-    #[test]
-    fn lock_unlock() {
-        let user = User::new("nixpulvis", "password").expect("failed to make user");
-        let mut unlocked = UnlockedLot::new(&user.username);
+    #[tokio::test]
+    async fn save() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
+        let mut lot = Lot::new("lot a");
+        lot.records
+            .push(Record::new(&lot, RecordData::plain("a", "1")));
+        lot.save(&db, &user).await.expect("failed to save lot");
+        lot.records
+            .push(Record::new(&lot, RecordData::plain("b", "2")));
+        lot.save(&db, &user).await.expect("failed to save lot");
+    }
 
-        unlocked.put(Record::plain("test", "secret"));
-        unlocked.put(Record::domain(
-            "test",
-            HashMap::from_iter([("a".into(), "y".into()), ("b".into(), "z".into())]),
-        ));
+    #[tokio::test]
+    #[ignore]
+    async fn load() {
+        unimplemented!();
+    }
 
-        let locked = unlocked.lock(&user.key()).expect("failed to lock lot");
-        assert_eq!(unlocked.username, locked.username);
-        assert_eq!(unlocked.uuid, locked.uuid);
-        assert_eq!(unlocked.main, locked.main);
-
-        let reunlocked = locked.unlock(&user.key()).expect("failed to unlock lot");
-        assert_eq!(unlocked.username, reunlocked.username);
-        assert_eq!(unlocked.uuid, reunlocked.uuid);
-        assert_eq!(unlocked.main, reunlocked.main);
-        assert_eq!(unlocked.records, reunlocked.records);
+    #[tokio::test]
+    #[ignore]
+    async fn load_all() {
+        unimplemented!();
     }
 }

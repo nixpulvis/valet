@@ -1,9 +1,10 @@
-use eframe::egui::{self, RichText, ViewportCommand};
+use eframe::egui::{self, ViewportCommand};
 use egui_inbox::UiInbox;
-use std::env;
+use std::{collections::HashMap, env, sync::Arc};
 use tokio::runtime;
-use valet::db::{Database, Lots, Users};
-use valet::user::User;
+use valet::prelude::*;
+// use valet::db::{Database, Lots, Users};
+// use valet::user::User;
 
 const MIN_SIZE: [f32; 2] = [200., 160.];
 const MAX_SIZE: [f32; 2] = [400., 350.];
@@ -24,18 +25,20 @@ fn main() {
 }
 
 struct ValetApp {
-    logged_in: bool,
+    db_url: String,
+    rt: runtime::Runtime,
+
+    user: Option<Arc<User>>,
+
     // TODO: This should be it's own widget.
     username: String,
     password: String,
     show_password: bool,
-    login_inbox: UiInbox<(User, String)>,
-    save_inbox: UiInbox<bool>,
-    rt: runtime::Runtime,
-    user: Option<User>,
-    lot: Option<String>,
-    saved_lot: Option<String>,
-    db_url: String,
+    login_inbox: UiInbox<User>,
+
+    // TODO: Delete me.
+    mock_inbox: UiInbox<Vec<Lot>>,
+    lots: Vec<Lot>,
 }
 
 impl ValetApp {
@@ -47,21 +50,21 @@ impl ValetApp {
         let db_url = format!("sqlite://{}/valet.sqlite?mode=rwc", dir);
         dbg!(&db_url);
         ValetApp {
-            logged_in: false,
-            // XXX: prefilled for faster testing
-            username: "".into(),
-            password: "".into(),
-            show_password: false,
+            db_url,
             rt: runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .unwrap(),
-            login_inbox: UiInbox::new(),
-            save_inbox: UiInbox::new(),
+
             user: None,
-            lot: None,
-            saved_lot: None,
-            db_url,
+
+            username: "".into(),
+            password: "".into(),
+            show_password: false,
+            login_inbox: UiInbox::new(),
+
+            mock_inbox: UiInbox::new(),
+            lots: Vec::new(),
         }
     }
 }
@@ -72,14 +75,11 @@ impl eframe::App for ValetApp {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     ui.set_width(35.);
-                    if self.logged_in {
+                    if self.user.is_some() {
                         if ui.button("Lock").clicked() {
-                            self.logged_in = false;
-                            self.lot = None;
-                            self.saved_lot = None;
                             self.user = None;
+                            self.lots.clear();
                             self.login_inbox = UiInbox::new();
-                            self.save_inbox = UiInbox::new();
                             ctx.send_viewport_cmd(ViewportCommand::InnerSize(MIN_SIZE.into()));
                         }
                     }
@@ -88,7 +88,7 @@ impl eframe::App for ValetApp {
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.logged_in {
+                    if self.user.is_some() {
                         ui.label("Unlocked");
                     } else {
                         ui.label("Locked");
@@ -96,66 +96,60 @@ impl eframe::App for ValetApp {
                 });
             });
         });
-        if self.logged_in {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                if let Some(save) = self.save_inbox.read(ui).last() {
-                    if save {
-                        self.saved_lot = self.lot.clone();
-                    }
-                }
+        if let Some(user) = self.user.clone() {
+            if self.lots.is_empty() {
+                // XXX: Generate and send mocks.
+                let db_url = self.db_url.clone();
+                let tx = self.mock_inbox.sender();
+                self.rt.spawn(async move {
+                    let db = Database::new(&db_url)
+                        .await
+                        .expect("error getting database");
+                    let mut lot_main = Lot::load(&db, DEFAULT_LOT, &user)
+                        .await
+                        .expect("failed to load main lot");
+                    // lot_main.save(&db).await.expect("error saving main lot");
+                    Record::new(&lot_main, RecordData::plain("foo", "secret"))
+                        .insert(&db, &mut lot_main)
+                        .await
+                        .expect("failed to insert record");
+                    Record::new(&lot_main, RecordData::plain("bar", "password"))
+                        .insert(&db, &mut lot_main)
+                        .await
+                        .expect("failed to insert record");
+                    let domain_data = HashMap::from([
+                        ("username".into(), "alice@example.com".into()),
+                        ("password".into(), "123".into()),
+                    ]);
+                    Record::new(&lot_main, RecordData::domain("example.com", domain_data))
+                        .insert(&db, &mut lot_main)
+                        .await
+                        .expect("failed to insert record");
+                    let lot_alt = Lot::new("alt");
+                    let lots = vec![lot_main, lot_alt];
+                    tx.send(lots).ok();
+                });
+            }
 
-                if let Some(user) = &self.user {
-                    ui.label(RichText::new(&user.username).strong());
-                    if let Some(ref mut msg) = self.lot {
-                        let mut size = ui.available_size();
-                        let changed;
-                        if let Some(ref saved_msg) = self.saved_lot
-                            && msg != saved_msg
-                        {
-                            changed = true;
-                        } else {
-                            changed = false;
-                        }
-                        if changed {
-                            size[1] -= 20.;
-                        }
-                        ui.add_sized(size, egui::TextEdit::multiline(msg));
-                        if let Some(ref saved_msg) = self.saved_lot
-                            && msg != saved_msg
-                        {
-                            if ui.add(egui::Button::new("Save")).clicked() {
-                                let username = self.username.clone();
-                                let encrypted = user
-                                    .key()
-                                    .encrypt(msg.as_bytes())
-                                    .expect("error encrypting");
-                                let db_url = self.db_url.clone();
-                                let tx = self.save_inbox.sender();
-                                self.rt.spawn(async move {
-                                    let db =
-                                        Database::new(&db_url).await.expect("error getting DB");
-                                    Lots::create(&db, &username, &encrypted)
-                                        .await
-                                        .expect("TODO");
-                                    tx.send(true).ok();
-                                });
-                            }
-                        }
-                    } else {
-                        ui.label("Error loading encrypted data.");
-                        if ui.add(egui::Button::new("Load Main Lot")).clicked() {}
+            if let Some(lots) = self.mock_inbox.read(ctx).last() {
+                self.lots = lots;
+            }
+
+            egui::CentralPanel::default().show(ctx, |ui| {
+                for lot in self.lots.iter() {
+                    ui.label(format!("Lot: {}", lot.name()));
+                    for record in lot.records().iter() {
+                        ui.label(format!("{}", record.data()));
                     }
                 }
             });
         } else {
             egui::CentralPanel::default().show(ctx, |ui| {
-                if let Some((user, msg)) = self.login_inbox.read(ui).last() {
+                if let Some(user) = self.login_inbox.read(ui).last() {
+                    self.user = Some(Arc::new(user));
+                    // TODO: Do we clear the username or not?
                     self.password = "".into();
                     self.show_password = false;
-                    self.logged_in = true;
-                    self.user = Some(user);
-                    self.lot = Some(msg.clone().into());
-                    self.saved_lot = Some(msg.into());
                 }
 
                 ui.label("Username:");
@@ -179,16 +173,12 @@ impl eframe::App for ValetApp {
                         let db_url = self.db_url.clone();
                         let tx = self.login_inbox.sender();
                         self.rt.spawn(async move {
-                            let db = Database::new(&db_url).await.expect("error getting DB");
-                            let user = Users::get(&db, &username, password).await.expect("TODO");
+                            let db = Database::new(&db_url)
+                                .await
+                                .expect("error getting database");
+                            let user = User::load(&db, &username, password).await.expect("TODO");
                             if user.validate() {
-                                let encrypted = Lots::get(&db, &username).await.expect("TODO");
-                                let data = user
-                                    .key()
-                                    .decrypt(&encrypted)
-                                    .expect("error decrypting load");
-                                let msg = std::str::from_utf8(&data).expect("error parsing string");
-                                tx.send((user, msg.into())).ok();
+                                tx.send(user).ok();
                             }
                         });
                     }
@@ -200,20 +190,17 @@ impl eframe::App for ValetApp {
                         let tx = self.login_inbox.sender();
                         self.rt.spawn(async move {
                             let db = Database::new(&db_url).await.expect("error getting DB");
-                            let user = Users::register(&db, &username, password)
+                            let user = User::new(&username, password)
+                                .expect("TODO")
+                                .register(&db)
                                 .await
                                 .expect("TODO");
-                            Lots::create(&db, &username, &user.validation)
+                            Lot::new(DEFAULT_LOT)
+                                .save(&db, &user)
                                 .await
-                                .expect("TODO");
+                                .expect("failed to save lot");
                             if user.validate() {
-                                let encrypted = Lots::get(&db, &username).await.expect("TODO");
-                                let data = user
-                                    .key()
-                                    .decrypt(&encrypted)
-                                    .expect("error decrypting load");
-                                let msg = std::str::from_utf8(&data).expect("error parsing string");
-                                tx.send((user, msg.into())).ok();
+                                tx.send(user).ok();
                             }
                         });
                     }
