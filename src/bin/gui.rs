@@ -32,7 +32,7 @@ struct ValetApp {
 
     // TODO: This should be it's own widget.
     username: String,
-    password: String,
+    password: Password,
     show_password: bool,
     login_inbox: UiInbox<User>,
 
@@ -59,7 +59,7 @@ impl ValetApp {
             user: None,
 
             username: "".into(),
-            password: "".into(),
+            password: Password::empty(),
             show_password: false,
             login_inbox: UiInbox::new(),
 
@@ -128,7 +128,7 @@ impl eframe::App for ValetApp {
                 if let Some(user) = self.login_inbox.read(ui).last() {
                     self.user = Some(Arc::new(user));
                     // TODO: Do we clear the username or not?
-                    self.password = "".into();
+                    self.password = Password::empty();
                     self.show_password = false;
                 }
 
@@ -136,7 +136,8 @@ impl eframe::App for ValetApp {
                 let username_re = ui.add(egui::TextEdit::singleline(&mut self.username));
                 ui.label("Password:");
                 let password_re = ui.add(
-                    egui::TextEdit::singleline(&mut self.password).password(!self.show_password),
+                    egui::TextEdit::singleline(&mut self.password.as_str())
+                        .password(!self.show_password),
                 );
                 ui.checkbox(&mut self.show_password, "Show password");
                 ui.add_space(5.);

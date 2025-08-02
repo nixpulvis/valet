@@ -5,6 +5,56 @@ use aes_siv::{
 };
 use argon2::Argon2;
 use rand_core::{OsRng, RngCore};
+use std::{ops::Deref, pin::Pin};
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
+/// A safe wrapper for plaintext password strings.
+//
+// TODO: Is there a way in the GUI to avoid cloning the password to send it to
+// a async function?
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct Password(Pin<String>);
+
+impl Password {
+    pub fn empty() -> Self {
+        Password(Pin::new(String::new()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &*self.0
+    }
+}
+
+impl From<String> for Password {
+    fn from(password: String) -> Self {
+        Password(Pin::new(password))
+    }
+}
+
+// Only allow passwords to be created from immutable static strings when
+// testing.
+#[cfg(test)]
+impl From<&'static str> for Password {
+    fn from(password: &'static str) -> Self {
+        Password(Pin::new(password.into()))
+    }
+}
+
+impl From<&mut str> for Password {
+    fn from(password: &mut str) -> Self {
+        let zeroize = Password(Pin::new(password.into()));
+        password.zeroize();
+        zeroize
+    }
+}
+
+impl Deref for Password {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
 
 pub(crate) const SALT_SIZE: usize = 16;
 const NONCE_SIZE: usize = 16;
@@ -30,7 +80,7 @@ impl Key {
     }
 
     // TODO: Zeroize password
-    pub fn from_password(password: String, salt: &[u8]) -> Result<Self, Error> {
+    pub fn from_password(password: Password, salt: &[u8]) -> Result<Self, Error> {
         let argon2 = Argon2::default();
         let mut output_key_material = [0u8; <Aes256SivAead as KeySizeUser>::KeySize::USIZE];
         argon2

@@ -244,9 +244,9 @@ fn test_path_parse() {
 }
 
 // TODO: Error handling.
-fn get_password() -> String {
+fn get_password() -> Password {
     print!("Password: ");
     io::stdout().flush().ok();
     // TODO: Is there a better way to try to hide the password in memory?
-    rpassword::read_password().unwrap()
+    rpassword::read_password().unwrap().into()
 }
