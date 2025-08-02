@@ -21,7 +21,6 @@ pub struct User {
 }
 
 impl User {
-    // TODO: Zeroize password
     pub fn new(username: &str, password: Password) -> Result<Self, Error> {
         let salt = Key::generate_salt();
         let key = UserKey(Key::from_password(password, &salt)?);
@@ -62,7 +61,6 @@ impl User {
         Ok(self)
     }
 
-    // TODO: Zeroize password
     pub async fn load(db: &Database, username: &str, password: Password) -> Result<Self, Error> {
         let sql_user = db::users::SqlUser::select(&db, &username).await?;
         let key = UserKey(Key::from_password(password, &sql_user.salt[..])?);

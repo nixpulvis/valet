@@ -81,7 +81,6 @@ impl Key {
         Key(Aes256SivAead::generate_key(&mut OsRng))
     }
 
-    // TODO: Zeroize password
     pub fn from_password(password: Password, salt: &[u8]) -> Result<Self, Error> {
         let argon2 = Argon2::default();
         let mut output_key_material = [0u8; <Aes256SivAead as KeySizeUser>::KeySize::USIZE];
