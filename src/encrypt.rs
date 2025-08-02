@@ -1,7 +1,6 @@
-use aes_siv::{
-    Aes256SivAead, KeySizeUser, Nonce,
-    aead::generic_array::typenum::Unsigned,
-    aead::{Aead, Key as AesKey, KeyInit},
+use aes_gcm_siv::{
+    Aes256GcmSiv, KeySizeUser, Nonce,
+    aead::{Aead, Key as AesKey, KeyInit, generic_array::typenum::Unsigned},
 };
 use argon2::Argon2;
 use rand_core::{OsRng, RngCore};
@@ -59,7 +58,6 @@ impl Deref for Password {
     }
 }
 
-const NONCE_SIZE: usize = 16;
 // This value can be anything really, but is generally recommended to be about
 // 128-bits. The idea is that it just needs to contain more entropy than the
 // user's password.
@@ -85,32 +83,29 @@ pub struct Encrypted {
 // TODO: #15
 // Aes256 has a 512-bit key size, and achieves 256-bit security.
 #[derive(PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
-pub struct Key<T>(AesKey<Aes256SivAead>, PhantomData<T>);
+pub struct Key<T>(AesKey<Aes256GcmSiv>, PhantomData<T>);
 
 impl<T> Key<T> {
     pub fn new() -> Self {
-        Key(Aes256SivAead::generate_key(&mut OsRng), PhantomData)
+        Key(Aes256GcmSiv::generate_key(&mut OsRng), PhantomData)
     }
 
     pub fn from_password(password: Password, salt: &[u8]) -> Result<Self, Error> {
         let argon2 = Argon2::default();
-        let mut output_key_material = [0u8; <Aes256SivAead as KeySizeUser>::KeySize::USIZE];
+        let mut output_key_material = [0u8; <Aes256GcmSiv as KeySizeUser>::KeySize::USIZE];
         argon2
             .hash_password_into(password.as_bytes(), salt, &mut output_key_material)
             .map_err(|e| Error::KeyDerivation(format!("{}", e)))?;
 
         Ok(Key(
-            AesKey::<Aes256SivAead>::clone_from_slice(&output_key_material),
+            AesKey::<Aes256GcmSiv>::clone_from_slice(&output_key_material),
             PhantomData,
         ))
     }
 
     /// Construct a Key from a slice of bytes.
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        Key(
-            AesKey::<Aes256SivAead>::clone_from_slice(bytes),
-            PhantomData,
-        )
+        Key(AesKey::<Aes256GcmSiv>::clone_from_slice(bytes), PhantomData)
     }
 
     /// Returns this key as a slice of bytes.
@@ -125,15 +120,12 @@ impl<T> Key<T> {
     }
 
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Encrypted, Error> {
-        // TODO: Better security will be achieved by storing a unique counter
-        // for this somewhere.
-        let mut nonce_bytes = [0; NONCE_SIZE];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let mut nonce = Nonce::default();
+        OsRng.fill_bytes(&mut nonce.as_mut_slice());
 
-        let cipher = Aes256SivAead::new(&self.0);
+        let cipher = Aes256GcmSiv::new(&self.0);
         let ciphertext = cipher
-            .encrypt(nonce, plaintext)
+            .encrypt(&nonce, plaintext)
             .map_err(|e| Error::Encryption(format!("{}", e)))?;
         Ok(Encrypted {
             data: ciphertext,
@@ -143,7 +135,7 @@ impl<T> Key<T> {
 
     pub fn decrypt(&self, encrypted: &Encrypted) -> Result<Vec<u8>, Error> {
         let nonce = Nonce::from_slice(&encrypted.nonce);
-        let cipher = Aes256SivAead::new(&self.0);
+        let cipher = Aes256GcmSiv::new(&self.0);
         let plaintext = cipher
             .decrypt(nonce, &encrypted.data[..])
             .map_err(|e| Error::Decryption(format!("{}", e)))?;
@@ -167,7 +159,7 @@ mod tests {
         let salt = Key::<()>::generate_salt();
         let key =
             Key::<()>::from_password("user1password".into(), &salt).expect("error generating key");
-        assert_eq!(512 / 8, key.0.len());
+        assert_eq!(256 / 8, key.0.len());
     }
 
     #[test]
