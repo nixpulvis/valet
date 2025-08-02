@@ -117,16 +117,19 @@ impl fmt::Display for RecordData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RecordData::Domain(label, attributes) => {
-                // TODO
-                write!(f, "{label}")?;
-                for attribute in attributes {
-                    write!(f, "{:?}", attribute)?;
+                write!(f, "{label}: {{ ")?;
+                for (i, (k, v)) in attributes.iter().enumerate() {
+                    write!(f, "{k}: {v}")?;
+                    if i < attributes.len() - 1 {
+                        write!(f, ", ")?;
+                    }
                 }
+                write!(f, " }}")?;
                 Ok(())
             }
             RecordData::Plain(label, text) => {
                 if text.contains("\n") {
-                    write!(f, "{label}\n{text}")
+                    write!(f, "{label}:\n{text}")
                 } else {
                     write!(f, "{label}: {text}")
                 }
