@@ -29,7 +29,7 @@ gui = ["dep:eframe", "dep:egui_inbox"]
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [dependencies]
-aes-siv = "0.7"
+aes-gcm-siv = "0.11"
 argon2 = "0.5"
 bitcode = "0.6.6"
 rand_core = "0.6"
