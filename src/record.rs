@@ -1,7 +1,7 @@
 use crate::db::records::SqlRecord;
 use crate::db::{self, Database};
-use crate::encrypt::{self, Encrypted};
-use crate::lot::{Lot, LotKey};
+use crate::encrypt::{self, Encrypted, Key};
+use crate::lot::Lot;
 use bitcode::{Decode, Encode};
 use std::collections::HashMap;
 use std::{fmt, io};
@@ -34,7 +34,7 @@ impl Record {
         &self.data
     }
 
-    pub fn encrypt(&self, key: &LotKey) -> Result<Encrypted, Error> {
+    pub fn encrypt(&self, key: &Key<Lot>) -> Result<Encrypted, Error> {
         self.data.encrypt(key)
     }
 
@@ -177,12 +177,12 @@ impl RecordData {
         Ok(decoded)
     }
 
-    pub fn encrypt(&self, key: &LotKey) -> Result<Encrypted, Error> {
+    pub fn encrypt(&self, key: &Key<Lot>) -> Result<Encrypted, Error> {
         let compressed = self.compress()?;
         key.encrypt(&compressed).map_err(|e| Error::Encryption(e))
     }
 
-    pub fn decrypt(buf: &Encrypted, key: &LotKey) -> Result<Self, Error> {
+    pub fn decrypt(buf: &Encrypted, key: &Key<Lot>) -> Result<Self, Error> {
         let decrypted = key.decrypt(buf).map_err(|e| Error::Encryption(e))?;
         Self::decompress(&decrypted)
     }
@@ -213,11 +213,7 @@ impl From<db::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        encrypt::Key,
-        lot::{Lot, LotKey},
-        user::User,
-    };
+    use crate::{encrypt::Key, lot::Lot, user::User};
 
     #[test]
     fn new() {
@@ -238,7 +234,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt() {
         let lot = Lot::new("test");
-        let key = LotKey(Key::new());
+        let key = Key::<Lot>::new();
         let record = Record::new(&lot, RecordData::plain("foo", "bar"));
         let encrypted = record.encrypt(&key).expect("failed to encrypt");
         let decrypted_data = RecordData::decrypt(&encrypted, &key).expect("failed to decrypt");

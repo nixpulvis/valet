@@ -1,4 +1,4 @@
-use std::{fmt, ops::Deref};
+use std::fmt;
 
 use crate::{
     db::{self, Database},
@@ -16,7 +16,7 @@ pub struct Lot {
     uuid: Uuid,
     name: String,
     records: Vec<Record>,
-    key: LotKey,
+    key: Key<Self>,
 }
 
 impl Lot {
@@ -25,7 +25,7 @@ impl Lot {
             uuid: Uuid::now_v7(),
             name: name.into(),
             records: Vec::new(),
-            key: LotKey(Key::new()),
+            key: Key::new(),
         }
     }
 
@@ -37,7 +37,7 @@ impl Lot {
         &self.name
     }
 
-    pub fn key(&self) -> &LotKey {
+    pub fn key(&self) -> &Key<Self> {
         &self.key
     }
 
@@ -80,7 +80,7 @@ impl Lot {
             uuid: Uuid::parse_str(&sql_lot.uuid)?,
             name: sql_lot.name,
             records: Vec::new(),
-            key: LotKey(Key::from_bytes(&key_bytes)),
+            key: Key::from_bytes(&key_bytes),
         };
         lot.records = Record::load_all(&db, &lot).await?;
         Ok(lot)
@@ -113,17 +113,6 @@ impl fmt::Debug for Lot {
             .field("name", &self.name)
             .field("records", &self.records)
             .finish()
-    }
-}
-
-#[derive(PartialEq, Eq)]
-pub struct LotKey(pub(crate) Key);
-
-impl Deref for LotKey {
-    type Target = Key;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 
