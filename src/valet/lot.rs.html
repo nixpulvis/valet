@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src/lot.rs`."><title>lot.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="valet" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../static.files/storage-4e99c027.js"></script><script defer src="../../static.files/src-script-63605ae7.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer"></div><main><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">valet/</div>lot.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::{fmt, ops::Deref};
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src/lot.rs`."><title>lot.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="valet" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../static.files/storage-4e99c027.js"></script><script defer src="../../static.files/src-script-63605ae7.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer"></div><main><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">valet/</div>lot.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::fmt;
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use crate</span>::{
 <a href=#4 id=4 data-nosnippet>4</a>    db::{<span class="self">self</span>, Database},
@@ -16,7 +16,7 @@
 <a href=#16 id=16 data-nosnippet>16</a>    uuid: Uuid,
 <a href=#17 id=17 data-nosnippet>17</a>    name: String,
 <a href=#18 id=18 data-nosnippet>18</a>    records: Vec&lt;Record&gt;,
-<a href=#19 id=19 data-nosnippet>19</a>    key: LotKey,
+<a href=#19 id=19 data-nosnippet>19</a>    key: Key&lt;<span class="self">Self</span>&gt;,
 <a href=#20 id=20 data-nosnippet>20</a>}
 <a href=#21 id=21 data-nosnippet>21</a>
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">impl </span>Lot {
@@ -25,7 +25,7 @@
 <a href=#25 id=25 data-nosnippet>25</a>            uuid: Uuid::now_v7(),
 <a href=#26 id=26 data-nosnippet>26</a>            name: name.into(),
 <a href=#27 id=27 data-nosnippet>27</a>            records: Vec::new(),
-<a href=#28 id=28 data-nosnippet>28</a>            key: LotKey(Key::new()),
+<a href=#28 id=28 data-nosnippet>28</a>            key: Key::new(),
 <a href=#29 id=29 data-nosnippet>29</a>        }
 <a href=#30 id=30 data-nosnippet>30</a>    }
 <a href=#31 id=31 data-nosnippet>31</a>
@@ -37,7 +37,7 @@
 <a href=#37 id=37 data-nosnippet>37</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.name
 <a href=#38 id=38 data-nosnippet>38</a>    }
 <a href=#39 id=39 data-nosnippet>39</a>
-<a href=#40 id=40 data-nosnippet>40</a>    <span class="kw">pub fn </span>key(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>LotKey {
+<a href=#40 id=40 data-nosnippet>40</a>    <span class="kw">pub fn </span>key(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>Key&lt;<span class="self">Self</span>&gt; {
 <a href=#41 id=41 data-nosnippet>41</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.key
 <a href=#42 id=42 data-nosnippet>42</a>    }
 <a href=#43 id=43 data-nosnippet>43</a>
@@ -80,7 +80,7 @@
 <a href=#80 id=80 data-nosnippet>80</a>            uuid: Uuid::parse_str(<span class="kw-2">&amp;</span>sql_lot.uuid)<span class="question-mark">?</span>,
 <a href=#81 id=81 data-nosnippet>81</a>            name: sql_lot.name,
 <a href=#82 id=82 data-nosnippet>82</a>            records: Vec::new(),
-<a href=#83 id=83 data-nosnippet>83</a>            key: LotKey(Key::from_bytes(<span class="kw-2">&amp;</span>key_bytes)),
+<a href=#83 id=83 data-nosnippet>83</a>            key: Key::from_bytes(<span class="kw-2">&amp;</span>key_bytes),
 <a href=#84 id=84 data-nosnippet>84</a>        };
 <a href=#85 id=85 data-nosnippet>85</a>        lot.records = Record::load_all(<span class="kw-2">&amp;</span>db, <span class="kw-2">&amp;</span>lot).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#86 id=86 data-nosnippet>86</a>        <span class="prelude-val">Ok</span>(lot)
@@ -116,87 +116,76 @@
 <a href=#116 id=116 data-nosnippet>116</a>    }
 <a href=#117 id=117 data-nosnippet>117</a>}
 <a href=#118 id=118 data-nosnippet>118</a>
-<a href=#119 id=119 data-nosnippet>119</a><span class="attr">#[derive(PartialEq, Eq)]
-<a href=#120 id=120 data-nosnippet>120</a></span><span class="kw">pub struct </span>LotKey(<span class="kw">pub</span>(<span class="kw">crate</span>) Key);
-<a href=#121 id=121 data-nosnippet>121</a>
-<a href=#122 id=122 data-nosnippet>122</a><span class="kw">impl </span>Deref <span class="kw">for </span>LotKey {
-<a href=#123 id=123 data-nosnippet>123</a>    <span class="kw">type </span>Target = Key;
-<a href=#124 id=124 data-nosnippet>124</a>
-<a href=#125 id=125 data-nosnippet>125</a>    <span class="kw">fn </span>deref(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="self">Self</span>::Target {
-<a href=#126 id=126 data-nosnippet>126</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.<span class="number">0
-<a href=#127 id=127 data-nosnippet>127</a>    </span>}
-<a href=#128 id=128 data-nosnippet>128</a>}
-<a href=#129 id=129 data-nosnippet>129</a>
-<a href=#130 id=130 data-nosnippet>130</a><span class="attr">#[derive(Debug)]
-<a href=#131 id=131 data-nosnippet>131</a></span><span class="kw">pub enum </span>Error {
-<a href=#132 id=132 data-nosnippet>132</a>    Uuid(uuid::Error),
-<a href=#133 id=133 data-nosnippet>133</a>    Encrypt(encrypt::Error),
-<a href=#134 id=134 data-nosnippet>134</a>    Record(record::Error),
-<a href=#135 id=135 data-nosnippet>135</a>    Database(db::Error),
-<a href=#136 id=136 data-nosnippet>136</a>}
-<a href=#137 id=137 data-nosnippet>137</a>
-<a href=#138 id=138 data-nosnippet>138</a><span class="kw">impl </span>From&lt;uuid::Error&gt; <span class="kw">for </span>Error {
-<a href=#139 id=139 data-nosnippet>139</a>    <span class="kw">fn </span>from(err: uuid::Error) -&gt; <span class="self">Self </span>{
-<a href=#140 id=140 data-nosnippet>140</a>        Error::Uuid(err)
-<a href=#141 id=141 data-nosnippet>141</a>    }
-<a href=#142 id=142 data-nosnippet>142</a>}
-<a href=#143 id=143 data-nosnippet>143</a>
-<a href=#144 id=144 data-nosnippet>144</a><span class="kw">impl </span>From&lt;encrypt::Error&gt; <span class="kw">for </span>Error {
-<a href=#145 id=145 data-nosnippet>145</a>    <span class="kw">fn </span>from(err: encrypt::Error) -&gt; <span class="self">Self </span>{
-<a href=#146 id=146 data-nosnippet>146</a>        Error::Encrypt(err)
-<a href=#147 id=147 data-nosnippet>147</a>    }
-<a href=#148 id=148 data-nosnippet>148</a>}
-<a href=#149 id=149 data-nosnippet>149</a>
-<a href=#150 id=150 data-nosnippet>150</a><span class="kw">impl </span>From&lt;record::Error&gt; <span class="kw">for </span>Error {
-<a href=#151 id=151 data-nosnippet>151</a>    <span class="kw">fn </span>from(err: record::Error) -&gt; <span class="self">Self </span>{
-<a href=#152 id=152 data-nosnippet>152</a>        Error::Record(err)
-<a href=#153 id=153 data-nosnippet>153</a>    }
-<a href=#154 id=154 data-nosnippet>154</a>}
+<a href=#119 id=119 data-nosnippet>119</a><span class="attr">#[derive(Debug)]
+<a href=#120 id=120 data-nosnippet>120</a></span><span class="kw">pub enum </span>Error {
+<a href=#121 id=121 data-nosnippet>121</a>    Uuid(uuid::Error),
+<a href=#122 id=122 data-nosnippet>122</a>    Encrypt(encrypt::Error),
+<a href=#123 id=123 data-nosnippet>123</a>    Record(record::Error),
+<a href=#124 id=124 data-nosnippet>124</a>    Database(db::Error),
+<a href=#125 id=125 data-nosnippet>125</a>}
+<a href=#126 id=126 data-nosnippet>126</a>
+<a href=#127 id=127 data-nosnippet>127</a><span class="kw">impl </span>From&lt;uuid::Error&gt; <span class="kw">for </span>Error {
+<a href=#128 id=128 data-nosnippet>128</a>    <span class="kw">fn </span>from(err: uuid::Error) -&gt; <span class="self">Self </span>{
+<a href=#129 id=129 data-nosnippet>129</a>        Error::Uuid(err)
+<a href=#130 id=130 data-nosnippet>130</a>    }
+<a href=#131 id=131 data-nosnippet>131</a>}
+<a href=#132 id=132 data-nosnippet>132</a>
+<a href=#133 id=133 data-nosnippet>133</a><span class="kw">impl </span>From&lt;encrypt::Error&gt; <span class="kw">for </span>Error {
+<a href=#134 id=134 data-nosnippet>134</a>    <span class="kw">fn </span>from(err: encrypt::Error) -&gt; <span class="self">Self </span>{
+<a href=#135 id=135 data-nosnippet>135</a>        Error::Encrypt(err)
+<a href=#136 id=136 data-nosnippet>136</a>    }
+<a href=#137 id=137 data-nosnippet>137</a>}
+<a href=#138 id=138 data-nosnippet>138</a>
+<a href=#139 id=139 data-nosnippet>139</a><span class="kw">impl </span>From&lt;record::Error&gt; <span class="kw">for </span>Error {
+<a href=#140 id=140 data-nosnippet>140</a>    <span class="kw">fn </span>from(err: record::Error) -&gt; <span class="self">Self </span>{
+<a href=#141 id=141 data-nosnippet>141</a>        Error::Record(err)
+<a href=#142 id=142 data-nosnippet>142</a>    }
+<a href=#143 id=143 data-nosnippet>143</a>}
+<a href=#144 id=144 data-nosnippet>144</a>
+<a href=#145 id=145 data-nosnippet>145</a><span class="kw">impl </span>From&lt;db::Error&gt; <span class="kw">for </span>Error {
+<a href=#146 id=146 data-nosnippet>146</a>    <span class="kw">fn </span>from(err: db::Error) -&gt; <span class="self">Self </span>{
+<a href=#147 id=147 data-nosnippet>147</a>        Error::Database(err)
+<a href=#148 id=148 data-nosnippet>148</a>    }
+<a href=#149 id=149 data-nosnippet>149</a>}
+<a href=#150 id=150 data-nosnippet>150</a>
+<a href=#151 id=151 data-nosnippet>151</a><span class="attr">#[cfg(test)]
+<a href=#152 id=152 data-nosnippet>152</a></span><span class="kw">mod </span>tests {
+<a href=#153 id=153 data-nosnippet>153</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#154 id=154 data-nosnippet>154</a>    <span class="kw">use crate</span>::{db::Database, record::RecordData};
 <a href=#155 id=155 data-nosnippet>155</a>
-<a href=#156 id=156 data-nosnippet>156</a><span class="kw">impl </span>From&lt;db::Error&gt; <span class="kw">for </span>Error {
-<a href=#157 id=157 data-nosnippet>157</a>    <span class="kw">fn </span>from(err: db::Error) -&gt; <span class="self">Self </span>{
-<a href=#158 id=158 data-nosnippet>158</a>        Error::Database(err)
-<a href=#159 id=159 data-nosnippet>159</a>    }
-<a href=#160 id=160 data-nosnippet>160</a>}
-<a href=#161 id=161 data-nosnippet>161</a>
-<a href=#162 id=162 data-nosnippet>162</a><span class="attr">#[cfg(test)]
-<a href=#163 id=163 data-nosnippet>163</a></span><span class="kw">mod </span>tests {
-<a href=#164 id=164 data-nosnippet>164</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
-<a href=#165 id=165 data-nosnippet>165</a>    <span class="kw">use crate</span>::{db::Database, record::RecordData};
-<a href=#166 id=166 data-nosnippet>166</a>
-<a href=#167 id=167 data-nosnippet>167</a>    <span class="attr">#[test]
-<a href=#168 id=168 data-nosnippet>168</a>    </span><span class="kw">fn </span>new() {
-<a href=#169 id=169 data-nosnippet>169</a>        <span class="kw">let </span>lot = Lot::new(<span class="string">"lot a"</span>);
-<a href=#170 id=170 data-nosnippet>170</a>        <span class="macro">assert_eq!</span>(<span class="number">36</span>, lot.uuid.to_string().len());
-<a href=#171 id=171 data-nosnippet>171</a>        <span class="macro">assert!</span>(lot.records().is_empty());
-<a href=#172 id=172 data-nosnippet>172</a>        <span class="comment">// TODO: #6
-<a href=#173 id=173 data-nosnippet>173</a>        // assert_ne!(user.key(), lot.key());
-<a href=#174 id=174 data-nosnippet>174</a>    </span>}
-<a href=#175 id=175 data-nosnippet>175</a>
-<a href=#176 id=176 data-nosnippet>176</a>    <span class="attr">#[tokio::test]
-<a href=#177 id=177 data-nosnippet>177</a>    </span><span class="kw">async fn </span>save() {
-<a href=#178 id=178 data-nosnippet>178</a>        <span class="kw">let </span>db = Database::new(<span class="string">"sqlite://:memory:"</span>)
-<a href=#179 id=179 data-nosnippet>179</a>            .<span class="kw">await
-<a href=#180 id=180 data-nosnippet>180</a>            </span>.expect(<span class="string">"failed to create database"</span>);
-<a href=#181 id=181 data-nosnippet>181</a>        <span class="kw">let </span>user = User::new(<span class="string">"nixpulvis"</span>, <span class="string">"password"</span>.into()).expect(<span class="string">"failed to make user"</span>);
-<a href=#182 id=182 data-nosnippet>182</a>        <span class="kw">let </span><span class="kw-2">mut </span>lot = Lot::new(<span class="string">"lot a"</span>);
-<a href=#183 id=183 data-nosnippet>183</a>        lot.records
-<a href=#184 id=184 data-nosnippet>184</a>            .push(Record::new(<span class="kw-2">&amp;</span>lot, RecordData::plain(<span class="string">"a"</span>, <span class="string">"1"</span>)));
-<a href=#185 id=185 data-nosnippet>185</a>        lot.save(<span class="kw-2">&amp;</span>db, <span class="kw-2">&amp;</span>user).<span class="kw">await</span>.expect(<span class="string">"failed to save lot"</span>);
-<a href=#186 id=186 data-nosnippet>186</a>        lot.records
-<a href=#187 id=187 data-nosnippet>187</a>            .push(Record::new(<span class="kw-2">&amp;</span>lot, RecordData::plain(<span class="string">"b"</span>, <span class="string">"2"</span>)));
-<a href=#188 id=188 data-nosnippet>188</a>        lot.save(<span class="kw-2">&amp;</span>db, <span class="kw-2">&amp;</span>user).<span class="kw">await</span>.expect(<span class="string">"failed to save lot"</span>);
-<a href=#189 id=189 data-nosnippet>189</a>    }
-<a href=#190 id=190 data-nosnippet>190</a>
-<a href=#191 id=191 data-nosnippet>191</a>    <span class="attr">#[tokio::test]
-<a href=#192 id=192 data-nosnippet>192</a>    #[ignore]
-<a href=#193 id=193 data-nosnippet>193</a>    </span><span class="kw">async fn </span>load() {
-<a href=#194 id=194 data-nosnippet>194</a>        <span class="macro">unimplemented!</span>();
-<a href=#195 id=195 data-nosnippet>195</a>    }
-<a href=#196 id=196 data-nosnippet>196</a>
-<a href=#197 id=197 data-nosnippet>197</a>    <span class="attr">#[tokio::test]
-<a href=#198 id=198 data-nosnippet>198</a>    #[ignore]
-<a href=#199 id=199 data-nosnippet>199</a>    </span><span class="kw">async fn </span>load_all() {
-<a href=#200 id=200 data-nosnippet>200</a>        <span class="macro">unimplemented!</span>();
-<a href=#201 id=201 data-nosnippet>201</a>    }
-<a href=#202 id=202 data-nosnippet>202</a>}</code></pre></div></section></main></body></html>
+<a href=#156 id=156 data-nosnippet>156</a>    <span class="attr">#[test]
+<a href=#157 id=157 data-nosnippet>157</a>    </span><span class="kw">fn </span>new() {
+<a href=#158 id=158 data-nosnippet>158</a>        <span class="kw">let </span>lot = Lot::new(<span class="string">"lot a"</span>);
+<a href=#159 id=159 data-nosnippet>159</a>        <span class="macro">assert_eq!</span>(<span class="number">36</span>, lot.uuid.to_string().len());
+<a href=#160 id=160 data-nosnippet>160</a>        <span class="macro">assert!</span>(lot.records().is_empty());
+<a href=#161 id=161 data-nosnippet>161</a>        <span class="comment">// TODO: #6
+<a href=#162 id=162 data-nosnippet>162</a>        // assert_ne!(user.key(), lot.key());
+<a href=#163 id=163 data-nosnippet>163</a>    </span>}
+<a href=#164 id=164 data-nosnippet>164</a>
+<a href=#165 id=165 data-nosnippet>165</a>    <span class="attr">#[tokio::test]
+<a href=#166 id=166 data-nosnippet>166</a>    </span><span class="kw">async fn </span>save() {
+<a href=#167 id=167 data-nosnippet>167</a>        <span class="kw">let </span>db = Database::new(<span class="string">"sqlite://:memory:"</span>)
+<a href=#168 id=168 data-nosnippet>168</a>            .<span class="kw">await
+<a href=#169 id=169 data-nosnippet>169</a>            </span>.expect(<span class="string">"failed to create database"</span>);
+<a href=#170 id=170 data-nosnippet>170</a>        <span class="kw">let </span>user = User::new(<span class="string">"nixpulvis"</span>, <span class="string">"password"</span>.into()).expect(<span class="string">"failed to make user"</span>);
+<a href=#171 id=171 data-nosnippet>171</a>        <span class="kw">let </span><span class="kw-2">mut </span>lot = Lot::new(<span class="string">"lot a"</span>);
+<a href=#172 id=172 data-nosnippet>172</a>        lot.records
+<a href=#173 id=173 data-nosnippet>173</a>            .push(Record::new(<span class="kw-2">&amp;</span>lot, RecordData::plain(<span class="string">"a"</span>, <span class="string">"1"</span>)));
+<a href=#174 id=174 data-nosnippet>174</a>        lot.save(<span class="kw-2">&amp;</span>db, <span class="kw-2">&amp;</span>user).<span class="kw">await</span>.expect(<span class="string">"failed to save lot"</span>);
+<a href=#175 id=175 data-nosnippet>175</a>        lot.records
+<a href=#176 id=176 data-nosnippet>176</a>            .push(Record::new(<span class="kw-2">&amp;</span>lot, RecordData::plain(<span class="string">"b"</span>, <span class="string">"2"</span>)));
+<a href=#177 id=177 data-nosnippet>177</a>        lot.save(<span class="kw-2">&amp;</span>db, <span class="kw-2">&amp;</span>user).<span class="kw">await</span>.expect(<span class="string">"failed to save lot"</span>);
+<a href=#178 id=178 data-nosnippet>178</a>    }
+<a href=#179 id=179 data-nosnippet>179</a>
+<a href=#180 id=180 data-nosnippet>180</a>    <span class="attr">#[tokio::test]
+<a href=#181 id=181 data-nosnippet>181</a>    #[ignore]
+<a href=#182 id=182 data-nosnippet>182</a>    </span><span class="kw">async fn </span>load() {
+<a href=#183 id=183 data-nosnippet>183</a>        <span class="macro">unimplemented!</span>();
+<a href=#184 id=184 data-nosnippet>184</a>    }
+<a href=#185 id=185 data-nosnippet>185</a>
+<a href=#186 id=186 data-nosnippet>186</a>    <span class="attr">#[tokio::test]
+<a href=#187 id=187 data-nosnippet>187</a>    #[ignore]
+<a href=#188 id=188 data-nosnippet>188</a>    </span><span class="kw">async fn </span>load_all() {
+<a href=#189 id=189 data-nosnippet>189</a>        <span class="macro">unimplemented!</span>();
+<a href=#190 id=190 data-nosnippet>190</a>    }
+<a href=#191 id=191 data-nosnippet>191</a>}</code></pre></div></section></main></body></html>
