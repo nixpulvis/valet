@@ -150,7 +150,7 @@ async fn main() -> Result<(), valet::user::Error> {
                         .iter()
                         .find(|r| r.data().label() == path.label)
                     {
-                        println!("{}", record);
+                        println!("{}::{}", lot.name(), record);
                     }
                 }
                 Repl::Lock => {

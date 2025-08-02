@@ -92,8 +92,7 @@ impl Eq for Record {}
 
 impl fmt::Display for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Only display label and data, as we don't have a reference to the lot name.
-        write!(f, "{}::{}", self.lot, self.data)
+        write!(f, "{}", self.data)
     }
 }
 
@@ -101,7 +100,7 @@ impl fmt::Debug for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Record")
             .field("uuid", &self.uuid)
-            .field("lot_uuid", &self.lot)
+            .field("lot", &self.lot)
             .field("data", &self.data)
             .finish()
     }
