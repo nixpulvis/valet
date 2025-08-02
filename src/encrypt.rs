@@ -71,7 +71,7 @@ pub struct Encrypted {
 /// Aes256 has a 512-bit key size, and achieves 256-bit security.
 //
 // TODO: #6 keys should not be clonable.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct Key(AesKey<Aes256SivAead>);
 
 impl Key {
