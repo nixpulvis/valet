@@ -247,6 +247,9 @@ fn test_path_parse() {
 fn get_password() -> Password {
     print!("Password: ");
     io::stdout().flush().ok();
-    // TODO: Is there a better way to try to hide the password in memory?
+    // TODO: Can we write our own STDIN reader which avoids allocation
+    // altogether by disabling the buffered input (raw mode) and copies each
+    // input character into a fixed length buffer. Maximum password lengths
+    // could be something like 200 characters.
     rpassword::read_password().unwrap().into()
 }
