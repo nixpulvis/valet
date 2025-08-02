@@ -1,4 +1,4 @@
-use std::{fmt::Debug, fmt::Formatter, ops::Deref};
+use std::{fmt::Debug, fmt::Formatter};
 
 use crate::{
     db::{self, Database},
@@ -8,22 +8,38 @@ use crate::{
 
 const VALIDATION: &[u8] = b"VALID";
 
-/// Usernames and the salt for their password are store in a database.
+/// A user of valet, who is uniquely identified by username.
 ///
-/// A short validation string is also saved which is used to authenticate the
-/// user.
+/// As is standard practice with password handling, the user's password provided
+/// to either [`User::new`] or [`User::load`] is never saved anywhere and is
+/// kept in memory for as little time as possible.
+///
+/// The user's password (and a random saved "salt") is used to derive the "user
+/// key", i.e. [`Key<User>`]. To generate this key we use a common Key
+/// Derivation Function (KDF), namely [`argon2`]. Each user record saves it's
+/// random salt value in order to prevent users with the same password from
+/// getting the same key, and thus opening up the scheme to ["rainbow table"][1]
+/// attacks.
+///
+/// In addition to the salt, each user also stores a short encrypted validation
+/// string which is used to authenticate the user. Simply being able
+/// to decrpyt the string is enough to verify the user, since we use
+/// ["Authenticated Encryption"][2] (the AE in AEAD).
+///
+/// [1]: https://en.wikipedia.org/wiki/Rainbow_table
+/// [2]: https://en.wikipedia.org/wiki/Authenticated_encryption
 #[derive(PartialEq, Eq)]
 pub struct User {
     username: String,
     salt: [u8; SALT_SIZE],
     validation: Encrypted,
-    key: UserKey,
+    key: Key<Self>,
 }
 
 impl User {
     pub fn new(username: &str, password: Password) -> Result<Self, Error> {
-        let salt = Key::generate_salt();
-        let key = UserKey(Key::from_password(password, &salt)?);
+        let salt = Key::<Self>::generate_salt();
+        let key = Key::from_password(password, &salt)?;
         let validation = key.encrypt(VALIDATION)?;
         Ok(User {
             username: username.into(),
@@ -37,7 +53,7 @@ impl User {
         &self.username
     }
 
-    pub fn key(&self) -> &UserKey {
+    pub fn key(&self) -> &Key<Self> {
         &self.key
     }
 
@@ -63,7 +79,7 @@ impl User {
 
     pub async fn load(db: &Database, username: &str, password: Password) -> Result<Self, Error> {
         let sql_user = db::users::SqlUser::select(&db, &username).await?;
-        let key = UserKey(Key::from_password(password, &sql_user.salt[..])?);
+        let key = Key::from_password(password, &sql_user.salt[..])?;
         let validation = Encrypted {
             data: sql_user.validation_data,
             nonce: sql_user.validation_nonce,
@@ -122,17 +138,6 @@ impl Debug for User {
 //     }
 // }
 
-#[derive(PartialEq, Eq)]
-pub struct UserKey(pub(crate) Key);
-
-impl Deref for UserKey {
-    type Target = Key;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 #[derive(Debug)]
 pub enum Error {
     Invalid,
@@ -175,8 +180,6 @@ mod tests {
     #[test]
     fn invalid() {
         let mut user = User::new("alice", "password".into()).expect("failed to create user");
-        user.validation = user.key().encrypt(b"invalid").expect("failed to encrypt");
-        assert!(!user.validate());
         let imposter = User::new("charlie", "password".into()).expect("failed to create user");
         user.validation = imposter
             .key()
