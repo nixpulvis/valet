@@ -1,6 +1,6 @@
 use eframe::egui::{self, ViewportCommand};
 use egui_inbox::UiInbox;
-use std::{collections::HashMap, env, sync::Arc};
+use std::{env, sync::Arc};
 use tokio::runtime;
 use valet::prelude::*;
 // use valet::db::{Database, Lots, Users};
@@ -98,35 +98,13 @@ impl eframe::App for ValetApp {
         });
         if let Some(user) = self.user.clone() {
             if self.lots.is_empty() {
-                // XXX: Generate and send mocks.
                 let db_url = self.db_url.clone();
                 let tx = self.mock_inbox.sender();
                 self.rt.spawn(async move {
                     let db = Database::new(&db_url)
                         .await
                         .expect("error getting database");
-                    let mut lot_main = Lot::load(&db, DEFAULT_LOT, &user)
-                        .await
-                        .expect("failed to load main lot");
-                    // lot_main.save(&db).await.expect("error saving main lot");
-                    Record::new(&lot_main, RecordData::plain("foo", "secret"))
-                        .insert(&db, &mut lot_main)
-                        .await
-                        .expect("failed to insert record");
-                    Record::new(&lot_main, RecordData::plain("bar", "password"))
-                        .insert(&db, &mut lot_main)
-                        .await
-                        .expect("failed to insert record");
-                    let domain_data = HashMap::from([
-                        ("username".into(), "alice@example.com".into()),
-                        ("password".into(), "123".into()),
-                    ]);
-                    Record::new(&lot_main, RecordData::domain("example.com", domain_data))
-                        .insert(&db, &mut lot_main)
-                        .await
-                        .expect("failed to insert record");
-                    let lot_alt = Lot::new("alt");
-                    let lots = vec![lot_main, lot_alt];
+                    let lots = user.lots(&db).await.expect("failed to load lots");
                     tx.send(lots).ok();
                 });
             }
@@ -137,7 +115,9 @@ impl eframe::App for ValetApp {
 
             egui::CentralPanel::default().show(ctx, |ui| {
                 for lot in self.lots.iter() {
+                    ui.separator();
                     ui.label(format!("Lot: {}", lot.name()));
+                    ui.separator();
                     for record in lot.records().iter() {
                         ui.label(format!("{}", record.data()));
                     }
