@@ -59,8 +59,11 @@ impl Deref for Password {
     }
 }
 
-pub(crate) const SALT_SIZE: usize = 16;
 const NONCE_SIZE: usize = 16;
+// This value can be anything really, but is generally recommended to be about
+// 128-bits. The idea is that it just needs to contain more entropy than the
+// user's password.
+pub(crate) const SALT_SIZE: usize = 128 / 8;
 
 /// Represents some encrypted data, which can be decrypted again.
 #[derive(Debug, PartialEq, Eq)]
