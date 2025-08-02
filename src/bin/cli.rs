@@ -9,6 +9,9 @@ use valet::prelude::*;
 struct Cli {
     #[command(subcommand)]
     command: ValetCommand,
+
+    #[arg(short, long, default_value = valet::db::DEFAULT_URL)]
+    database: String,
 }
 
 #[derive(Subcommand)]
@@ -55,7 +58,7 @@ enum LotCommand {
 #[tokio::main]
 async fn main() -> Result<(), valet::user::Error> {
     let cli = Cli::parse();
-    let db = Database::new(valet::db::DEFAULT_URL).await?;
+    let db = Database::new(&cli.database).await?;
 
     let password = get_password();
 

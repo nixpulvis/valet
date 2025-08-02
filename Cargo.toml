@@ -37,6 +37,7 @@ rpassword = "7.4"
 snap = "1.1.1"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 tokio = { version = "1.46", features = ["full"] }
+url = "2.5"
 uuid = { version = "1.17", features = ["v7"] }
 
 # CLI Dependencies
