@@ -2,7 +2,7 @@ use std::{fmt::Debug, fmt::Formatter, ops::Deref};
 
 use crate::{
     db::{self, Database},
-    encrypt::{self, Encrypted, Key, SALT_SIZE},
+    encrypt::{self, Encrypted, Key, Password, SALT_SIZE},
     lot::{self, Lot},
 };
 
@@ -21,8 +21,7 @@ pub struct User {
 }
 
 impl User {
-    // TODO: Zeroize password
-    pub fn new(username: &str, password: String) -> Result<Self, Error> {
+    pub fn new(username: &str, password: Password) -> Result<Self, Error> {
         let salt = Key::generate_salt();
         let key = UserKey(Key::from_password(password, &salt)?);
         let validation = key.encrypt(VALIDATION)?;
@@ -62,8 +61,7 @@ impl User {
         Ok(self)
     }
 
-    // TODO: Zeroize password
-    pub async fn load(db: &Database, username: &str, password: String) -> Result<Self, Error> {
+    pub async fn load(db: &Database, username: &str, password: Password) -> Result<Self, Error> {
         let sql_user = db::users::SqlUser::select(&db, &username).await?;
         let key = UserKey(Key::from_password(password, &sql_user.salt[..])?);
         let validation = Encrypted {
@@ -201,14 +199,14 @@ mod tests {
             .await
             .expect("failed to create database");
 
-        let password = "password".to_string();
-        let user = User::new("alice", password.clone())
+        let password = "password";
+        let user = User::new("alice", password.into())
             .expect("failed to create user")
             .register(&db)
             .await
             .expect("failed to register user");
 
-        let loaded = User::load(&db, &user.username, password)
+        let loaded = User::load(&db, &user.username, password.into())
             .await
             .expect("failed to load user");
 
