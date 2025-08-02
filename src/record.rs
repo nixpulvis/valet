@@ -235,7 +235,7 @@ mod tests {
         }
     }
 
-    // TODO: Record::decrypt
+    // TODO: Record::decrypt (does #14 help get the UUID?)
     #[test]
     fn encrypt_decrypt() {
         let lot = Lot::new("test");
