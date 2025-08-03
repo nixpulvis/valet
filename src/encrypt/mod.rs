@@ -25,7 +25,7 @@ pub enum Error {
     Decryption(String),
 }
 
-pub mod key;
+mod key;
 pub use self::key::Key;
-pub mod password;
+mod password;
 pub use self::password::Password;
