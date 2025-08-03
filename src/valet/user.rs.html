@@ -38,7 +38,7 @@
 <a href=#38 id=38 data-nosnippet>38</a>
 <a href=#39 id=39 data-nosnippet>39</a><span class="kw">impl </span>User {
 <a href=#40 id=40 data-nosnippet>40</a>    <span class="kw">pub fn </span>new(username: <span class="kw-2">&amp;</span>str, password: Password) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, Error&gt; {
-<a href=#41 id=41 data-nosnippet>41</a>        <span class="kw">let </span>salt = Key::&lt;<span class="self">Self</span>&gt;::generate_salt();
+<a href=#41 id=41 data-nosnippet>41</a>        <span class="kw">let </span>salt = encrypt::generate_salt();
 <a href=#42 id=42 data-nosnippet>42</a>        <span class="kw">let </span>key = Key::from_password(password, <span class="kw-2">&amp;</span>salt)<span class="question-mark">?</span>;
 <a href=#43 id=43 data-nosnippet>43</a>        <span class="kw">let </span>validation = key.encrypt(VALIDATION)<span class="question-mark">?</span>;
 <a href=#44 id=44 data-nosnippet>44</a>        <span class="prelude-val">Ok</span>(User {

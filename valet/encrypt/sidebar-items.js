@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Error"],"struct":["Encrypted","Key","Password"]};
+window.SIDEBAR_ITEMS = {"enum":["Error"],"mod":["key","password"],"struct":["Encrypted"]};
