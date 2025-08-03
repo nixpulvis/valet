@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["db","encrypt","lot","prelude","record","user"]};
+window.SIDEBAR_ITEMS = {"mod":["db","encrypt","lot","prelude","record","user","uuid"]};
