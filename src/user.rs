@@ -38,7 +38,7 @@ pub struct User {
 
 impl User {
     pub fn new(username: &str, password: Password) -> Result<Self, Error> {
-        let salt = Key::<Self>::generate_salt();
+        let salt = encrypt::generate_salt();
         let key = Key::from_password(password, &salt)?;
         let validation = key.encrypt(VALIDATION)?;
         Ok(User {

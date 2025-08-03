@@ -1,3 +1,4 @@
+use crate::encrypt::{Encrypted, Error, Password};
 use aes_gcm_siv::{
     Aes256GcmSiv, KeySizeUser, Nonce,
     aead::{Aead, Key as AesKey, KeyInit, generic_array::typenum::Unsigned},
@@ -5,70 +6,7 @@ use aes_gcm_siv::{
 use argon2::Argon2;
 use rand_core::{OsRng, RngCore};
 use std::marker::PhantomData;
-use std::{ops::Deref, pin::Pin};
 use zeroize::{Zeroize, ZeroizeOnDrop};
-
-/// A safer wrapper for plaintext password strings.
-///
-/// This structure both pins it's reference and zeros the memory on drop.
-//
-// TODO: Is there a way in the GUI to avoid cloning the password to send it to
-// a async function?
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub struct Password(Pin<String>);
-
-impl Password {
-    pub fn empty() -> Self {
-        Password(Pin::new(String::new()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &*self.0
-    }
-}
-
-impl From<String> for Password {
-    fn from(password: String) -> Self {
-        Password(Pin::new(password))
-    }
-}
-
-// Only allow passwords to be created from immutable static strings when
-// testing.
-#[cfg(test)]
-impl From<&'static str> for Password {
-    fn from(password: &'static str) -> Self {
-        Password(Pin::new(password.into()))
-    }
-}
-
-impl From<&mut str> for Password {
-    fn from(password: &mut str) -> Self {
-        let zeroize = Password(Pin::new(password.into()));
-        password.zeroize();
-        zeroize
-    }
-}
-
-impl Deref for Password {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &*self.0
-    }
-}
-
-// This value can be anything really, but is generally recommended to be about
-// 128-bits. The idea is that it just needs to contain more entropy than the
-// user's password.
-pub(crate) const SALT_SIZE: usize = 128 / 8;
-
-/// Represents some encrypted data, which can be decrypted again.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Encrypted {
-    pub(crate) data: Vec<u8>,
-    pub(crate) nonce: Vec<u8>,
-}
 
 /// A generic symmetric key used to achive privacy and integrity.
 ///
@@ -113,12 +51,6 @@ impl<T> Key<T> {
         self.0.as_slice()
     }
 
-    pub(crate) fn generate_salt() -> [u8; SALT_SIZE] {
-        let mut salt = [0; SALT_SIZE];
-        OsRng.fill_bytes(&mut salt);
-        salt
-    }
-
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Encrypted, Error> {
         let mut nonce = Nonce::default();
         OsRng.fill_bytes(&mut nonce.as_mut_slice());
@@ -143,20 +75,14 @@ impl<T> Key<T> {
     }
 }
 
-#[derive(Debug)]
-pub enum Error {
-    KeyDerivation(String),
-    Encryption(String),
-    Decryption(String),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encrypt::generate_salt;
 
     #[test]
     fn from_password() {
-        let salt = Key::<()>::generate_salt();
+        let salt = generate_salt();
         let key =
             Key::<()>::from_password("user1password".into(), &salt).expect("error generating key");
         assert_eq!(256 / 8, key.0.len());
