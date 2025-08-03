@@ -1,19 +1,18 @@
-use std::fmt;
-
 use crate::{
+    Uuid,
     db::{self, Database},
     encrypt::{self, Encrypted, Key},
     record::{self, Record},
     user::User,
 };
-use uuid::Uuid;
+use std::fmt;
 
 pub const DEFAULT_LOT: &'static str = "main";
 
 /// An encrypted collection of secrets.
 #[derive(PartialEq, Eq)]
 pub struct Lot {
-    uuid: Uuid,
+    uuid: Uuid<Self>,
     name: String,
     records: Vec<Record>,
     key: Key<Self>,
@@ -22,14 +21,14 @@ pub struct Lot {
 impl Lot {
     pub fn new(name: &str) -> Self {
         Lot {
-            uuid: Uuid::now_v7(),
+            uuid: Uuid::now(),
             name: name.into(),
             records: Vec::new(),
             key: Key::new(),
         }
     }
 
-    pub fn uuid(&self) -> &Uuid {
+    pub fn uuid(&self) -> &Uuid<Self> {
         &self.uuid
     }
 
@@ -77,7 +76,7 @@ impl Lot {
         };
         let key_bytes = user.key().decrypt(&encrypted)?;
         let mut lot = Lot {
-            uuid: Uuid::parse_str(&sql_lot.uuid)?,
+            uuid: Uuid::parse(&sql_lot.uuid)?,
             name: sql_lot.name,
             records: Vec::new(),
             key: Key::from_bytes(&key_bytes),
@@ -118,14 +117,16 @@ impl fmt::Debug for Lot {
 
 #[derive(Debug)]
 pub enum Error {
-    Uuid(uuid::Error),
+    // TODO: We need to think this through a bit. Probably move the whole thing
+    // to crate::uuid.
+    Uuid(crate::Error),
     Encrypt(encrypt::Error),
     Record(record::Error),
     Database(db::Error),
 }
 
-impl From<uuid::Error> for Error {
-    fn from(err: uuid::Error) -> Self {
+impl From<crate::Error> for Error {
+    fn from(err: crate::Error) -> Self {
         Error::Uuid(err)
     }
 }
