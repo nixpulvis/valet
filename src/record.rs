@@ -2,31 +2,31 @@ use crate::db::records::SqlRecord;
 use crate::db::{self, Database};
 use crate::encrypt::{self, Encrypted, Key};
 use crate::lot::Lot;
+use crate::uuid::Uuid;
 use bitcode::{Decode, Encode};
 use std::collections::HashMap;
 use std::{fmt, io};
-use uuid::Uuid;
 
 pub struct Record {
-    pub(crate) lot: Uuid,
-    pub(crate) uuid: Uuid,
+    pub(crate) uuid: Uuid<Self>,
+    pub(crate) lot: Uuid<Lot>,
     pub(crate) data: RecordData,
 }
 
 impl Record {
     pub fn new(lot: &Lot, data: RecordData) -> Self {
         Record {
+            uuid: Uuid::now(),
             lot: lot.uuid().clone(),
-            uuid: Uuid::now_v7(),
             data,
         }
     }
 
-    pub fn uuid(&self) -> &Uuid {
+    pub fn uuid(&self) -> &Uuid<Self> {
         &self.uuid
     }
 
-    pub fn lot(&self) -> &Uuid {
+    pub fn lot(&self) -> &Uuid<Lot> {
         &self.lot
     }
 
@@ -39,7 +39,7 @@ impl Record {
     }
 
     /// Save this record to the database.
-    pub async fn save(&self, db: &Database, lot: &Lot) -> Result<Uuid, Error> {
+    pub async fn save(&self, db: &Database, lot: &Lot) -> Result<Uuid<Self>, Error> {
         let uuid = self.uuid.clone();
         let encrypted = self.data.encrypt(lot.key())?;
         let sql_record = SqlRecord {
@@ -53,7 +53,7 @@ impl Record {
     }
 
     /// Insert this record into a lot and save it to the database.
-    pub async fn insert(self, db: &Database, lot: &mut Lot) -> Result<Uuid, Error> {
+    pub async fn insert(self, db: &Database, lot: &mut Lot) -> Result<Uuid<Self>, Error> {
         let uuid = self.save(&db, lot).await?;
         lot.records_mut().push(self);
         Ok(uuid)
@@ -73,7 +73,7 @@ impl Record {
             let data = RecordData::decrypt(&encrypted, lot.key())?;
             let record = Record {
                 lot: lot.uuid().clone(),
-                uuid: Uuid::parse_str(&sql_record.uuid)?,
+                uuid: Uuid::parse(&sql_record.uuid)?,
                 data,
             };
             records.push(record);
@@ -191,15 +191,15 @@ impl RecordData {
 #[derive(Debug)]
 pub enum Error {
     MissingLot,
-    Uuid(uuid::Error),
+    Uuid(crate::uuid::Error),
     Database(db::Error),
     Encoding(bitcode::Error),
     Compression(io::Error),
     Encryption(encrypt::Error),
 }
 
-impl From<uuid::Error> for Error {
-    fn from(err: uuid::Error) -> Self {
+impl From<crate::uuid::Error> for Error {
+    fn from(err: crate::uuid::Error) -> Self {
         Error::Uuid(err)
     }
 }

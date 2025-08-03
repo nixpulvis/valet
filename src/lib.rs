@@ -8,6 +8,7 @@ pub mod lot;
 pub mod prelude;
 pub mod record;
 pub mod user;
+pub mod uuid;
 
 // Some toplevel re-exports for the most important structures in valet. Mostly
 // for visability in the docs, developers will likely use the prelude.
