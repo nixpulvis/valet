@@ -50,15 +50,20 @@ impl Lot {
 
     /// Save this lot and its records to the database.
     pub async fn save(&self, db: &Database, user: &User) -> Result<(), Error> {
-        let encrypted = user.key().encrypt(self.key.as_bytes())?;
         let sql_lot = db::lots::SqlLot {
             uuid: self.uuid.to_string(),
             name: self.name.clone(),
-            key_data: encrypted.data,
-            key_nonce: encrypted.nonce,
         };
-
         sql_lot.upsert(&db).await?;
+
+        let encrypted = user.key().encrypt(self.key.as_bytes())?;
+        let sql_user_lot_key = db::user_lot_keys::SqlUserLotKey {
+            username: user.username().into(),
+            lot: self.uuid().to_string(),
+            data: encrypted.data,
+            nonce: encrypted.nonce,
+        };
+        sql_user_lot_key.insert(&db).await?;
 
         // TODO: Collect errors and report after.
         for record in &self.records {
@@ -70,9 +75,11 @@ impl Lot {
 
     pub async fn load(db: &Database, name: &str, user: &User) -> Result<Self, Error> {
         let sql_lot = db::lots::SqlLot::select_by_name(&db, name).await?;
+        let sql_user_lot_key =
+            db::user_lot_keys::SqlUserLotKey::select(&db, user.username(), &sql_lot.uuid).await?;
         let encrypted = Encrypted {
-            data: sql_lot.key_data,
-            nonce: sql_lot.key_nonce,
+            data: sql_user_lot_key.data,
+            nonce: sql_user_lot_key.nonce,
         };
         let key_bytes = user.key().decrypt(&encrypted)?;
         let mut lot = Lot {
@@ -166,7 +173,11 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", "password".into()).expect("failed to make user");
+        let user = User::new("nixpulvis", "password".into())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
         let mut lot = Lot::new("lot a");
         lot.records
             .push(Record::new(&lot, RecordData::plain("a", "1")));

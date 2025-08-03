@@ -5,8 +5,6 @@ use sqlx::prelude::FromRow;
 pub(crate) struct SqlLot {
     pub(crate) uuid: String,
     pub(crate) name: String,
-    pub(crate) key_data: Vec<u8>,
-    pub(crate) key_nonce: Vec<u8>,
 }
 
 impl SqlLot {
@@ -19,33 +17,25 @@ impl SqlLot {
     pub async fn upsert(&self, db: &Database) -> Result<SqlLot, Error> {
         sqlx::query_as(
             r#"
-            INSERT INTO lots (uuid, name, key_data, key_nonce)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO lots (uuid, name)
+            VALUES (?, ?)
             ON CONFLICT(uuid) DO UPDATE SET
                 name = excluded.name
-            RETURNING uuid, name, key_data, key_nonce
+            RETURNING uuid, name
             "#,
         )
         .bind(&self.uuid)
         .bind(&self.name)
-        .bind(&self.key_data)
-        .bind(&self.key_nonce)
         .fetch_one(db.pool())
         .await
         .map_err(|e| e.into())
     }
 
     #[must_use]
-    #[allow(unused)]
-    pub async fn update_key(&self, db: &Database) {
-        unimplemented!()
-    }
-
-    #[must_use]
     pub async fn select_by_name(db: &Database, name: &str) -> Result<SqlLot, Error> {
         sqlx::query_as(
             r"
-            SELECT uuid, name, key_data, key_nonce
+            SELECT uuid, name
             FROM lots
             WHERE name = ?
             ",
@@ -86,8 +76,6 @@ mod tests {
         let lot = SqlLot {
             uuid: "123".into(),
             name: "a lot".into(),
-            key_data: b"keydata".to_vec(),
-            key_nonce: b"keynonce".to_vec(),
         };
         let mut inserted = lot.upsert(&db).await.expect("failed to insert lot");
         assert_eq!(inserted, lot);
@@ -104,8 +92,6 @@ mod tests {
         let lot = SqlLot {
             uuid: "123".into(),
             name: "a lot".into(),
-            key_data: b"keydata".to_vec(),
-            key_nonce: b"keynonce".to_vec(),
         };
         lot.upsert(&db).await.expect("failed to insert lot");
         let selected = SqlLot::select_by_name(&db, &lot.name)
