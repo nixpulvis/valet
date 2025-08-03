@@ -16,8 +16,8 @@ const VALIDATION: &[u8] = b"VALID";
 ///
 /// The user's password (and a random saved "salt") is used to derive the "user
 /// key", i.e. [`Key<User>`]. To generate this key we use a common Key
-/// Derivation Function (KDF), namely [`argon2`]. Each user record saves it's
-/// random salt value in order to prevent users with the same password from
+/// Derivation Function (KDF), namely [`argon2`][argon2]. Each user record saves
+/// it's random salt value in order to prevent users with the same password from
 /// getting the same key, and thus opening up the scheme to ["rainbow table"][1]
 /// attacks.
 ///
@@ -28,6 +28,7 @@ const VALIDATION: &[u8] = b"VALID";
 ///
 /// [1]: https://en.wikipedia.org/wiki/Rainbow_table
 /// [2]: https://en.wikipedia.org/wiki/Authenticated_encryption
+/// [argon2]: https://docs.rs/argon2/latest/argon2
 #[derive(PartialEq, Eq)]
 pub struct User {
     username: String,
