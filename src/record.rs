@@ -1,8 +1,9 @@
-use crate::db::records::SqlRecord;
-use crate::db::{self, Database};
-use crate::encrypt::{self, Encrypted, Key};
-use crate::lot::Lot;
-use crate::uuid::Uuid;
+use crate::{
+    db::{self, Database, records::SqlRecord},
+    encrypt::{self, Encrypted, Key},
+    lot::Lot,
+    uuid::Uuid,
+};
 use bitcode::{Decode, Encode};
 use std::collections::HashMap;
 use std::{fmt, io};

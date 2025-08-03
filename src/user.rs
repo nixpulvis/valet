@@ -1,10 +1,9 @@
-use std::{fmt::Debug, fmt::Formatter};
-
 use crate::{
     db::{self, Database},
     encrypt::{self, Encrypted, Key, Password, SALT_SIZE},
     lot::{self, Lot},
 };
+use std::{fmt::Debug, fmt::Formatter};
 
 const VALIDATION: &[u8] = b"VALID";
 
