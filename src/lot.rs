@@ -1,9 +1,9 @@
 use crate::{
-    Uuid,
     db::{self, Database},
     encrypt::{self, Encrypted, Key},
     record::{self, Record},
     user::User,
+    uuid::Uuid,
 };
 use std::fmt;
 
@@ -117,16 +117,14 @@ impl fmt::Debug for Lot {
 
 #[derive(Debug)]
 pub enum Error {
-    // TODO: We need to think this through a bit. Probably move the whole thing
-    // to crate::uuid.
-    Uuid(crate::Error),
+    Uuid(crate::uuid::Error),
     Encrypt(encrypt::Error),
     Record(record::Error),
     Database(db::Error),
 }
 
-impl From<crate::Error> for Error {
-    fn from(err: crate::Error) -> Self {
+impl From<crate::uuid::Error> for Error {
+    fn from(err: crate::uuid::Error) -> Self {
         Error::Uuid(err)
     }
 }

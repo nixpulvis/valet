@@ -1,8 +1,8 @@
-use crate::Uuid;
 use crate::db::records::SqlRecord;
 use crate::db::{self, Database};
 use crate::encrypt::{self, Encrypted, Key};
 use crate::lot::Lot;
+use crate::uuid::Uuid;
 use bitcode::{Decode, Encode};
 use std::collections::HashMap;
 use std::{fmt, io};
@@ -191,15 +191,15 @@ impl RecordData {
 #[derive(Debug)]
 pub enum Error {
     MissingLot,
-    Uuid(crate::Error),
+    Uuid(crate::uuid::Error),
     Database(db::Error),
     Encoding(bitcode::Error),
     Compression(io::Error),
     Encryption(encrypt::Error),
 }
 
-impl From<crate::Error> for Error {
-    fn from(err: crate::Error) -> Self {
+impl From<crate::uuid::Error> for Error {
+    fn from(err: crate::uuid::Error) -> Self {
         Error::Uuid(err)
     }
 }
