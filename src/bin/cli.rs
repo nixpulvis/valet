@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use clap_repl::ClapEditor;
 use clap_repl::reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory};
+use std::collections::HashMap;
+use std::fs::File;
 use std::io::{self, Write};
 use tokio;
 use valet::prelude::*;
@@ -16,9 +18,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum ValetCommand {
-    Validate { username: String },
-    Register { username: String },
-    Unlock { username: String },
+    Validate {
+        username: String,
+    },
+    Register {
+        username: String,
+    },
+    Import {
+        username: String,
+        #[arg(short, long = "type", required = true)]
+        ty: String,
+        path: String,
+    },
+    // Export { username: String, path: String },
+    Unlock {
+        username: String,
+    },
 }
 
 #[derive(Parser)]
@@ -74,6 +89,14 @@ async fn main() -> Result<(), valet::user::Error> {
                 .await
                 .expect("failed to save lot");
             println!("{} registered", username);
+        }
+        ValetCommand::Import { username, ty, path } => {
+            let user = User::load(&db, &username, password).await?;
+            let mut lot = Lot::load(&db, DEFAULT_LOT, &user).await?;
+
+            if ty == "apple" {
+                import_apple(&db, &mut lot, path).await;
+            }
         }
         ValetCommand::Unlock { username } => {
             let user = User::load(&db, &username, password).await?;
@@ -252,4 +275,53 @@ fn get_password() -> Password {
     // input character into a fixed length buffer. Maximum password lengths
     // could be something like 200 characters.
     rpassword::read_password().unwrap().into()
+}
+
+async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
+    let file = File::open(path).expect("failed to open file");
+    let mut rdr = csv::Reader::from_reader(file);
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct CsvRecord {
+        title: String,
+        #[serde(rename = "URL")]
+        url: String,
+        username: String,
+        password: String,
+        notes: Option<String>,
+        #[serde(rename = "OTPAuth")]
+        otp: Option<String>,
+    }
+
+    for result in rdr.deserialize::<CsvRecord>() {
+        match result {
+            Ok(csv_record) => {
+                let mut data = HashMap::new();
+                data.insert("url".into(), csv_record.url);
+                data.insert("username".into(), csv_record.username);
+                data.insert("password".into(), csv_record.password);
+                if let Some(notes) = csv_record.notes {
+                    data.insert("notes".into(), notes);
+                }
+                if let Some(otp) = csv_record.otp {
+                    data.insert("otp".into(), otp);
+                }
+                match Record::new(&lot, RecordData::domain(&csv_record.title, data))
+                    .insert(&db, lot)
+                    .await
+                {
+                    Ok(uuid) => {
+                        println!("Inserted {} => {}", csv_record.title, uuid.as_hyphenated())
+                    }
+                    Err(e) => {
+                        dbg!(e);
+                    }
+                }
+            }
+            Err(e) => {
+                dbg!(e);
+            }
+        }
+    }
 }
