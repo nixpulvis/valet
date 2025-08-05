@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt() {
         let lot = Lot::new("test");
-        let key = Key::<Lot>::new();
+        let key = Key::<Lot>::generate();
         let record = Record::new(&lot, RecordData::plain("foo", "bar"));
         let encrypted = record.encrypt(&key).expect("failed to encrypt");
         let decrypted_data = RecordData::decrypt(&encrypted, &key).expect("failed to decrypt");

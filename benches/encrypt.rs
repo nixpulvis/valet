@@ -3,11 +3,11 @@ use std::hint::black_box;
 use valet::encrypt::Key;
 
 fn keygen(c: &mut Criterion) {
-    c.bench_function("Key::new", |b| b.iter(|| Key::<()>::new()));
+    c.bench_function("Key::new", |b| b.iter(|| Key::<()>::generate()));
 }
 
 fn encryption(c: &mut Criterion) {
-    let key = Key::<()>::new();
+    let key = Key::<()>::generate();
     c.bench_function("Key::encrypt", |b| {
         b.iter(|| key.encrypt(black_box(b"plaintext")))
     });

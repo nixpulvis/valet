@@ -24,7 +24,7 @@ impl Lot {
             uuid: Uuid::now(),
             name: name.into(),
             records: Vec::new(),
-            key: Key::new(),
+            key: Key::generate(),
         }
     }
 

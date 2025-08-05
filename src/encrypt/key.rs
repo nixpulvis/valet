@@ -25,10 +25,14 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 pub struct Key<T>(AesKey<Aes256GcmSiv>, PhantomData<T>);
 
 impl<T> Key<T> {
-    pub fn new() -> Self {
+    /// Generate a new random key.
+    pub fn generate() -> Self {
         Key(Aes256GcmSiv::generate_key(&mut OsRng), PhantomData)
     }
 
+    /// Derive a key from a password and salt using [`argon2`].
+    ///
+    /// [`argon2`]: https://docs.rs/argon2/latest/argon2/
     pub fn from_password(password: Password, salt: &[u8]) -> Result<Self, Error> {
         let argon2 = Argon2::default();
         let mut output_key_material = [0u8; <Aes256GcmSiv as KeySizeUser>::KeySize::USIZE];
@@ -91,7 +95,7 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_test() {
-        let key = Key::<()>::new();
+        let key = Key::<()>::generate();
         let plaintext = b"this is a secret";
         let encrypted = key.encrypt(plaintext).expect("error encrypting");
         let decrypted = key.decrypt(&encrypted).expect("error dencrypting");
@@ -100,7 +104,7 @@ mod tests {
 
     #[test]
     fn as_from_bytes_test() {
-        let key_a = Key::<()>::new();
+        let key_a = Key::<()>::generate();
         let bytes = key_a.as_bytes();
         let key_b = Key::<()>::from_bytes(bytes);
         // The same key still shouldn't produce the same ciphertext. We
@@ -114,7 +118,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn from_bytes_panic_test() {
-        let key = Key::<()>::new();
+        let key = Key::<()>::generate();
         let bytes = key.as_bytes();
         Key::<()>::from_bytes(&bytes[0..5]);
     }
