@@ -235,7 +235,7 @@
 <a href=#235 id=235 data-nosnippet>235</a>    </span><span class="attr">#[test]
 <a href=#236 id=236 data-nosnippet>236</a>    </span><span class="kw">fn </span>encrypt_decrypt() {
 <a href=#237 id=237 data-nosnippet>237</a>        <span class="kw">let </span>lot = Lot::new(<span class="string">"test"</span>);
-<a href=#238 id=238 data-nosnippet>238</a>        <span class="kw">let </span>key = Key::&lt;Lot&gt;::new();
+<a href=#238 id=238 data-nosnippet>238</a>        <span class="kw">let </span>key = Key::&lt;Lot&gt;::generate();
 <a href=#239 id=239 data-nosnippet>239</a>        <span class="kw">let </span>record = Record::new(<span class="kw-2">&amp;</span>lot, RecordData::plain(<span class="string">"foo"</span>, <span class="string">"bar"</span>));
 <a href=#240 id=240 data-nosnippet>240</a>        <span class="kw">let </span>encrypted = record.encrypt(<span class="kw-2">&amp;</span>key).expect(<span class="string">"failed to encrypt"</span>);
 <a href=#241 id=241 data-nosnippet>241</a>        <span class="kw">let </span>decrypted_data = RecordData::decrypt(<span class="kw-2">&amp;</span>encrypted, <span class="kw-2">&amp;</span>key).expect(<span class="string">"failed to decrypt"</span>);
