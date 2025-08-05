@@ -94,7 +94,16 @@ mod tests {
     }
 
     #[test]
-    fn encrypt_decrypt_test() {
+    fn encrypt() {
+        let key = Key::<()>::generate();
+        assert_ne!(
+            key.encrypt(b"text").expect("error encrypting"),
+            key.encrypt(b"text").expect("error encrypting")
+        );
+    }
+
+    #[test]
+    fn encrypt_decrypt() {
         let key = Key::<()>::generate();
         let plaintext = b"this is a secret";
         let encrypted = key.encrypt(plaintext).expect("error encrypting");
@@ -103,21 +112,19 @@ mod tests {
     }
 
     #[test]
-    fn as_from_bytes_test() {
-        let key_a = Key::<()>::generate();
-        let bytes = key_a.as_bytes();
-        let key_b = Key::<()>::from_bytes(bytes);
-        // The same key still shouldn't produce the same ciphertext. We
-        // shouldn't panic though.
-        assert_ne!(
-            key_a.encrypt(b"").expect("error encrypting"),
-            key_b.encrypt(b"").expect("error encrypting")
-        );
+    fn as_from_bytes() {
+        let plaintext = b"text";
+        let key = Key::<()>::generate();
+        let encrypted = key.encrypt(plaintext).expect("error encrypting");
+        let bytes = key.as_bytes();
+        let key = Key::<()>::from_bytes(bytes);
+        let decrypted = key.decrypt(&encrypted).expect("error decrypting");
+        assert_eq!(plaintext, &decrypted[..]);
     }
 
     #[test]
     #[should_panic]
-    fn from_bytes_panic_test() {
+    fn from_bytes_panic() {
         let key = Key::<()>::generate();
         let bytes = key.as_bytes();
         Key::<()>::from_bytes(&bytes[0..5]);
