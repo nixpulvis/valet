@@ -111,33 +111,6 @@ impl Debug for User {
     }
 }
 
-// fn load_and_clobber_user(sql_user: SqlUser, password: String) -> Result<User, Error> {
-//     let salt: [u8; SALT_SIZE] = sql_user.salt.try_into().map_err(|_| Error::SaltError)?;
-//     let validation = Encrypted {
-//         data: sql_user.validation_data,
-//         nonce: sql_user.validation_nonce,
-//     };
-//     let user = User::load(sql_user.username, &password, salt, validation)?;
-//     unsafe {
-//         Self::clobber_password(password);
-//     }
-//     Ok(user)
-// }
-
-// // We make no attempt to create valid UTF-8 strings here, this is
-// // just to protect the memory.
-// unsafe fn clobber_password(mut password: String) {
-//     unsafe {
-//         let bytes = password.as_mut_vec();
-//         if let Ok(mut rng) = OsRng::new()
-//             && let Ok(_) = rng.try_fill(&mut bytes[..])
-//         {
-//         } else {
-//             panic!("Critical failure.")
-//         }
-//     }
-// }
-
 #[derive(Debug)]
 pub enum Error {
     Invalid,
