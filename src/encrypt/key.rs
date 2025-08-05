@@ -8,18 +8,19 @@ use rand_core::{OsRng, RngCore};
 use std::marker::PhantomData;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// A generic symmetric key used to achive privacy and integrity.
+/// A generic AES-GCM-SIV symmetric key used to achive privacy and integrity.
 ///
 /// This struct is generic over any type `T` to allow users to specify functions
 /// which expect spesific kinds of keys. For example, [`User::key`] returns a
 /// [`Key<User>`], whereas [`Lot::key`] returns a [`Key<Lot>`]. This helps
 /// prevent accidental misuse of keys.
 ///
+/// This structure is a thin wrapper around an `AesKey<Aes256GcmSiv>`, for
+/// more information, consult its [documentation][aes_gcm_siv].
+///
 /// [`User::key`]: crate::user::User::key
 /// [`Lot::key`]: crate::lot::Lot::key
-//
-// TODO: #15
-// Aes256 has a 512-bit key size, and achieves 256-bit security.
+/// [aes_gcm_siv]: https://docs.rs/aes-gcm-siv/latest/aes_gcm_siv/
 #[derive(PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct Key<T>(AesKey<Aes256GcmSiv>, PhantomData<T>);
 
