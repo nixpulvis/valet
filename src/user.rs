@@ -13,8 +13,8 @@ const VALIDATION: &[u8] = b"VALID";
 /// to either [`User::new`] or [`User::load`] is never saved anywhere and is
 /// kept in memory for as little time as possible.
 ///
-/// The user's password (and a random saved "salt") is used to derive the "user
-/// key", i.e. [`Key<User>`]. To generate this key we use a common Key
+/// The user's password (and a random saved "salt") is used to derive the _user
+/// key_, i.e. [`Key<User>`]. To generate this key we use a common Key
 /// Derivation Function (KDF), namely [`argon2`][argon2]. Each user record saves
 /// it's random salt value in order to prevent users with the same password from
 /// getting the same key, and thus opening up the scheme to ["rainbow table"][1]
@@ -97,6 +97,13 @@ impl User {
         }
     }
 
+    /// Load all of this user's lots.
+    ///
+    /// This function as well as [`Lot::load`] and [`Lot::load_all`] utilize the
+    /// `user_lot_keys` SQL table to determine lot membership as well as to
+    /// access the user encrypted lot key for each lot.
+    ///
+    /// For more information, see [`Lot`].
     pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {
         Ok(Lot::load_all(&db, self).await?)
     }

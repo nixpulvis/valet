@@ -10,6 +10,25 @@ use std::fmt;
 pub const DEFAULT_LOT: &'static str = "main";
 
 /// An encrypted collection of secrets.
+///
+/// Each lot has its own _lot key_, i.e. [`Key<Lot>`] which is used to encrypt
+/// all of the records within the lot. Users with access to a lot obtain the lot
+/// key through the `user_lot_keys` SQL table.
+///
+/// Example `user_lot_keys` table:
+///
+/// | username | lot |    data    |   nonce    |
+/// |----------|-----|------------|------------|
+/// | Alice    | `a` | `tvuZQ1XS` | `6jLC3aP9` |
+/// | Alice    | `b` | `LyZJM8GA` | `SCW2EWjc` |
+/// | Bob      | `a` | `dWPiZfO9` | `oQ/2Y845` |
+///
+/// The lot keys they derive:
+///
+/// |  Key   | `Decrypt_A` is Alice's            | `Decrypt_B` is Bob's              |
+/// |--------|-----------------------------------|-----------------------------------|
+/// | `Ka`   | `= Decrypt_A(tvuZQ1XS, 6jLC3aP9)` | `= Decrypt_B(dWPiZfO9, oQ/2Y845)` |
+/// | `Kb`   | `= Decrypt_A(LyZJM8GA, SCW2EWjc)` | N/A                               |
 #[derive(PartialEq, Eq)]
 pub struct Lot {
     uuid: Uuid<Self>,
@@ -73,6 +92,7 @@ impl Lot {
         Ok(self.uuid.clone())
     }
 
+    /// Load a user's lot by name.
     pub async fn load(db: &Database, name: &str, user: &User) -> Result<Self, Error> {
         let sql_lot = SqlLot::select_by_name(&db, name).await?;
         let sql_ulk = SqlUserLotKey::select(&db, user.username(), &sql_lot.uuid).await?;
@@ -80,6 +100,7 @@ impl Lot {
         Ok(lot)
     }
 
+    /// Load a user's lots.
     pub async fn load_all(db: &Database, user: &User) -> Result<Vec<Self>, Error> {
         let sql_ulks = SqlUserLotKey::select_all(&db, user.username()).await?;
         let mut lots = Vec::new();
