@@ -12,7 +12,29 @@ pub(crate) struct SqlUserLotKey {
 use crate::db::{Database, Error};
 
 impl SqlUserLotKey {
-    /// Select a user-lot key by username and lot.
+    /// Upsert a user's encrypted lot key.
+    #[must_use]
+    pub(crate) async fn upsert(&self, db: &Database) -> Result<Self, Error> {
+        sqlx::query_as(
+            r"
+            INSERT INTO user_lot_keys (username, lot, data, nonce)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(username, lot) DO UPDATE SET
+                data = excluded.data,
+                nonce = excluded.nonce
+            RETURNING username, lot, data, nonce
+            ",
+        )
+        .bind(&self.username)
+        .bind(&self.lot)
+        .bind(&self.data[..])
+        .bind(&self.nonce[..])
+        .fetch_one(db.pool())
+        .await
+        .map_err(|e| e.into())
+    }
+
+    /// Select a user's encrypted lot key by username and lot.
     #[must_use]
     pub(crate) async fn select(db: &Database, username: &str, lot: &str) -> Result<Self, Error> {
         sqlx::query_as(
@@ -28,25 +50,6 @@ impl SqlUserLotKey {
         .await
         .map_err(|e| e.into())
     }
-
-    /// Insert a user-lot key.
-    #[must_use]
-    pub(crate) async fn insert(&self, db: &Database) -> Result<Self, Error> {
-        sqlx::query_as(
-            r"
-            INSERT INTO user_lot_keys (username, lot, data, nonce)
-            VALUES (?, ?, ?, ?)
-            RETURNING username, lot, data, nonce
-            ",
-        )
-        .bind(&self.username)
-        .bind(&self.lot)
-        .bind(&self.data[..])
-        .bind(&self.nonce[..])
-        .fetch_one(db.pool())
-        .await
-        .map_err(|e| e.into())
-    }
 }
 
 #[cfg(test)]
@@ -55,7 +58,7 @@ mod tests {
     use crate::db::{Database, lots::SqlLot, users::SqlUser};
 
     #[tokio::test]
-    async fn insert_and_select() {
+    async fn upsert_and_select() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
@@ -81,9 +84,9 @@ mod tests {
             nonce: b"userlotnonce".to_vec(),
         };
         let inserted = key
-            .insert(&db)
+            .upsert(&db)
             .await
-            .expect("failed to insert user_lot_key");
+            .expect("failed to upsert user_lot_key");
         assert_eq!(inserted, key);
 
         // Select and check

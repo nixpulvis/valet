@@ -97,7 +97,6 @@ impl User {
         }
     }
 
-    // TODO: Use user_lot_keys join table
     pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {
         Ok(Lot::load_all(&db, self).await?)
     }

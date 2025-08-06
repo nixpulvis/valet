@@ -49,7 +49,7 @@ impl Lot {
     }
 
     /// Save this lot and its records to the database.
-    pub async fn save(&self, db: &Database, user: &User) -> Result<(), Error> {
+    pub async fn save(&self, db: &Database, user: &User) -> Result<Uuid<Self>, Error> {
         let sql_lot = db::lots::SqlLot {
             uuid: self.uuid.to_string(),
             name: self.name.clone(),
@@ -63,14 +63,14 @@ impl Lot {
             data: encrypted.data,
             nonce: encrypted.nonce,
         };
-        sql_user_lot_key.insert(&db).await?;
+        sql_user_lot_key.upsert(&db).await?;
 
         // TODO: Collect errors and report after.
         for record in &self.records {
             record.save(&db, self).await?;
         }
 
-        Ok(())
+        Ok(self.uuid.clone())
     }
 
     pub async fn load(db: &Database, name: &str, user: &User) -> Result<Self, Error> {
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save() {
+    async fn create_load() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
@@ -176,13 +176,24 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
-        lot.records
-            .push(Record::new(&lot, RecordData::plain("a", "1")));
-        lot.save(&db, &user).await.expect("failed to save lot");
-        lot.records
-            .push(Record::new(&lot, RecordData::plain("b", "2")));
-        lot.save(&db, &user).await.expect("failed to save lot");
+        let mut lot_a = Lot::new("lot a");
+        // Save the lot without any records.
+        lot_a.save(&db, &user).await.expect("failed to save lot");
+        // Insert a record.
+        Record::new(&lot_a, RecordData::plain("a", "1"))
+            .insert(&db, &mut lot_a)
+            .await
+            .expect("failed to insert record");
+        // Manually insert a record.
+        lot_a
+            .records
+            .push(Record::new(&lot_a, RecordData::plain("b", "2")));
+        lot_a.save(&db, &user).await.expect("failed to save lot");
+
+        let lot_b = Lot::load(&db, lot_a.name(), &user)
+            .await
+            .expect("failed to load lot");
+        assert_eq!(lot_a.records, lot_b.records);
     }
 
     #[tokio::test]
@@ -197,7 +208,41 @@ mod tests {
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
+        let lot_key = get_user_lot_key(&db, &user, &lot).await;
+        assert_eq!(lot.key().as_bytes(), lot_key.as_bytes());
+    }
 
+    #[tokio::test]
+    async fn user_lot_key_update() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".into())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let mut lot = Lot::new("lot a");
+        lot.records
+            .push(Record::new(&lot, RecordData::plain("a", "1")));
+        lot.save(&db, &user).await.expect("failed to save lot");
+        let lot_key_a = get_user_lot_key(&db, &user, &lot).await;
+        lot.key = Key::<Lot>::generate();
+        // Update lot key, user_lot_key, and reencrypt all records.
+        lot.save(&db, &user).await.expect("failed to save lot");
+        let lot_key_b = get_user_lot_key(&db, &user, &lot).await;
+        assert_ne!(lot_key_a.as_bytes(), lot_key_b.as_bytes());
+        // Ensure the records got reencrypted and we can still access them.
+        let lot = Lot::load(&db, lot.name(), &user)
+            .await
+            .expect("failed to load lot");
+        assert_eq!(1, lot.records.len());
+        assert_eq!("a", lot.records[0].data.label());
+    }
+
+    /// Returns the lot key for a given user/lot as decrypted from the
+    /// user_lot_keys table.
+    async fn get_user_lot_key(db: &Database, user: &User, lot: &Lot) -> Key<Lot> {
         let sql_user_lot_key =
             db::user_lot_keys::SqlUserLotKey::select(&db, user.username(), &lot.uuid().to_string())
                 .await
@@ -206,24 +251,11 @@ mod tests {
             data: sql_user_lot_key.data,
             nonce: sql_user_lot_key.nonce,
         };
-        let lot_key = Key::<Lot>::from_bytes(
+        Key::<Lot>::from_bytes(
             &user
                 .key()
                 .decrypt(&encrypted)
                 .expect("failed to decrypted lot key"),
-        );
-        assert_eq!(lot.key().as_bytes(), lot_key.as_bytes());
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn load() {
-        unimplemented!();
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn load_all() {
-        unimplemented!();
+        )
     }
 }
