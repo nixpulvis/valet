@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use clap_repl::ClapEditor;
 use clap_repl::reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory};
 use std::collections::HashMap;
+use std::fmt;
 use std::fs::File;
 use std::io::{self, Write};
 use tokio;
@@ -141,8 +142,7 @@ async fn main() -> Result<(), valet::user::Error> {
                                 for record in lot.records().iter() {
                                     let label = record.data().label();
                                     if label.starts_with(&path.label) {
-                                        // TODO: impl Display for Path.
-                                        println!("{:?}", Path::new(&path.lot, label));
+                                        println!("{}", Path::new(&path.lot, label));
                                     }
                                 }
                             } else {
@@ -216,6 +216,16 @@ impl Path {
                 lot: parts[1].into(),
                 label: parts[0].into(),
             }
+        }
+    }
+}
+
+impl fmt::Display for Path {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.label.is_empty() {
+            write!(f, "{}", self.lot)
+        } else {
+            write!(f, "{}::{}", self.lot, self.label)
         }
     }
 }
