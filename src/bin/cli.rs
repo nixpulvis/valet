@@ -52,6 +52,7 @@ enum Repl {
     Get {
         path: String,
     },
+    Clear,
     Lock,
 }
 
@@ -175,6 +176,13 @@ async fn main() -> Result<(), valet::user::Error> {
                     {
                         println!("{}::{}", lot.name(), record);
                     }
+                }
+                Repl::Clear => {
+                    // NOTE: Order matters here.
+                    // 2J first clears into scrollback
+                    // 3J then clears scrollback
+                    // H resets the cursor to the topleft
+                    print!("\x1b[2J\x1b[3J\x1b[H");
                 }
                 Repl::Lock => {
                     // TODO: There has to be a way to break out of `repl_async`...
