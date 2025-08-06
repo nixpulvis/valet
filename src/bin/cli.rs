@@ -129,8 +129,7 @@ async fn main() -> Result<(), valet::user::Error> {
                     for lot in user.lots(&db).await.expect("failed to load lots").iter() {
                         if lot.name().starts_with(&path.lot) {
                             if let Ok(lot) = Lot::load(&db, &path.lot, &user).await {
-                                // TODO: lot.records() : IntoIter
-                                for record in lot.records().iter() {
+                                for record in lot.records() {
                                     let label = record.data().label();
                                     if label.starts_with(&path.label) {
                                         println!("{}", Path::new(&path.lot, label));
