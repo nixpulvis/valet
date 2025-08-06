@@ -1,5 +1,5 @@
 use crate::{
-    db::{self, Database},
+    db::{self, Database, lots::SqlLot, user_lot_keys::SqlUserLotKey},
     encrypt::{self, Encrypted, Key},
     record::{self, Record},
     user::User,
@@ -74,12 +74,32 @@ impl Lot {
     }
 
     pub async fn load(db: &Database, name: &str, user: &User) -> Result<Self, Error> {
-        let sql_lot = db::lots::SqlLot::select_by_name(&db, name).await?;
-        let sql_user_lot_key =
-            db::user_lot_keys::SqlUserLotKey::select(&db, user.username(), &sql_lot.uuid).await?;
+        let sql_lot = SqlLot::select_by_name(&db, name).await?;
+        let sql_ulk = SqlUserLotKey::select(&db, user.username(), &sql_lot.uuid).await?;
+        let lot = Self::decrypt_and_build(&db, &user, sql_lot, sql_ulk).await?;
+        Ok(lot)
+    }
+
+    pub async fn load_all(db: &Database, user: &User) -> Result<Vec<Self>, Error> {
+        let sql_ulks = SqlUserLotKey::select_all(&db, user.username()).await?;
+        let mut lots = Vec::new();
+        for sql_ulk in sql_ulks {
+            let sql_lot = SqlLot::select(db, &sql_ulk.lot).await?;
+            let lot = Self::decrypt_and_build(&db, &user, sql_lot, sql_ulk).await?;
+            lots.push(lot);
+        }
+        Ok(lots)
+    }
+
+    async fn decrypt_and_build(
+        db: &Database,
+        user: &User,
+        sql_lot: SqlLot,
+        sql_ulk: SqlUserLotKey,
+    ) -> Result<Lot, Error> {
         let encrypted = Encrypted {
-            data: sql_user_lot_key.data,
-            nonce: sql_user_lot_key.nonce,
+            data: sql_ulk.data,
+            nonce: sql_ulk.nonce,
         };
         let key_bytes = user.key().decrypt(&encrypted)?;
         let mut lot = Lot {
@@ -90,25 +110,6 @@ impl Lot {
         };
         lot.records = Record::load_all(&db, &lot).await?;
         Ok(lot)
-    }
-
-    pub async fn load_all(db: &Database, user: &User) -> Result<Vec<Self>, Error> {
-        // let sql_lots = db::lots::SqlLot::select_by_user(&db, &self.username).await?;
-        // let mut lots = vec![];
-        // for sql_lot in sql_lots {
-        //     let mut lot = Lot {
-        //         username: sql_lot.username,
-        //         uuid: Uuid::from_str(&sql_lot.uuid).map_err(|e| lot::Error::Uuid(e))?,
-        //         records: vec![],
-        //         key: self.key.clone(),
-        //     };
-        //     // lot.load_records(&db).await?;
-        //     lots.push(lot);
-        // }
-        // Ok(lots)
-
-        let lot = Self::load(&db, DEFAULT_LOT, &user).await?;
-        Ok(vec![lot])
     }
 }
 
@@ -194,6 +195,35 @@ mod tests {
             .await
             .expect("failed to load lot");
         assert_eq!(lot_a.records, lot_b.records);
+    }
+
+    #[tokio::test]
+    async fn create_load_all() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".into())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let mut lot_a = Lot::new("lot a");
+        lot_a.save(&db, &user).await.expect("failed to save lot");
+        Record::new(&lot_a, RecordData::plain("a", "1"))
+            .insert(&db, &mut lot_a)
+            .await
+            .expect("failed to insert record");
+        let mut lot_b = Lot::new("lot b");
+        lot_b.save(&db, &user).await.expect("failed to save lot");
+        Record::new(&lot_b, RecordData::plain("b", "2"))
+            .insert(&db, &mut lot_b)
+            .await
+            .expect("failed to insert record");
+
+        let lots = Lot::load_all(&db, &user)
+            .await
+            .expect("failed to load lots");
+        assert_eq!(lots, vec![lot_a, lot_b]);
     }
 
     #[tokio::test]

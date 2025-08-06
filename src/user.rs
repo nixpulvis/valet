@@ -140,7 +140,7 @@ impl From<lot::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Database;
+    use crate::{Record, db::Database, record::RecordData};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -186,5 +186,32 @@ mod tests {
             .expect("failed to load user");
 
         assert_eq!(user, loaded);
+    }
+
+    #[tokio::test]
+    async fn lots() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".into())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let mut lot_a = Lot::new("lot a");
+        lot_a.save(&db, &user).await.expect("failed to save lot");
+        Record::new(&lot_a, RecordData::plain("a", "1"))
+            .insert(&db, &mut lot_a)
+            .await
+            .expect("failed to insert record");
+        let mut lot_b = Lot::new("lot b");
+        lot_b.save(&db, &user).await.expect("failed to save lot");
+        Record::new(&lot_b, RecordData::plain("b", "2"))
+            .insert(&db, &mut lot_b)
+            .await
+            .expect("failed to insert record");
+
+        let lots = user.lots(&db).await.expect("failed to load lots");
+        assert_eq!(lots, vec![lot_a, lot_b]);
     }
 }

@@ -32,6 +32,21 @@ impl SqlLot {
     }
 
     #[must_use]
+    pub async fn select(db: &Database, uuid: &str) -> Result<SqlLot, Error> {
+        sqlx::query_as(
+            r"
+            SELECT uuid, name
+            FROM lots
+            WHERE uuid = ?
+            ",
+        )
+        .bind(uuid)
+        .fetch_one(db.pool())
+        .await
+        .map_err(|e| e.into())
+    }
+
+    #[must_use]
     pub async fn select_by_name(db: &Database, name: &str) -> Result<SqlLot, Error> {
         sqlx::query_as(
             r"
@@ -45,22 +60,6 @@ impl SqlLot {
         .await
         .map_err(|e| e.into())
     }
-
-    // TODO: Use user_lot_keys to load.
-    // #[must_use]
-    // pub async fn select_by_user(db: &Database, username: &str) -> Result<Vec<SqlLot>, Error> {
-    //     sqlx::query_as(
-    //         r"
-    //         SELECT username, uuid
-    //         FROM lots
-    //         WHERE username = ?
-    //         ",
-    //     )
-    //     .bind(username)
-    //     .fetch_all(db.pool())
-    //     .await
-    //     .map_err(|e| e.into())
-    // }
 }
 
 #[cfg(test)]
@@ -85,6 +84,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn select() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let lot = SqlLot {
+            uuid: "123".into(),
+            name: "a lot".into(),
+        };
+        lot.upsert(&db).await.expect("failed to insert lot");
+        let selected = SqlLot::select(&db, &lot.uuid)
+            .await
+            .expect("failed to get name");
+        assert_eq!(selected, lot);
+    }
+
+    #[tokio::test]
     async fn select_by_name() {
         let db = Database::new("sqlite://:memory:")
             .await
@@ -99,11 +114,4 @@ mod tests {
             .expect("failed to get name");
         assert_eq!(selected, lot);
     }
-
-    // #[tokio::test]
-    // async fn select_by_user() {
-    //     let db = Database::new("sqlite://:memory:")
-    //         .await
-    //         .expect("failed to create database");
-    // }
 }

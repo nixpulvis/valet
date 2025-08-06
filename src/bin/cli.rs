@@ -58,18 +58,11 @@ enum Repl {
 
 #[derive(Subcommand)]
 enum LotCommand {
-    Create {
-        name: String,
-    },
-    List {
-        #[clap(default_value = "")]
-        path: String,
-    },
+    Create { name: String },
+    List,
     // Share { name: String, users: Vec<String> },
     // Unshare { name: String, users: Vec<String> },
-    Delete {
-        name: String,
-    },
+    Delete { name: String },
 }
 
 #[tokio::main]
@@ -122,12 +115,9 @@ async fn main() -> Result<(), valet::user::Error> {
                         .await
                         .expect("failed to save lot");
                 }
-                Repl::Lot(LotCommand::List { path }) => {
-                    let path = Path::parse(&path);
+                Repl::Lot(LotCommand::List) => {
                     for lot in user.lots(&db).await.expect("failed to load lots").iter() {
-                        if lot.name().starts_with(&path.lot) {
-                            println!("{}::", lot.name());
-                        }
+                        println!("{}", lot.name());
                     }
                 }
                 Repl::Lot(LotCommand::Delete { name }) => {
