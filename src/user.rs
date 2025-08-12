@@ -100,8 +100,8 @@ impl User {
     /// Load all of this user's lots.
     ///
     /// This function as well as [`Lot::load`] and [`Lot::load_all`] utilize the
-    /// `user_lot_keys` SQL table to determine lot membership as well as to
-    /// access the user encrypted lot key for each lot.
+    /// `user_lots` SQL table to determine lot membership as well as to access
+    /// the user encrypted lot key for each lot.
     ///
     /// For more information, see [`Lot`].
     pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {

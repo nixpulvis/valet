@@ -1,5 +1,5 @@
 use crate::{
-    db::{self, Database, lots::SqlLot, user_lot_keys::SqlUserLotKey},
+    db::{self, Database, lots::SqlLot, user_lots::SqlUserLot},
     encrypt::{self, Encrypted, Key},
     record::{self, Record},
     user::User,
@@ -13,9 +13,9 @@ pub const DEFAULT_LOT: &'static str = "main";
 ///
 /// Each lot has its own _lot key_, i.e. [`Key<Lot>`] which is used to encrypt
 /// all of the records within the lot. Users with access to a lot obtain the lot
-/// key through the `user_lot_keys` SQL table.
+/// key through the `user_lots` SQL table.
 ///
-/// Example `user_lot_keys` table:
+/// Example `user_lots` table:
 ///
 /// | username | lot |    data    |   nonce    |
 /// |----------|-----|------------|------------|
@@ -69,20 +69,21 @@ impl Lot {
 
     /// Save this lot and its records to the database.
     pub async fn save(&self, db: &Database, user: &User) -> Result<Uuid<Self>, Error> {
-        let sql_lot = db::lots::SqlLot {
-            uuid: self.uuid.to_string(),
-            name: self.name.clone(),
-        };
-        sql_lot.upsert(&db).await?;
+        let uuid = self.uuid.to_string();
+        if db::lots::SqlLot::select(db, &uuid).await?.is_none() {
+            let sql_lot = db::lots::SqlLot { uuid: uuid.clone() };
+            sql_lot.insert(&db).await?;
+        }
 
         let encrypted = user.key().encrypt(self.key.as_bytes())?;
-        let sql_user_lot_key = db::user_lot_keys::SqlUserLotKey {
+        let sql_user_lot = db::user_lots::SqlUserLot {
             username: user.username().into(),
-            lot: self.uuid().to_string(),
+            lot: uuid,
+            name: self.name.clone(),
             data: encrypted.data,
             nonce: encrypted.nonce,
         };
-        sql_user_lot_key.upsert(&db).await?;
+        sql_user_lot.upsert(&db).await?;
 
         // TODO: Collect errors and report after.
         for record in &self.records {
@@ -93,21 +94,25 @@ impl Lot {
     }
 
     /// Load a user's lot by name.
-    pub async fn load(db: &Database, name: &str, user: &User) -> Result<Self, Error> {
-        let sql_lot = SqlLot::select_by_name(&db, name).await?;
-        let sql_ulk = SqlUserLotKey::select(&db, user.username(), &sql_lot.uuid).await?;
-        let lot = Self::decrypt_and_build(&db, &user, sql_lot, sql_ulk).await?;
-        Ok(lot)
+    pub async fn load(db: &Database, name: &str, user: &User) -> Result<Option<Self>, Error> {
+        let sql_ulk = SqlUserLot::select_by_name(&db, user.username(), name).await?;
+        if let Some(sql_lot) = SqlLot::select(&db, &sql_ulk.lot).await? {
+            let lot = Self::decrypt_and_build(&db, &user, sql_lot, sql_ulk).await?;
+            Ok(Some(lot))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Load a user's lots.
     pub async fn load_all(db: &Database, user: &User) -> Result<Vec<Self>, Error> {
-        let sql_ulks = SqlUserLotKey::select_all(&db, user.username()).await?;
+        let sql_ulks = SqlUserLot::select_all(&db, user.username()).await?;
         let mut lots = Vec::new();
         for sql_ulk in sql_ulks {
-            let sql_lot = SqlLot::select(db, &sql_ulk.lot).await?;
-            let lot = Self::decrypt_and_build(&db, &user, sql_lot, sql_ulk).await?;
-            lots.push(lot);
+            if let Some(sql_lot) = SqlLot::select(db, &sql_ulk.lot).await? {
+                let lot = Self::decrypt_and_build(&db, &user, sql_lot, sql_ulk).await?;
+                lots.push(lot);
+            }
         }
         Ok(lots)
     }
@@ -116,7 +121,7 @@ impl Lot {
         db: &Database,
         user: &User,
         sql_lot: SqlLot,
-        sql_ulk: SqlUserLotKey,
+        sql_ulk: SqlUserLot,
     ) -> Result<Lot, Error> {
         let encrypted = Encrypted {
             data: sql_ulk.data,
@@ -125,7 +130,7 @@ impl Lot {
         let key_bytes = user.key().decrypt(&encrypted)?;
         let mut lot = Lot {
             uuid: Uuid::parse(&sql_lot.uuid)?,
-            name: sql_lot.name,
+            name: sql_ulk.name,
             records: Vec::new(),
             key: Key::from_bytes(&key_bytes),
         };
@@ -214,7 +219,8 @@ mod tests {
 
         let lot_b = Lot::load(&db, lot_a.name(), &user)
             .await
-            .expect("failed to load lot");
+            .expect("failed to load lot")
+            .expect("no lot");
         assert_eq!(lot_a.records, lot_b.records);
     }
 
@@ -248,7 +254,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_lot_key() {
+    async fn user_lot() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
@@ -264,7 +270,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_lot_key_update() {
+    async fn user_lot_update() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
@@ -279,28 +285,29 @@ mod tests {
         lot.save(&db, &user).await.expect("failed to save lot");
         let lot_key_a = get_user_lot_key(&db, &user, &lot).await;
         lot.key = Key::<Lot>::generate();
-        // Update lot key, user_lot_key, and reencrypt all records.
+        // Update lot key, user_lot, and reencrypt all records.
         lot.save(&db, &user).await.expect("failed to save lot");
         let lot_key_b = get_user_lot_key(&db, &user, &lot).await;
         assert_ne!(lot_key_a.as_bytes(), lot_key_b.as_bytes());
         // Ensure the records got reencrypted and we can still access them.
         let lot = Lot::load(&db, lot.name(), &user)
             .await
-            .expect("failed to load lot");
+            .expect("failed to load lot")
+            .expect("no lot");
         assert_eq!(1, lot.records.len());
         assert_eq!("a", lot.records[0].data.label());
     }
 
     /// Returns the lot key for a given user/lot as decrypted from the
-    /// user_lot_keys table.
+    /// user_lots table.
     async fn get_user_lot_key(db: &Database, user: &User, lot: &Lot) -> Key<Lot> {
-        let sql_user_lot_key =
-            db::user_lot_keys::SqlUserLotKey::select(&db, user.username(), &lot.uuid().to_string())
+        let sql_user_lot =
+            db::user_lots::SqlUserLot::select(&db, user.username(), &lot.uuid().to_string())
                 .await
                 .expect("failed to select user lot key");
         let encrypted = Encrypted {
-            data: sql_user_lot_key.data,
-            nonce: sql_user_lot_key.nonce,
+            data: sql_user_lot.data,
+            nonce: sql_user_lot.nonce,
         };
         Key::<Lot>::from_bytes(
             &user

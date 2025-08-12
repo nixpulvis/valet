@@ -66,5 +66,5 @@ impl From<url::ParseError> for Error {
 
 pub(crate) mod lots;
 pub(crate) mod records;
-pub(crate) mod user_lot_keys;
+pub(crate) mod user_lots;
 pub(crate) mod users;
