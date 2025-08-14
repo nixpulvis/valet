@@ -29,7 +29,7 @@ enum ValetCommand {
         username: String,
         #[arg(short, long = "type", required = true)]
         ty: String,
-        path: String,
+        filepath: String,
     },
     // Export { username: String, path: String },
     Unlock {
@@ -58,18 +58,11 @@ enum Repl {
 
 #[derive(Subcommand)]
 enum LotCommand {
-    Create {
-        name: String,
-    },
-    List {
-        #[clap(default_value = "")]
-        path: String,
-    },
+    Create { name: String },
+    List,
     // Share { name: String, users: Vec<String> },
     // Unshare { name: String, users: Vec<String> },
-    Delete {
-        name: String,
-    },
+    Delete { name: String },
 }
 
 #[tokio::main]
@@ -92,12 +85,18 @@ async fn main() -> Result<(), valet::user::Error> {
                 .expect("failed to save lot");
             println!("{} registered", username);
         }
-        ValetCommand::Import { username, ty, path } => {
+        ValetCommand::Import {
+            username,
+            ty,
+            filepath,
+        } => {
             let user = User::load(&db, &username, password).await?;
-            let mut lot = Lot::load(&db, DEFAULT_LOT, &user).await?;
-
-            if ty == "apple" {
-                import_apple(&db, &mut lot, path).await;
+            if let Some(mut lot) = Lot::load(&db, DEFAULT_LOT, &user).await? {
+                if ty == "apple" {
+                    import_apple(&db, &mut lot, filepath).await;
+                }
+            } else {
+                eprintln!("Missing LOT: {}", DEFAULT_LOT);
             }
         }
         ValetCommand::Unlock { username } => {
@@ -122,12 +121,9 @@ async fn main() -> Result<(), valet::user::Error> {
                         .await
                         .expect("failed to save lot");
                 }
-                Repl::Lot(LotCommand::List { path }) => {
-                    let path = Path::parse(&path);
+                Repl::Lot(LotCommand::List) => {
                     for lot in user.lots(&db).await.expect("failed to load lots").iter() {
-                        if lot.name().starts_with(&path.lot) {
-                            println!("{}::", lot.name());
-                        }
+                        println!("{}", lot.name());
                     }
                 }
                 Repl::Lot(LotCommand::Delete { name }) => {
@@ -138,9 +134,8 @@ async fn main() -> Result<(), valet::user::Error> {
                     let path = Path::parse(&path);
                     for lot in user.lots(&db).await.expect("failed to load lots").iter() {
                         if lot.name().starts_with(&path.lot) {
-                            if let Ok(lot) = Lot::load(&db, &path.lot, &user).await {
-                                // TODO: lot.records() : IntoIter
-                                for record in lot.records().iter() {
+                            if let Ok(Some(lot)) = Lot::load(&db, &path.lot, &user).await {
+                                for record in lot.records() {
                                     let label = record.data().label();
                                     if label.starts_with(&path.label) {
                                         println!("{}", Path::new(&path.lot, label));
@@ -154,27 +149,31 @@ async fn main() -> Result<(), valet::user::Error> {
                 }
                 Repl::Put { path, data } => {
                     let path = Path::parse(&path);
-                    let mut lot = Lot::load(&db, &path.lot, &user)
+                    if let Some(mut lot) = Lot::load(&db, &path.lot, &user)
                         .await
-                        .expect("failed to load lot");
-                    // TODO: Delete old record if it exists.
-                    // TODO: Add deleted record to new record's history.
-                    Record::new(&lot, RecordData::plain(&path.label, &data))
-                        .insert(&db, &mut lot)
-                        .await
-                        .expect("failed to insert record");
+                        .expect("failed to load lot")
+                    {
+                        // TODO: Delete old record if it exists.
+                        // TODO: Add deleted record to new record's history.
+                        Record::new(&lot, RecordData::plain(&path.label, &data))
+                            .insert(&db, &mut lot)
+                            .await
+                            .expect("failed to insert record");
+                    }
                 }
                 Repl::Get { path } => {
                     let path = Path::parse(&path);
-                    let lot = Lot::load(&db, &path.lot, &user)
+                    if let Some(lot) = Lot::load(&db, &path.lot, &user)
                         .await
-                        .expect("failed to load lot");
-                    if let Some(record) = lot
-                        .records()
-                        .iter()
-                        .find(|r| r.data().label() == path.label)
+                        .expect("failed to load lot")
                     {
-                        println!("{}::{}", lot.name(), record);
+                        if let Some(record) = lot
+                            .records()
+                            .iter()
+                            .find(|r| r.data().label() == path.label)
+                        {
+                            println!("{}::{}", lot.name(), record);
+                        }
                     }
                 }
                 Repl::Clear => {

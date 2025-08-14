@@ -13,8 +13,8 @@ const VALIDATION: &[u8] = b"VALID";
 /// to either [`User::new`] or [`User::load`] is never saved anywhere and is
 /// kept in memory for as little time as possible.
 ///
-/// The user's password (and a random saved "salt") is used to derive the "user
-/// key", i.e. [`Key<User>`]. To generate this key we use a common Key
+/// The user's password (and a random saved "salt") is used to derive the _user
+/// key_, i.e. [`Key<User>`]. To generate this key we use a common Key
 /// Derivation Function (KDF), namely [`argon2`][argon2]. Each user record saves
 /// it's random salt value in order to prevent users with the same password from
 /// getting the same key, and thus opening up the scheme to ["rainbow table"][1]
@@ -97,7 +97,13 @@ impl User {
         }
     }
 
-    // TODO: Use user_lot_keys join table
+    /// Load all of this user's lots.
+    ///
+    /// This function as well as [`Lot::load`] and [`Lot::load_all`] utilize the
+    /// `user_lots` SQL table to determine lot membership as well as to access
+    /// the user encrypted lot key for each lot.
+    ///
+    /// For more information, see [`Lot`].
     pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {
         Ok(Lot::load_all(&db, self).await?)
     }
@@ -141,7 +147,7 @@ impl From<lot::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Database;
+    use crate::{Record, db::Database, record::RecordData};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -187,5 +193,32 @@ mod tests {
             .expect("failed to load user");
 
         assert_eq!(user, loaded);
+    }
+
+    #[tokio::test]
+    async fn lots() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".into())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let mut lot_a = Lot::new("lot a");
+        lot_a.save(&db, &user).await.expect("failed to save lot");
+        Record::new(&lot_a, RecordData::plain("a", "1"))
+            .insert(&db, &mut lot_a)
+            .await
+            .expect("failed to insert record");
+        let mut lot_b = Lot::new("lot b");
+        lot_b.save(&db, &user).await.expect("failed to save lot");
+        Record::new(&lot_b, RecordData::plain("b", "2"))
+            .insert(&db, &mut lot_b)
+            .await
+            .expect("failed to insert record");
+
+        let lots = user.lots(&db).await.expect("failed to load lots");
+        assert_eq!(lots, vec![lot_a, lot_b]);
     }
 }
