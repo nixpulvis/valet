@@ -1,28 +1,28 @@
-use std::{ops::Deref, pin::Pin};
+use std::ops::Deref;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// A safer wrapper for plaintext password strings.
 ///
-/// This structure both pins it's reference and zeros the memory on drop.
+/// This structure zeros it's memory on drop.
 //
 // TODO: Is there a way in the GUI to avoid cloning the password to send it to
 // a async function?
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub struct Password(Pin<String>);
+pub struct Password(String);
 
 impl Password {
     pub fn empty() -> Self {
-        Password(Pin::new(String::new()))
+        Password(String::new())
     }
 
-    pub fn as_str(&self) -> &str {
-        &*self.0
+    pub fn as_mut(&mut self) -> &mut String {
+        &mut self.0
     }
 }
 
 impl From<String> for Password {
     fn from(password: String) -> Self {
-        Password(Pin::new(password))
+        Password(password)
     }
 }
 
@@ -31,13 +31,13 @@ impl From<String> for Password {
 #[cfg(test)]
 impl From<&'static str> for Password {
     fn from(password: &'static str) -> Self {
-        Password(Pin::new(password.into()))
+        Password(password.into())
     }
 }
 
 impl From<&mut str> for Password {
     fn from(password: &mut str) -> Self {
-        let zeroize = Password(Pin::new(password.into()));
+        let zeroize = Password(password.into());
         password.zeroize();
         zeroize
     }

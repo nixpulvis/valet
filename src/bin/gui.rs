@@ -136,7 +136,7 @@ impl eframe::App for ValetApp {
                 let username_re = ui.add(egui::TextEdit::singleline(&mut self.username));
                 ui.label("Password:");
                 let password_re = ui.add(
-                    egui::TextEdit::singleline(&mut self.password.as_str())
+                    egui::TextEdit::singleline(self.password.as_mut())
                         .password(!self.show_password),
                 );
                 ui.checkbox(&mut self.show_password, "Show password");
