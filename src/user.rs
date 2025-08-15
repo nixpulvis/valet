@@ -77,7 +77,11 @@ impl User {
         Ok(self)
     }
 
-    pub async fn load(db: &Database, username: &str, password: Password) -> Result<Self, Error> {
+    pub async fn load<'a>(
+        db: &'a Database,
+        username: &'a str,
+        password: Password<'a>,
+    ) -> Result<Self, Error> {
         let sql_user = db::users::SqlUser::select(&db, &username).await?;
         let key = Key::from_password(password, &sql_user.salt[..])?;
         let validation = Encrypted {
@@ -147,19 +151,19 @@ impl From<lot::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Record, db::Database, record::RecordData};
+    use crate::{Record, db::Database, pw, record::RecordData};
     use std::time::{Duration, Instant};
 
     #[test]
     fn new_validate() {
-        let user = User::new("alice", "password".into()).expect("failed to create user");
+        let user = User::new("alice", pw!("password")).expect("failed to create user");
         assert!(user.validate());
     }
 
     #[test]
     fn invalid() {
-        let mut user = User::new("alice", "password".into()).expect("failed to create user");
-        let imposter = User::new("charlie", "password".into()).expect("failed to create user");
+        let mut user = User::new("alice", pw!("password")).expect("failed to create user");
+        let imposter = User::new("charlie", pw!("password")).expect("failed to create user");
         user.validation = imposter
             .key()
             .encrypt(VALIDATION)
@@ -170,7 +174,7 @@ mod tests {
     #[test]
     fn new_is_slow() {
         let start = Instant::now();
-        User::new("alice", "password".into()).expect("failed to create user");
+        User::new("alice", pw!("password")).expect("failed to create user");
         let duration = start.elapsed();
         assert!(duration > Duration::from_millis(200));
     }
@@ -181,14 +185,14 @@ mod tests {
             .await
             .expect("failed to create database");
 
-        let password = "password";
-        let user = User::new("alice", password.into())
+        let password = pw!("password");
+        let user = User::new("alice", pw!(password.clone()))
             .expect("failed to create user")
             .register(&db)
             .await
             .expect("failed to register user");
 
-        let loaded = User::load(&db, &user.username, password.into())
+        let loaded = User::load(&db, &user.username, password)
             .await
             .expect("failed to load user");
 
@@ -200,7 +204,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", "password".into())
+        let user = User::new("nixpulvis", pw!("password"))
             .expect("failed to make user")
             .register(&db)
             .await
