@@ -3,8 +3,6 @@ use egui_inbox::UiInbox;
 use std::{env, sync::Arc};
 use tokio::runtime;
 use valet::prelude::*;
-// use valet::db::{Database, Lots, Users};
-// use valet::user::User;
 
 const MIN_SIZE: [f32; 2] = [200., 160.];
 const MAX_SIZE: [f32; 2] = [400., 350.];
@@ -32,7 +30,7 @@ struct ValetApp {
 
     // TODO: This should be it's own widget.
     username: String,
-    password: Password,
+    password: PasswordBuf,
     show_password: bool,
     login_inbox: UiInbox<User>,
 
@@ -59,7 +57,7 @@ impl ValetApp {
             user: None,
 
             username: "".into(),
-            password: Password::empty(),
+            password: PasswordBuf::empty(),
             show_password: false,
             login_inbox: UiInbox::new(),
 
@@ -128,7 +126,7 @@ impl eframe::App for ValetApp {
                 if let Some(user) = self.login_inbox.read(ui).last() {
                     self.user = Some(Arc::new(user));
                     // TODO: Do we clear the username or not?
-                    self.password = Password::empty();
+                    self.password = PasswordBuf::empty();
                     self.show_password = false;
                 }
 
@@ -157,7 +155,9 @@ impl eframe::App for ValetApp {
                             let db = Database::new(&db_url)
                                 .await
                                 .expect("error getting database");
-                            let user = User::load(&db, &username, password).await.expect("TODO");
+                            let user = User::load(&db, &username, pw!(password))
+                                .await
+                                .expect("TODO");
                             if user.validate() {
                                 tx.send(user).ok();
                             }
@@ -171,7 +171,7 @@ impl eframe::App for ValetApp {
                         let tx = self.login_inbox.sender();
                         self.rt.spawn(async move {
                             let db = Database::new(&db_url).await.expect("error getting DB");
-                            let user = User::new(&username, password)
+                            let user = User::new(&username, pw!(password))
                                 .expect("TODO")
                                 .register(&db)
                                 .await

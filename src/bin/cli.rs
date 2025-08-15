@@ -4,7 +4,7 @@ use clap_repl::reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::Write;
 use tokio;
 use valet::prelude::*;
 
@@ -65,12 +65,25 @@ enum LotCommand {
     Delete { name: String },
 }
 
+// TODO: Error handling.
+macro_rules! get_password {
+    () => {{
+        print!("Password: ");
+        std::io::stdout().flush().ok();
+        // TODO: Can we write our own STDIN reader which avoids allocation
+        // altogether by disabling the buffered input (raw mode) and copies each
+        // input character into a fixed length buffer. Maximum password lengths
+        // could be something like 200 characters.
+        pw!(rpassword::read_password().unwrap())
+    }};
+}
+
 #[tokio::main]
 async fn main() -> Result<(), valet::user::Error> {
     let cli = Cli::parse();
     let db = Database::new(&cli.database).await?;
 
-    let password = get_password();
+    let password = get_password!();
 
     match &cli.command {
         ValetCommand::Validate { username } => {
@@ -281,17 +294,6 @@ fn test_path_parse() {
         },
         Path::parse("lot::sublot::label")
     );
-}
-
-// TODO: Error handling.
-fn get_password() -> Password {
-    print!("Password: ");
-    io::stdout().flush().ok();
-    // TODO: Can we write our own STDIN reader which avoids allocation
-    // altogether by disabling the buffered input (raw mode) and copies each
-    // input character into a fixed length buffer. Maximum password lengths
-    // could be something like 200 characters.
-    rpassword::read_password().unwrap().into()
 }
 
 async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {

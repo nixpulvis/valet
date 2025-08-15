@@ -83,13 +83,13 @@ impl<T> Key<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encrypt::generate_salt;
+    use crate::{encrypt::generate_salt, pw};
 
     #[test]
     fn from_password() {
         let salt = generate_salt();
         let key =
-            Key::<()>::from_password("user1password".into(), &salt).expect("error generating key");
+            Key::<()>::from_password(pw!("user1password"), &salt).expect("error generating key");
         assert_eq!(256 / 8, key.0.len());
     }
 

@@ -214,7 +214,7 @@ impl From<db::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{encrypt::Key, lot::Lot, user::User};
+    use crate::{encrypt::Key, lot::Lot, pw, user::User};
 
     #[test]
     fn new() {
@@ -251,7 +251,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", "password".into())
+        let user = User::new("nixpulvis", pw!("password"))
             .expect("failed to make user")
             .register(&db)
             .await
@@ -271,7 +271,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", "password".into())
+        let user = User::new("nixpulvis", pw!("password"))
             .expect("failed to make user")
             .register(&db)
             .await
