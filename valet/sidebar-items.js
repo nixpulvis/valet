@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["db","encrypt","lot","prelude","record","user","uuid"]};
+window.SIDEBAR_ITEMS = {"macro":["pw"],"mod":["db","encrypt","lot","prelude","record","user","uuid"]};

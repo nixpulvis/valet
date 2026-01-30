@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src/lot.rs`."><title>lot.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-84e720fa.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="valet" data-themes="" data-resource-suffix="" data-rustdoc-version="1.89.0 (29483883e 2025-08-04)" data-channel="1.89.0" data-search-js="search-92309212.js" data-settings-js="settings-5514c975.js" ><script src="../../static.files/storage-4e99c027.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-fd3af306.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-32bb7600.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">valet/</div>lot.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use crate</span>::{
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src/lot.rs`."><title>lot.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-ca0dd0c4.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="valet" data-themes="" data-resource-suffix="" data-rustdoc-version="1.93.0 (254b59607 2026-01-19)" data-channel="1.93.0" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-a3946164.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-a410ff4d.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">valet/</div>lot.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use crate</span>::{
 <a href=#2 id=2 data-nosnippet>2</a>    db::{<span class="self">self</span>, Database, lots::SqlLot, user_lots::SqlUserLot},
 <a href=#3 id=3 data-nosnippet>3</a>    encrypt::{<span class="self">self</span>, Encrypted, Key},
 <a href=#4 id=4 data-nosnippet>4</a>    record::{<span class="self">self</span>, Record},
@@ -184,7 +184,7 @@
 <a href=#184 id=184 data-nosnippet>184</a><span class="attr">#[cfg(test)]
 <a href=#185 id=185 data-nosnippet>185</a></span><span class="kw">mod </span>tests {
 <a href=#186 id=186 data-nosnippet>186</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
-<a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">use crate</span>::{db::Database, record::RecordData};
+<a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">use crate</span>::{db::Database, pw, record::RecordData};
 <a href=#188 id=188 data-nosnippet>188</a>
 <a href=#189 id=189 data-nosnippet>189</a>    <span class="attr">#[test]
 <a href=#190 id=190 data-nosnippet>190</a>    </span><span class="kw">fn </span>new() {
@@ -198,7 +198,7 @@
 <a href=#198 id=198 data-nosnippet>198</a>        <span class="kw">let </span>db = Database::new(<span class="string">"sqlite://:memory:"</span>)
 <a href=#199 id=199 data-nosnippet>199</a>            .<span class="kw">await
 <a href=#200 id=200 data-nosnippet>200</a>            </span>.expect(<span class="string">"failed to create database"</span>);
-<a href=#201 id=201 data-nosnippet>201</a>        <span class="kw">let </span>user = User::new(<span class="string">"nixpulvis"</span>, <span class="string">"password"</span>.into())
+<a href=#201 id=201 data-nosnippet>201</a>        <span class="kw">let </span>user = User::new(<span class="string">"nixpulvis"</span>, <span class="macro">pw!</span>(<span class="string">"password"</span>))
 <a href=#202 id=202 data-nosnippet>202</a>            .expect(<span class="string">"failed to make user"</span>)
 <a href=#203 id=203 data-nosnippet>203</a>            .register(<span class="kw-2">&amp;</span>db)
 <a href=#204 id=204 data-nosnippet>204</a>            .<span class="kw">await
@@ -229,7 +229,7 @@
 <a href=#229 id=229 data-nosnippet>229</a>        <span class="kw">let </span>db = Database::new(<span class="string">"sqlite://:memory:"</span>)
 <a href=#230 id=230 data-nosnippet>230</a>            .<span class="kw">await
 <a href=#231 id=231 data-nosnippet>231</a>            </span>.expect(<span class="string">"failed to create database"</span>);
-<a href=#232 id=232 data-nosnippet>232</a>        <span class="kw">let </span>user = User::new(<span class="string">"nixpulvis"</span>, <span class="string">"password"</span>.into())
+<a href=#232 id=232 data-nosnippet>232</a>        <span class="kw">let </span>user = User::new(<span class="string">"nixpulvis"</span>, <span class="macro">pw!</span>(<span class="string">"password"</span>))
 <a href=#233 id=233 data-nosnippet>233</a>            .expect(<span class="string">"failed to make user"</span>)
 <a href=#234 id=234 data-nosnippet>234</a>            .register(<span class="kw-2">&amp;</span>db)
 <a href=#235 id=235 data-nosnippet>235</a>            .<span class="kw">await
@@ -258,7 +258,7 @@
 <a href=#258 id=258 data-nosnippet>258</a>        <span class="kw">let </span>db = Database::new(<span class="string">"sqlite://:memory:"</span>)
 <a href=#259 id=259 data-nosnippet>259</a>            .<span class="kw">await
 <a href=#260 id=260 data-nosnippet>260</a>            </span>.expect(<span class="string">"failed to create database"</span>);
-<a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">let </span>user = User::new(<span class="string">"nixpulvis"</span>, <span class="string">"password"</span>.into())
+<a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">let </span>user = User::new(<span class="string">"nixpulvis"</span>, <span class="macro">pw!</span>(<span class="string">"password"</span>))
 <a href=#262 id=262 data-nosnippet>262</a>            .expect(<span class="string">"failed to make user"</span>)
 <a href=#263 id=263 data-nosnippet>263</a>            .register(<span class="kw-2">&amp;</span>db)
 <a href=#264 id=264 data-nosnippet>264</a>            .<span class="kw">await
@@ -274,7 +274,7 @@
 <a href=#274 id=274 data-nosnippet>274</a>        <span class="kw">let </span>db = Database::new(<span class="string">"sqlite://:memory:"</span>)
 <a href=#275 id=275 data-nosnippet>275</a>            .<span class="kw">await
 <a href=#276 id=276 data-nosnippet>276</a>            </span>.expect(<span class="string">"failed to create database"</span>);
-<a href=#277 id=277 data-nosnippet>277</a>        <span class="kw">let </span>user = User::new(<span class="string">"nixpulvis"</span>, <span class="string">"password"</span>.into())
+<a href=#277 id=277 data-nosnippet>277</a>        <span class="kw">let </span>user = User::new(<span class="string">"nixpulvis"</span>, <span class="macro">pw!</span>(<span class="string">"password"</span>))
 <a href=#278 id=278 data-nosnippet>278</a>            .expect(<span class="string">"failed to make user"</span>)
 <a href=#279 id=279 data-nosnippet>279</a>            .register(<span class="kw-2">&amp;</span>db)
 <a href=#280 id=280 data-nosnippet>280</a>            .<span class="kw">await
@@ -316,4 +316,5 @@
 <a href=#316 id=316 data-nosnippet>316</a>                .expect(<span class="string">"failed to decrypted lot key"</span>),
 <a href=#317 id=317 data-nosnippet>317</a>        )
 <a href=#318 id=318 data-nosnippet>318</a>    }
-<a href=#319 id=319 data-nosnippet>319</a>}</code></pre></div></section></main></body></html>
+<a href=#319 id=319 data-nosnippet>319</a>}
+</code></pre></div></section></main></body></html>
