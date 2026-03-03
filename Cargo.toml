@@ -47,6 +47,7 @@ zeroize = { version = "1.8", features = ["derive"] }
 clap = { version = "4.5", features = ["derive"] }
 # TODO: I'll probably need to implement something like this myself.
 clap-repl = { version = "0.3", features = ["async"] }
+clap_complete = "4.5"
 
 # GUI Dependencies
 eframe = { version = "0.32", optional = true }

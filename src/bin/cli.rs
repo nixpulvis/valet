@@ -1,10 +1,11 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{Shell, generate};
 use clap_repl::ClapEditor;
 use clap_repl::reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory};
 use std::collections::HashMap;
-use std::fmt;
 use std::fs::File;
 use std::io::Write;
+use std::{fmt, io};
 use tokio;
 use valet::prelude::*;
 
@@ -35,6 +36,13 @@ enum ValetCommand {
     Unlock {
         username: String,
     },
+    #[command(subcommand)]
+    Config(ConfigCommand),
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    GenerateCompletions { shell: Shell },
 }
 
 #[derive(Parser)]
@@ -81,16 +89,17 @@ macro_rules! get_password {
 #[tokio::main]
 async fn main() -> Result<(), valet::user::Error> {
     let cli = Cli::parse();
-    let db = Database::new(&cli.database).await?;
-
-    let password = get_password!();
 
     match &cli.command {
         ValetCommand::Validate { username } => {
+            let db = Database::new(&cli.database).await?;
+            let password = get_password!();
             let user = User::load(&db, &username, password).await?;
             println!("{} validated", user.username());
         }
         ValetCommand::Register { username } => {
+            let db = Database::new(&cli.database).await?;
+            let password = get_password!();
             let user = User::new(&username, password)?.register(&db).await?;
             Lot::new(DEFAULT_LOT)
                 .save(&db, &user)
@@ -103,6 +112,8 @@ async fn main() -> Result<(), valet::user::Error> {
             ty,
             filepath,
         } => {
+            let db = Database::new(&cli.database).await?;
+            let password = get_password!();
             let user = User::load(&db, &username, password).await?;
             if let Some(mut lot) = Lot::load(&db, DEFAULT_LOT, &user).await? {
                 if ty == "apple" {
@@ -113,6 +124,8 @@ async fn main() -> Result<(), valet::user::Error> {
             }
         }
         ValetCommand::Unlock { username } => {
+            let db = Database::new(&cli.database).await?;
+            let password = get_password!();
             let user = User::load(&db, &username, password).await?;
 
             let prompt = DefaultPrompt {
@@ -202,6 +215,11 @@ async fn main() -> Result<(), valet::user::Error> {
                 }
             })
             .await;
+        }
+        ValetCommand::Config(ConfigCommand::GenerateCompletions { shell }) => {
+            let mut cmd = Cli::command();
+            let name = cmd.get_name().to_owned();
+            generate(*shell, &mut cmd, name, &mut io::stdout());
         }
     }
 
