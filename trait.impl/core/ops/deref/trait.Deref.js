@@ -1,5 +1,5 @@
 (function() {
-    var implementors = Object.fromEntries([["valet",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/ops/deref/trait.Deref.html\" title=\"trait core::ops::deref::Deref\">Deref</a> for <a class=\"struct\" href=\"valet/encrypt/struct.PasswordBuf.html\" title=\"struct valet::encrypt::PasswordBuf\">PasswordBuf</a>"],["impl&lt;T&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/ops/deref/trait.Deref.html\" title=\"trait core::ops::deref::Deref\">Deref</a> for <a class=\"struct\" href=\"valet/uuid/struct.Uuid.html\" title=\"struct valet::uuid::Uuid\">Uuid</a>&lt;T&gt;"]]]]);
+    var implementors = Object.fromEntries([["valet",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.1/core/ops/deref/trait.Deref.html\" title=\"trait core::ops::deref::Deref\">Deref</a> for <a class=\"struct\" href=\"valet/encrypt/struct.PasswordBuf.html\" title=\"struct valet::encrypt::PasswordBuf\">PasswordBuf</a>"],["impl&lt;T&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.1/core/ops/deref/trait.Deref.html\" title=\"trait core::ops::deref::Deref\">Deref</a> for <a class=\"struct\" href=\"valet/uuid/struct.Uuid.html\" title=\"struct valet::uuid::Uuid\">Uuid</a>&lt;T&gt;"]]]]);
     if (window.register_implementors) {
         window.register_implementors(implementors);
     } else {
