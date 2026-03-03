@@ -42,6 +42,14 @@ impl SqlUser {
         .await
         .map_err(|e| e.into())
     }
+
+    #[must_use]
+    pub(crate) async fn list(db: &Database) -> Result<Vec<String>, Error> {
+        sqlx::query_scalar(r"SELECT username FROM users")
+            .fetch_all(db.pool())
+            .await
+            .map_err(|e| e.into())
+    }
 }
 
 #[cfg(test)]
@@ -78,7 +86,34 @@ mod tests {
         user.insert(&db).await.expect("failed to insert user");
         let selected = SqlUser::select(&db, &user.username)
             .await
-            .expect("failed to create user");
+            .expect("failed to select user");
         assert_eq!(selected, user);
+    }
+
+    #[tokio::test]
+    async fn list() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        SqlUser {
+            username: "alice".into(),
+            salt: b"low sodium".into(),
+            validation_data: b"test".into(),
+            validation_nonce: b"not".into(),
+        }
+        .insert(&db)
+        .await
+        .expect("failed to insert user");
+        SqlUser {
+            username: "bob".into(),
+            salt: b"low sodium".into(),
+            validation_data: b"test".into(),
+            validation_nonce: b"not".into(),
+        }
+        .insert(&db)
+        .await
+        .expect("failed to insert user");
+        let list = SqlUser::list(&db).await.expect("failed to list users");
+        assert_eq!(["alice", "bob"], &list[..]);
     }
 }

@@ -111,6 +111,11 @@ impl User {
     pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {
         Ok(Lot::load_all(&db, self).await?)
     }
+
+    /// Return the list of registered usernames from the database.
+    pub async fn list(db: &Database) -> Result<Vec<String>, Error> {
+        db::users::SqlUser::list(db).await.map_err(Into::into)
+    }
 }
 
 impl Debug for User {
@@ -224,5 +229,24 @@ mod tests {
 
         let lots = user.lots(&db).await.expect("failed to load lots");
         assert_eq!(lots, vec![lot_a, lot_b]);
+    }
+
+    #[tokio::test]
+    async fn list() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        User::new("alice", pw!("password"))
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        User::new("bob", pw!("password"))
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let list = User::list(&db).await.expect("failed to list users");
+        assert_eq!(["alice", "bob"], &list[..]);
     }
 }
