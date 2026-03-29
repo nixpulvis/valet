@@ -37,6 +37,10 @@ struct ValetApp {
     // TODO: Delete me.
     mock_inbox: UiInbox<Vec<Lot>>,
     lots: Vec<Lot>,
+
+    show_new_record: bool,
+    new_label: String,
+    new_value: String,
 }
 
 impl ValetApp {
@@ -63,6 +67,10 @@ impl ValetApp {
 
             mock_inbox: UiInbox::new(),
             lots: Vec::new(),
+
+            show_new_record: false,
+            new_label: String::new(),
+            new_value: String::new(),
         }
     }
 }
@@ -72,11 +80,17 @@ impl eframe::App for ValetApp {
         egui::TopBottomPanel::top("my_panel").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    ui.set_width(35.);
                     if self.user.is_some() {
+                        if ui.button("New Record").clicked() {
+                            self.show_new_record = true;
+                            ui.close();
+                        }
                         if ui.button("Lock").clicked() {
                             self.user = None;
                             self.lots.clear();
+                            self.show_new_record = false;
+                            self.new_label.clear();
+                            self.new_value.clear();
                             self.login_inbox = UiInbox::new();
                             ctx.send_viewport_cmd(ViewportCommand::InnerSize(MIN_SIZE.into()));
                         }
@@ -98,11 +112,12 @@ impl eframe::App for ValetApp {
             if self.lots.is_empty() {
                 let db_url = self.db_url.clone();
                 let tx = self.mock_inbox.sender();
+                let user2 = user.clone();
                 self.rt.spawn(async move {
                     let db = Database::new(&db_url)
                         .await
                         .expect("error getting database");
-                    let lots = user.lots(&db).await.expect("failed to load lots");
+                    let lots = user2.lots(&db).await.expect("failed to load lots");
                     tx.send(lots).ok();
                 });
             }
@@ -111,15 +126,73 @@ impl eframe::App for ValetApp {
                 self.lots = lots;
             }
 
+            // Snapshot the records for the main lot to avoid borrow conflicts in the closure.
+            let main_lot_records: Option<Vec<String>> = self
+                .lots
+                .iter()
+                .find(|l| l.name() == DEFAULT_LOT)
+                .map(|lot| lot.records().iter().map(|r| format!("{}", r.data())).collect());
+
             egui::CentralPanel::default().show(ctx, |ui| {
-                for lot in self.lots.iter() {
+                if self.show_new_record {
+                    ui.label("Label:");
+                    ui.add(egui::TextEdit::singleline(&mut self.new_label).desired_width(f32::INFINITY));
+                    ui.label("Value:");
+                    ui.add(egui::TextEdit::singleline(&mut self.new_value).desired_width(f32::INFINITY));
+                    ui.add_space(4.);
+                    ui.horizontal(|ui| {
+                        let can_add = !self.new_label.is_empty() && !self.new_value.is_empty();
+                        if ui
+                            .add_enabled(can_add, egui::Button::new("Add Record"))
+                            .clicked()
+                        {
+                            let db_url = self.db_url.clone();
+                            let tx = self.mock_inbox.sender();
+                            let label = std::mem::take(&mut self.new_label);
+                            let value = std::mem::take(&mut self.new_value);
+                            self.show_new_record = false;
+                            self.lots.clear();
+                            self.rt.spawn(async move {
+                                let db = Database::new(&db_url)
+                                    .await
+                                    .expect("error getting database");
+                                if let Some(lot) = Lot::load(&db, DEFAULT_LOT, &user)
+                                    .await
+                                    .expect("failed to load main lot")
+                                {
+                                    let record =
+                                        Record::new(&lot, RecordData::plain(&label, &value));
+                                    record.save(&db, &lot).await.expect("failed to save record");
+                                }
+                                let lots = user.lots(&db).await.expect("failed to reload lots");
+                                tx.send(lots).ok();
+                            });
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_new_record = false;
+                            self.new_label.clear();
+                            self.new_value.clear();
+                        }
+                    });
                     ui.separator();
-                    ui.label(format!("Lot: {}", lot.name()));
-                    ui.separator();
-                    for record in lot.records().iter() {
-                        ui.label(format!("{}", record.data()));
-                    }
                 }
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    match &main_lot_records {
+                        None => {
+                            ui.label("Loading...");
+                        }
+                        Some(records) if records.is_empty() => {
+                            ui.label("No records yet.");
+                        }
+                        Some(records) => {
+                            for text in records {
+                                ui.label(text);
+                                ui.separator();
+                            }
+                        }
+                    }
+                });
             });
         } else {
             egui::CentralPanel::default().show(ctx, |ui| {
