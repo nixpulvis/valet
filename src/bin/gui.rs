@@ -4,8 +4,8 @@ use std::{env, sync::Arc};
 use tokio::runtime;
 use valet::prelude::*;
 
-const MIN_SIZE: [f32; 2] = [200., 160.];
-const MAX_SIZE: [f32; 2] = [400., 350.];
+const MIN_SIZE: [f32; 2] = [200., 168.];
+const UNLOCKED_DEFAULT_SIZE: [f32; 2] = [400., 600.];
 
 fn main() {
     let mut options = eframe::NativeOptions::default();
@@ -13,7 +13,7 @@ fn main() {
         .viewport
         .with_inner_size(MIN_SIZE)
         .with_min_inner_size(MIN_SIZE)
-        .with_max_inner_size(MAX_SIZE);
+        .with_resizable(false);
     eframe::run_native(
         "Valet",
         options,
@@ -41,6 +41,9 @@ struct ValetApp {
     show_new_record: bool,
     new_label: String,
     new_value: String,
+
+    search: String,
+    lock_label: String,
 }
 
 impl ValetApp {
@@ -71,6 +74,9 @@ impl ValetApp {
             show_new_record: false,
             new_label: String::new(),
             new_value: String::new(),
+
+            search: String::new(),
+            lock_label: String::new(),
         }
     }
 }
@@ -78,35 +84,68 @@ impl ValetApp {
 impl eframe::App for ValetApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("my_panel").show(ctx, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if self.user.is_some() {
-                        if ui.button("New Record").clicked() {
-                            self.show_new_record = true;
-                            ui.close();
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(0, 4))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if self.user.is_some() {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let unlocked_width = ui.fonts(|f| {
+                                        f.layout_no_wrap(
+                                            "Unlocked".into(),
+                                            ui.style().text_styles[&egui::TextStyle::Button]
+                                                .clone(),
+                                            egui::Color32::WHITE,
+                                        )
+                                        .rect
+                                        .width()
+                                    });
+                                    let lock_btn = ui.add(
+                                        egui::Button::new(&self.lock_label)
+                                            .frame(false)
+                                            .min_size(egui::vec2(unlocked_width, 0.)),
+                                    );
+                                    if lock_btn.hovered() {
+                                        self.lock_label = "Lock".into();
+                                    } else {
+                                        self.lock_label = "Unlocked".into();
+                                    }
+                                    if lock_btn.clicked() {
+                                        self.user = None;
+                                        self.lots.clear();
+                                        self.show_new_record = false;
+                                        self.new_label.clear();
+                                        self.new_value.clear();
+                                        self.search.clear();
+                                        self.lock_label = "Unlocked".into();
+                                        self.login_inbox = UiInbox::new();
+                                        ctx.send_viewport_cmd(ViewportCommand::InnerSize(
+                                            MIN_SIZE.into(),
+                                        ));
+                                        ctx.send_viewport_cmd(ViewportCommand::Resizable(false));
+                                    }
+                                    if ui.button("New").clicked() {
+                                        self.show_new_record = true;
+                                    }
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.search)
+                                            .hint_text("Search")
+                                            .desired_width(f32::INFINITY),
+                                    );
+                                },
+                            );
+                        } else {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("Locked");
+                                },
+                            );
                         }
-                        if ui.button("Lock").clicked() {
-                            self.user = None;
-                            self.lots.clear();
-                            self.show_new_record = false;
-                            self.new_label.clear();
-                            self.new_value.clear();
-                            self.login_inbox = UiInbox::new();
-                            ctx.send_viewport_cmd(ViewportCommand::InnerSize(MIN_SIZE.into()));
-                        }
-                    }
-                    if ui.button("Quit").clicked() {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.user.is_some() {
-                        ui.label("Unlocked");
-                    } else {
-                        ui.label("Locked");
-                    }
-                });
-            });
+                    });
+                }); // Frame
         });
         if let Some(user) = self.user.clone() {
             if self.lots.is_empty() {
@@ -127,73 +166,142 @@ impl eframe::App for ValetApp {
             }
 
             // Snapshot the records for the main lot to avoid borrow conflicts in the closure.
-            let main_lot_records: Option<Vec<String>> = self
+            let main_lot_records: Option<Vec<(String, String)>> = self
                 .lots
                 .iter()
                 .find(|l| l.name() == DEFAULT_LOT)
-                .map(|lot| lot.records().iter().map(|r| format!("{}", r.data())).collect());
-
-            egui::CentralPanel::default().show(ctx, |ui| {
-                if self.show_new_record {
-                    ui.label("Label:");
-                    ui.add(egui::TextEdit::singleline(&mut self.new_label).desired_width(f32::INFINITY));
-                    ui.label("Value:");
-                    ui.add(egui::TextEdit::singleline(&mut self.new_value).desired_width(f32::INFINITY));
-                    ui.add_space(4.);
-                    ui.horizontal(|ui| {
-                        let can_add = !self.new_label.is_empty() && !self.new_value.is_empty();
-                        if ui
-                            .add_enabled(can_add, egui::Button::new("Add Record"))
-                            .clicked()
-                        {
-                            let db_url = self.db_url.clone();
-                            let tx = self.mock_inbox.sender();
-                            let label = std::mem::take(&mut self.new_label);
-                            let value = std::mem::take(&mut self.new_value);
-                            self.show_new_record = false;
-                            self.lots.clear();
-                            self.rt.spawn(async move {
-                                let db = Database::new(&db_url)
-                                    .await
-                                    .expect("error getting database");
-                                if let Some(lot) = Lot::load(&db, DEFAULT_LOT, &user)
-                                    .await
-                                    .expect("failed to load main lot")
-                                {
-                                    let record =
-                                        Record::new(&lot, RecordData::plain(&label, &value));
-                                    record.save(&db, &lot).await.expect("failed to save record");
-                                }
-                                let lots = user.lots(&db).await.expect("failed to reload lots");
-                                tx.send(lots).ok();
-                            });
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.show_new_record = false;
-                            self.new_label.clear();
-                            self.new_value.clear();
-                        }
-                    });
-                    ui.separator();
-                }
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    match &main_lot_records {
-                        None => {
-                            ui.label("Loading...");
-                        }
-                        Some(records) if records.is_empty() => {
-                            ui.label("No records yet.");
-                        }
-                        Some(records) => {
-                            for text in records {
-                                ui.label(text);
-                                ui.separator();
-                            }
-                        }
-                    }
+                .map(|lot| {
+                    lot.records()
+                        .iter()
+                        .map(|r| (r.data().label().to_owned(), r.password().to_owned()))
+                        .collect()
                 });
-            });
+
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(ctx.style().visuals.panel_fill))
+                .show(ctx, |ui| {
+                    if self.show_new_record {
+                        egui::Frame::NONE
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.label("Label:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.new_label)
+                                        .desired_width(f32::INFINITY),
+                                );
+                                ui.label("Value:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.new_value)
+                                        .desired_width(f32::INFINITY),
+                                );
+                                ui.add_space(4.);
+                                ui.horizontal(|ui| {
+                                    let can_add =
+                                        !self.new_label.is_empty() && !self.new_value.is_empty();
+                                    if ui
+                                        .add_enabled(can_add, egui::Button::new("Add Record"))
+                                        .clicked()
+                                    {
+                                        let db_url = self.db_url.clone();
+                                        let tx = self.mock_inbox.sender();
+                                        let label = std::mem::take(&mut self.new_label);
+                                        let value = std::mem::take(&mut self.new_value);
+                                        self.show_new_record = false;
+                                        self.lots.clear();
+                                        self.rt.spawn(async move {
+                                            let db = Database::new(&db_url)
+                                                .await
+                                                .expect("error getting database");
+                                            if let Some(lot) = Lot::load(&db, DEFAULT_LOT, &user)
+                                                .await
+                                                .expect("failed to load main lot")
+                                            {
+                                                let record = Record::new(
+                                                    &lot,
+                                                    RecordData::plain(&label, &value),
+                                                );
+                                                record
+                                                    .save(&db, &lot)
+                                                    .await
+                                                    .expect("failed to save record");
+                                            }
+                                            let lots = user
+                                                .lots(&db)
+                                                .await
+                                                .expect("failed to reload lots");
+                                            tx.send(lots).ok();
+                                        });
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        self.show_new_record = false;
+                                        self.new_label.clear();
+                                        self.new_value.clear();
+                                    }
+                                });
+                            }); // inner_margin Frame
+                        ui.separator();
+                    }
+
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        egui::Frame::NONE
+                            .inner_margin(egui::Margin {
+                                left: 8,
+                                right: 8,
+                                top: 4,
+                                bottom: 0,
+                            })
+                            .show(ui, |ui| {
+                                let query = self.search.to_lowercase();
+                                match &main_lot_records {
+                                    None => {
+                                        ui.label("Loading...");
+                                    }
+                                    Some(records) if records.is_empty() => {
+                                        ui.label("No records yet.");
+                                    }
+                                    Some(records) => {
+                                        let mut any = false;
+                                        for (label, password) in records {
+                                            if query.is_empty()
+                                                || label.to_lowercase().contains(&query)
+                                            {
+                                                ui.horizontal(|ui| {
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            let btn = ui.button("Copy");
+                                                            ui.with_layout(
+                                                                egui::Layout::left_to_right(
+                                                                    egui::Align::Center,
+                                                                ),
+                                                                |ui| {
+                                                                    ui.add(
+                                                                        egui::Label::new(label)
+                                                                            .truncate(),
+                                                                    );
+                                                                },
+                                                            );
+                                                            if btn.clicked() {
+                                                                ui.ctx()
+                                                                    .copy_text(password.clone());
+                                                            }
+                                                        },
+                                                    );
+                                                });
+                                                ui.separator();
+                                                any = true;
+                                            }
+                                        }
+                                        if !any {
+                                            ui.label("No matching records.");
+                                        }
+                                    }
+                                }
+                            }); // inner_margin Frame
+                    });
+                });
         } else {
             egui::CentralPanel::default().show(ctx, |ui| {
                 if let Some(user) = self.login_inbox.read(ui).last() {
@@ -201,6 +309,10 @@ impl eframe::App for ValetApp {
                     // TODO: Do we clear the username or not?
                     self.password = PasswordBuf::empty();
                     self.show_password = false;
+                    ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(
+                        UNLOCKED_DEFAULT_SIZE.into(),
+                    ));
+                    ui.ctx().send_viewport_cmd(ViewportCommand::Resizable(true));
                 }
 
                 ui.label("Username:");

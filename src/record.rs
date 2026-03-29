@@ -35,6 +35,15 @@ impl Record {
         &self.data
     }
 
+    pub fn label(&self) -> &str {
+        self.data.label()
+    }
+
+    // TODO: Should be a Password type
+    pub fn password(&self) -> &str {
+        self.data.password()
+    }
+
     pub fn encrypt(&self, key: &Key<Lot>) -> Result<Encrypted, Error> {
         self.data.encrypt(key)
     }
@@ -109,10 +118,15 @@ impl fmt::Debug for Record {
 
 #[derive(Encode, Decode, Debug, Eq, PartialEq)]
 pub enum RecordData {
+    // TODO: We should really generalize the concept of a "label" to allow for
+    // the HashMap to be the label here. We can then store a single (or many)
+    // passwords separately.
+    // TODO: Use PasswordBuf here.
     Domain(String, HashMap<String, String>),
     Plain(String, String),
 }
 
+// TODO: Don't display passwords.
 impl fmt::Display for RecordData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -151,6 +165,21 @@ impl RecordData {
         match self {
             RecordData::Domain(s, _) => &s,
             RecordData::Plain(s, _) => &s,
+        }
+    }
+
+    pub fn password(&self) -> &str {
+        match self {
+            RecordData::Domain(_, attrs) => {
+                if attrs.contains_key("password") {
+                    &attrs["password"]
+                } else if attrs.len() == 1 {
+                    &attrs.iter().next().unwrap().1
+                } else {
+                    ""
+                }
+            }
+            RecordData::Plain(_, s) => &s,
         }
     }
 
