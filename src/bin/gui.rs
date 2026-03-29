@@ -83,6 +83,14 @@ impl ValetApp {
 
 impl eframe::App for ValetApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Fill the entire screen with the panel background before any panels render,
+        // preventing a dark flash on startup or window resize.
+        ctx.layer_painter(egui::LayerId::background()).rect_filled(
+            ctx.screen_rect(),
+            egui::CornerRadius::ZERO,
+            ctx.style().visuals.panel_fill,
+        );
+
         egui::TopBottomPanel::top("my_panel").show(ctx, |ui| {
             egui::Frame::NONE
                 .inner_margin(egui::Margin::symmetric(0, 4))
