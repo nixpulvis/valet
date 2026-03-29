@@ -1,3 +1,0 @@
-CREATE TABLE IF NOT EXISTS lots (
-    uuid      TEXT  PRIMARY KEY NOT NULL
-);

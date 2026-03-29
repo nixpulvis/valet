@@ -1,6 +1,5 @@
 use sea_orm::DatabaseConnection;
-use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
-use std::str::FromStr;
+use sqlx::SqlitePool;
 use url::Url;
 
 pub const DEFAULT_URL: &'static str = "valet.sqlite";
@@ -12,8 +11,7 @@ impl Database {
         let url = Self::parse_url(input)?;
 
         // Create the sqlx pool and run migrations on it.
-        let opts = SqliteConnectOptions::from_str(&url)?.pragma("foreign_keys", "ON");
-        let pool = SqlitePool::connect_with(opts).await?;
+        let pool = SqlitePool::connect(&url).await?;
         sqlx::migrate!("./migrations")
             .run(&pool)
             .await
