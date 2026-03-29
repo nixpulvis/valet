@@ -23,6 +23,7 @@ name = "record"
 harness = false
 
 [features]
+orm = []
 gui = ["dep:eframe", "dep:egui_inbox"]
 
 [dev-dependencies]
@@ -37,6 +38,7 @@ rand_core = "0.6"
 rpassword = "7.4"
 serde = { version = "1.0", features = ["derive"] }
 snap = "1.1.1"
+sea-orm = { version = "2.0.0-rc.37", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 tokio = { version = "1.46", features = ["full"] }
 url = "2.5"

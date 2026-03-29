@@ -35,8 +35,8 @@ struct ValetApp {
     login_inbox: UiInbox<User>,
 
     // TODO: Delete me.
-    mock_inbox: UiInbox<Vec<Lot>>,
-    lots: Vec<Lot>,
+    mock_inbox: UiInbox<Vec<(Lot, Vec<Record>)>>,
+    lots: Vec<(Lot, Vec<Record>)>,
 
     show_new_record: bool,
     new_label: String,
@@ -165,7 +165,12 @@ impl eframe::App for ValetApp {
                         .await
                         .expect("error getting database");
                     let lots = user2.lots(&db).await.expect("failed to load lots");
-                    tx.send(lots).ok();
+                    let mut lots_with_records = Vec::new();
+                    for lot in lots {
+                        let records = lot.records(&db).await.expect("failed to load records");
+                        lots_with_records.push((lot, records));
+                    }
+                    tx.send(lots_with_records).ok();
                 });
             }
 
@@ -177,9 +182,9 @@ impl eframe::App for ValetApp {
             let main_lot_records: Option<Vec<(String, String)>> = self
                 .lots
                 .iter()
-                .find(|l| l.name() == DEFAULT_LOT)
-                .map(|lot| {
-                    lot.records()
+                .find(|(l, _)| l.name() == DEFAULT_LOT)
+                .map(|(_, records)| {
+                    records
                         .iter()
                         .map(|r| (r.data().label().to_owned(), r.password().to_owned()))
                         .collect()
@@ -229,7 +234,7 @@ impl eframe::App for ValetApp {
                                                     RecordData::plain(&label, &value),
                                                 );
                                                 record
-                                                    .save(&db, &lot)
+                                                    .upsert(&db, &lot)
                                                     .await
                                                     .expect("failed to save record");
                                             }
@@ -237,7 +242,15 @@ impl eframe::App for ValetApp {
                                                 .lots(&db)
                                                 .await
                                                 .expect("failed to reload lots");
-                                            tx.send(lots).ok();
+                                            let mut lots_with_records = Vec::new();
+                                            for lot in lots {
+                                                let records = lot
+                                                    .records(&db)
+                                                    .await
+                                                    .expect("failed to load records");
+                                                lots_with_records.push((lot, records));
+                                            }
+                                            tx.send(lots_with_records).ok();
                                         });
                                     }
                                     if ui.button("Cancel").clicked() {

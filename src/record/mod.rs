@@ -1,16 +1,17 @@
 use crate::{
-    db::{self, Database, records::SqlRecord},
+    db::{self, Database},
     encrypt::{self, Encrypted, Key},
     lot::Lot,
     uuid::Uuid,
 };
 use bitcode::{Decode, Encode};
+use sea_orm::{IntoActiveModel, entity::prelude::*, sea_query::OnConflict};
 use std::collections::HashMap;
 use std::{fmt, io};
 
 pub struct Record {
     pub(crate) uuid: Uuid<Self>,
-    pub(crate) lot: Uuid<Lot>,
+    pub(crate) lot_uuid: Uuid<Lot>,
     pub(crate) data: RecordData,
 }
 
@@ -18,7 +19,7 @@ impl Record {
     pub fn new(lot: &Lot, data: RecordData) -> Self {
         Record {
             uuid: Uuid::now(),
-            lot: lot.uuid().clone(),
+            lot_uuid: lot.uuid().clone(),
             data,
         }
     }
@@ -27,8 +28,12 @@ impl Record {
         &self.uuid
     }
 
-    pub fn lot(&self) -> &Uuid<Lot> {
-        &self.lot
+    pub fn lot_uuid(&self) -> &Uuid<Lot> {
+        &self.lot_uuid
+    }
+
+    pub fn lot(&self) -> Lot {
+        unimplemented!()
     }
 
     pub fn data(&self) -> &RecordData {
@@ -48,42 +53,53 @@ impl Record {
         self.data.encrypt(key)
     }
 
-    /// Save this record to the database.
-    pub async fn save(&self, db: &Database, lot: &Lot) -> Result<Uuid<Self>, Error> {
+    /// Save this record to the database and return its uuid.
+    pub async fn upsert(&self, db: &Database, lot: &Lot) -> Result<Uuid<Self>, Error> {
         let uuid = self.uuid.clone();
         let encrypted = self.data.encrypt(lot.key())?;
-        let sql_record = SqlRecord {
-            lot: self.lot.to_string(),
+        // TODO: Only Set values that changed? To do this we'd need to track the
+        // changed values in this Record struct... which seems redundant, since
+        // the orm::ActiveModel already does that. Perhaps we can figure out a
+        // nice way to avoid the duplicate Record and orm::(Active)Model structs
+        // down the road.
+        let model = self::orm::Model {
             uuid: self.uuid.to_string(),
+            lot_uuid: self.lot_uuid.to_string(),
             data: encrypted.data,
             nonce: encrypted.nonce,
         };
-        sql_record.upsert(&db).await?;
+        let active = model.into_active_model();
+        let on_conflict = OnConflict::column(self::orm::Column::Uuid)
+            .update_columns([
+                self::orm::Column::LotUuid,
+                self::orm::Column::Data,
+                self::orm::Column::Nonce,
+            ])
+            .to_owned();
+        self::orm::Entity::insert(active)
+            .on_conflict(on_conflict)
+            .exec_with_returning(db.connection())
+            .await?;
+
         Ok(uuid)
     }
 
-    /// Insert this record into a lot and save it to the database.
-    pub async fn insert(self, db: &Database, lot: &mut Lot) -> Result<Uuid<Self>, Error> {
-        let uuid = self.save(&db, lot).await?;
-        lot.records_mut().push(self);
-        Ok(uuid)
-    }
-
-    // TODO: Return a vec of errors?
     pub async fn load_all(db: &Database, lot: &Lot) -> Result<Vec<Self>, Error> {
-        let sql_records =
-            db::records::SqlRecord::select_by_lot(&db, &lot.uuid().to_string()).await?;
+        let models = self::orm::Entity::find()
+            .filter(self::orm::Column::LotUuid.eq(lot.uuid().to_string()))
+            .all(db.connection())
+            .await?;
 
         let mut records = Vec::new();
-        for sql_record in sql_records {
+        for model in models {
             let encrypted = Encrypted {
-                data: sql_record.data,
-                nonce: sql_record.nonce,
+                data: model.data,
+                nonce: model.nonce,
             };
             let data = RecordData::decrypt(&encrypted, lot.key())?;
             let record = Record {
-                lot: lot.uuid().clone(),
-                uuid: Uuid::parse(&sql_record.uuid)?,
+                lot_uuid: lot.uuid().clone(),
+                uuid: Uuid::parse(&model.uuid)?,
                 data,
             };
             records.push(record);
@@ -95,7 +111,7 @@ impl Record {
 
 impl PartialEq for Record {
     fn eq(&self, other: &Self) -> bool {
-        self.uuid == other.uuid && self.data == other.data && self.lot == other.lot
+        self.uuid == other.uuid && self.data == other.data && self.lot_uuid == other.lot_uuid
     }
 }
 impl Eq for Record {}
@@ -110,7 +126,7 @@ impl fmt::Debug for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Record")
             .field("uuid", &self.uuid)
-            .field("lot", &self.lot)
+            .field("lot", &self.lot_uuid)
             .field("data", &self.data)
             .finish()
     }
@@ -240,6 +256,17 @@ impl From<db::Error> for Error {
     }
 }
 
+impl From<sea_orm::DbErr> for Error {
+    fn from(err: sea_orm::DbErr) -> Self {
+        Error::Database(err.into())
+    }
+}
+
+#[cfg(feature = "orm")]
+pub mod orm;
+#[cfg(not(feature = "orm"))]
+pub(crate) mod orm;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,7 +276,7 @@ mod tests {
     fn new() {
         let lot = Lot::new("test");
         let record = Record::new(&lot, RecordData::plain("foo", "bar"));
-        assert_eq!(lot.uuid(), &record.lot);
+        assert_eq!(lot.uuid(), &record.lot_uuid);
         assert_eq!(36, record.uuid.to_string().len());
         match record.data {
             RecordData::Plain(ref label, ref value) => {
@@ -272,11 +299,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
-    async fn save() {}
-
-    #[tokio::test]
-    async fn insert() {
+    async fn upsert() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
@@ -285,14 +308,15 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
+        let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
         let inserted_uuid = Record::new(&lot, RecordData::plain("foo", "bar"))
-            .insert(&db, &mut lot)
+            .upsert(&db, &lot)
             .await
-            .expect("failed to insert record");
-        assert_eq!(lot.uuid(), &lot.records()[0].lot);
-        assert_eq!(inserted_uuid, lot.records()[0].uuid);
+            .expect("failed to upsert record");
+        let records = lot.records(&db).await.expect("failed to load records");
+        assert_eq!(lot.uuid(), &records[0].lot_uuid);
+        assert_eq!(inserted_uuid, records[0].uuid);
     }
 
     #[tokio::test]
@@ -305,17 +329,17 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
+        let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
         let record = Record::new(&lot, RecordData::plain("foo", "bar"));
         let inserted_uuid = record
-            .insert(&db, &mut lot)
+            .upsert(&db, &lot)
             .await
-            .expect("failed to insert record");
+            .expect("failed to upsert record");
         let records = Record::load_all(&db, &lot)
             .await
             .expect("failed to load records");
-        assert_eq!(lot.uuid(), &records[0].lot);
+        assert_eq!(lot.uuid(), &records[0].lot_uuid);
         assert_eq!(inserted_uuid, records[0].uuid);
     }
 
