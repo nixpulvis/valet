@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::Write;
 use std::{fmt, io};
 use tokio;
-use valet::prelude::*;
+use valet::{prelude::*, user};
 
 #[derive(Parser)]
 struct Cli {
@@ -20,24 +20,40 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum ValetCommand {
-    Validate {
-        username: String,
-    },
+    #[command(subcommand)]
+    User(UserCommand),
+
+    #[command(subcommand)]
+    Config(ConfigCommand),
+}
+
+#[derive(Subcommand)]
+enum UserCommand {
     Register {
         username: String,
     },
+    Validate {
+        #[arg(short, long = "user")]
+        username: Option<String>,
+    },
+    List,
+    Unlock {
+        #[arg(short, long = "user")]
+        username: Option<String>,
+    },
     Import {
-        username: String,
+        #[arg(short, long = "user")]
+        username: Option<String>,
         #[arg(short, long = "type", required = true)]
         ty: String,
         filepath: String,
     },
-    // Export { username: String, path: String },
-    Unlock {
-        username: String,
-    },
-    #[command(subcommand)]
-    Config(ConfigCommand),
+    // Export {
+    //     #[arg(short, long = "user")]
+    //     username: Option<String>,
+    //     #[arg(short, long = "type", required = true)]
+    //     ty: String,
+    // },
 }
 
 #[derive(Subcommand)]
@@ -91,13 +107,7 @@ async fn main() -> Result<(), valet::user::Error> {
     let cli = Cli::parse();
 
     match &cli.command {
-        ValetCommand::Validate { username } => {
-            let db = Database::new(&cli.database).await?;
-            let password = get_password!();
-            let user = User::load(&db, &username, password).await?;
-            println!("{} validated", user.username());
-        }
-        ValetCommand::Register { username } => {
+        ValetCommand::User(UserCommand::Register { username }) => {
             let db = Database::new(&cli.database).await?;
             let password = get_password!();
             let user = User::new(&username, password)?.register(&db).await?;
@@ -107,24 +117,23 @@ async fn main() -> Result<(), valet::user::Error> {
                 .expect("failed to save lot");
             println!("{} registered", username);
         }
-        ValetCommand::Import {
-            username,
-            ty,
-            filepath,
-        } => {
+        ValetCommand::User(UserCommand::Validate { username }) => {
             let db = Database::new(&cli.database).await?;
+            let username = get_default_username(username, &db).await?;
             let password = get_password!();
             let user = User::load(&db, &username, password).await?;
-            if let Some(mut lot) = Lot::load(&db, DEFAULT_LOT, &user).await? {
-                if ty == "apple" {
-                    import_apple(&db, &mut lot, filepath).await;
-                }
-            } else {
-                eprintln!("Missing LOT: {}", DEFAULT_LOT);
+            println!("{} validated", user.username());
+        }
+        ValetCommand::User(UserCommand::List) => {
+            let db = Database::new(&cli.database).await?;
+            for user in User::list(&db).await? {
+                println!("{user}")
             }
         }
-        ValetCommand::Unlock { username } => {
+        ValetCommand::User(UserCommand::Unlock { username }) => {
             let db = Database::new(&cli.database).await?;
+
+            let username = get_default_username(username, &db).await?;
             let password = get_password!();
             let user = User::load(&db, &username, password).await?;
 
@@ -216,6 +225,23 @@ async fn main() -> Result<(), valet::user::Error> {
             })
             .await;
         }
+        ValetCommand::User(UserCommand::Import {
+            username,
+            ty,
+            filepath,
+        }) => {
+            let db = Database::new(&cli.database).await?;
+            let username = get_default_username(username, &db).await?;
+            let password = get_password!();
+            let user = User::load(&db, &username, password).await?;
+            if let Some(mut lot) = Lot::load(&db, DEFAULT_LOT, &user).await? {
+                if ty == "apple" {
+                    import_apple(&db, &mut lot, filepath).await;
+                }
+            } else {
+                eprintln!("Missing LOT: {}", DEFAULT_LOT);
+            }
+        }
         ValetCommand::Config(ConfigCommand::GenerateCompletions { shell }) => {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_owned();
@@ -224,6 +250,25 @@ async fn main() -> Result<(), valet::user::Error> {
     }
 
     Ok(())
+}
+
+async fn get_default_username(
+    provided: &Option<String>,
+    db: &Database,
+) -> Result<String, user::Error> {
+    match provided {
+        Some(username) => Ok(username.to_owned()),
+        // TODO: We need proper CLI error types here.
+        None => {
+            // TODO: Add a configurable default user.
+            let usernames = User::list(&db).await?;
+            if usernames.len() == 1 {
+                Ok(usernames[0].to_owned())
+            } else {
+                Err(user::Error::Invalid)
+            }
+        }
+    }
 }
 
 // TODO: Move into lib.
