@@ -198,6 +198,14 @@ impl Lot {
         Ok(lots)
     }
 
+    /// Delete this lot, cascading to records and user_lots.
+    pub async fn delete(&self, db: &Database) -> Result<(), Error> {
+        self::orm::Entity::delete_by_id(self.uuid.to_string())
+            .exec(db.connection())
+            .await?;
+        Ok(())
+    }
+
     fn decrypt_and_build(
         user: &User,
         model: self::orm::Model,
@@ -385,6 +393,43 @@ mod tests {
         let records = lot.records(&db).await.expect("failed to load records");
         assert_eq!(1, records.len());
         assert_eq!("a", records[0].data().label());
+    }
+
+    #[tokio::test]
+    async fn delete() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", pw!("password"))
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        Record::new(&lot, RecordData::plain("a", "1"))
+            .upsert(&db, &lot)
+            .await
+            .expect("failed to upsert record");
+        lot.delete(&db).await.expect("failed to delete lot");
+        let lots = Lot::load_all(&db, &user)
+            .await
+            .expect("failed to load lots");
+        assert!(lots.is_empty());
+        assert!(
+            lot.records(&db)
+                .await
+                .expect("failed to load records")
+                .is_empty()
+        );
+        let user_lot = self::orm::user_lots::Entity::find_by_id((
+            user.username().to_owned(),
+            lot.uuid().to_string(),
+        ))
+        .one(db.connection())
+        .await
+        .expect("failed to load user_lot");
+        assert!(user_lot.is_none());
     }
 
     /// Returns the lot key for a given user/lot as decrypted from the

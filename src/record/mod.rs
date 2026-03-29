@@ -84,6 +84,14 @@ impl Record {
         Ok(uuid)
     }
 
+    /// Delete this record from the database.
+    pub async fn delete(&self, db: &Database) -> Result<(), Error> {
+        self::orm::Entity::delete_by_id(self.uuid.to_string())
+            .exec(db.connection())
+            .await?;
+        Ok(())
+    }
+
     pub async fn load_all(db: &Database, lot: &Lot) -> Result<Vec<Self>, Error> {
         let models = self::orm::Entity::find()
             .filter(self::orm::Column::LotUuid.eq(lot.uuid().to_string()))
@@ -299,7 +307,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upsert() {
+    async fn insert() {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
@@ -341,6 +349,28 @@ mod tests {
             .expect("failed to load records");
         assert_eq!(lot.uuid(), &records[0].lot_uuid);
         assert_eq!(inserted_uuid, records[0].uuid);
+    }
+
+    #[tokio::test]
+    async fn delete() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", pw!("password"))
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        let record = Record::new(&lot, RecordData::plain("foo", "bar"));
+        record
+            .upsert(&db, &lot)
+            .await
+            .expect("failed to upsert record");
+        record.delete(&db).await.expect("failed to delete record");
+        let records = lot.records(&db).await.expect("failed to load records");
+        assert!(records.is_empty());
     }
 
     #[test]
