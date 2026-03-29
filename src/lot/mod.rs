@@ -1,9 +1,14 @@
 use crate::{
-    db::{self, Database, lots::SqlLot, user_lots::SqlUserLot},
+    db::{self, Database},
     encrypt::{self, Encrypted, Key},
     record::{self, Record},
     user::User,
     uuid::Uuid,
+};
+use sea_orm::{
+    ActiveValue::{Set, Unchanged},
+    IntoActiveModel,
+    entity::prelude::*,
 };
 use std::fmt;
 
@@ -31,9 +36,9 @@ pub const DEFAULT_LOT: &'static str = "main";
 /// | `Kb`   | `= Decrypt_A(LyZJM8GA, SCW2EWjc)` | N/A                               |
 #[derive(PartialEq, Eq)]
 pub struct Lot {
+    // user: &'a User, TODO name and key are meaningless without a user.
     uuid: Uuid<Self>,
     name: String,
-    records: Vec<Record>,
     key: Key<Self>,
 }
 
@@ -42,7 +47,6 @@ impl Lot {
         Lot {
             uuid: Uuid::now(),
             name: name.into(),
-            records: Vec::new(),
             key: Key::generate(),
         }
     }
@@ -59,45 +63,116 @@ impl Lot {
         &self.key
     }
 
-    pub fn records(&self) -> &[Record] {
-        &self.records
+    /// Load this lot's records from the database.
+    pub async fn records(&self, db: &Database) -> Result<Vec<Record>, Error> {
+        Record::load_all(db, self).await.map_err(Into::into)
     }
 
-    pub fn records_mut(&mut self) -> &mut Vec<Record> {
-        &mut self.records
-    }
-
-    /// Save this lot and its records to the database.
+    /// Save this lot to the database, detecting and handling key rotation.
+    ///
+    /// If the lot key has changed since the last save, all records are
+    /// re-encrypted with the new key before the updated key is stored.
     pub async fn save(&self, db: &Database, user: &User) -> Result<Uuid<Self>, Error> {
         let uuid = self.uuid.to_string();
-        if db::lots::SqlLot::select(db, &uuid).await?.is_none() {
-            let sql_lot = db::lots::SqlLot { uuid: uuid.clone() };
-            sql_lot.insert(&db).await?;
-        }
-
-        let encrypted = user.key().encrypt(self.key.as_bytes())?;
-        let sql_user_lot = db::user_lots::SqlUserLot {
-            username: user.username().into(),
-            lot: uuid,
-            name: self.name.clone(),
-            data: encrypted.data,
-            nonce: encrypted.nonce,
+        let active = self::orm::ActiveModel {
+            uuid: Unchanged(uuid.clone()),
         };
-        sql_user_lot.upsert(&db).await?;
+        self::orm::Entity::insert(active)
+            .on_conflict_do_nothing()
+            .exec(db.connection())
+            .await?;
 
-        // TODO: Collect errors and report after.
-        for record in &self.records {
-            record.save(&db, self).await?;
+        // Load existing user_lot once to detect changes.
+        let existing_ul =
+            self::orm::user_lots::Entity::find_by_id((user.username().to_owned(), uuid.to_owned()))
+                .one(db.connection())
+                .await?;
+
+        match existing_ul {
+            None => {
+                let encrypted = user.key().encrypt(self.key.as_bytes())?;
+                let active = self::orm::user_lots::ActiveModel {
+                    username: Set(user.username().into()),
+                    lot_uuid: Set(uuid),
+                    name: Set(self.name.clone()),
+                    data: Set(encrypted.data),
+                    nonce: Set(encrypted.nonce),
+                };
+                self::orm::user_lots::Entity::insert(active)
+                    .exec(db.connection())
+                    .await?;
+            }
+            Some(existing) => {
+                let name_changed = existing.name != self.name;
+
+                // Detect key change by comparing the stored key with current self.key.
+                // If the current key is different, we re-encrypt all of the records in
+                // this lot under the new lot key.
+                //
+                // TODO: A mechanism for sharing the new lot key with other users will
+                // be needed, similarly to how we need a way to share a lot in the first
+                // place.
+                let existing_encrypted = Encrypted {
+                    data: existing.data.clone(),
+                    nonce: existing.nonce.clone(),
+                };
+                let existing_key_bytes = user.key().decrypt(&existing_encrypted)?;
+                let key_changed = existing_key_bytes != self.key.as_bytes();
+
+                let mut active = existing.into_active_model();
+
+                if name_changed {
+                    active.name = Set(self.name.clone());
+                }
+
+                if key_changed {
+                    let encrypted = user.key().encrypt(self.key.as_bytes())?;
+                    active.data = Set(encrypted.data);
+                    active.nonce = Set(encrypted.nonce);
+
+                    self.reencrypt_records(db, &existing_key_bytes).await?;
+                }
+
+                if name_changed || key_changed {
+                    active.update(db.connection()).await?;
+                }
+            }
         }
 
         Ok(self.uuid.clone())
     }
 
+    async fn reencrypt_records(
+        &self,
+        db: &Database,
+        existing_key_bytes: &[u8],
+    ) -> Result<(), Error> {
+        let old_key = Key::from_bytes(&existing_key_bytes);
+        let old_lot = Lot {
+            uuid: self.uuid.clone(),
+            name: self.name.clone(),
+            key: old_key,
+        };
+        let records = Record::load_all(db, &old_lot).await?;
+        for record in &records {
+            record.upsert(db, self).await?;
+        }
+        Ok(())
+    }
+
     /// Load a user's lot by name.
     pub async fn load(db: &Database, name: &str, user: &User) -> Result<Option<Self>, Error> {
-        let sql_ulk = SqlUserLot::select_by_name(&db, user.username(), name).await?;
-        if let Some(sql_lot) = SqlLot::select(&db, &sql_ulk.lot).await? {
-            let lot = Self::decrypt_and_build(&db, &user, sql_lot, sql_ulk).await?;
+        let ul = self::orm::user_lots::Entity::find()
+            .filter(self::orm::user_lots::Column::Username.eq(user.username()))
+            .filter(self::orm::user_lots::Column::Name.eq(name))
+            .one(db.connection())
+            .await?
+            .ok_or(Error::MissingLotKey)?;
+        if let Some(model) = self::orm::Entity::find_by_id(&ul.lot_uuid)
+            .one(db.connection())
+            .await?
+        {
+            let lot = Self::decrypt_and_build(&user, model, ul)?;
             Ok(Some(lot))
         } else {
             Ok(None)
@@ -106,36 +181,38 @@ impl Lot {
 
     /// Load a user's lots.
     pub async fn load_all(db: &Database, user: &User) -> Result<Vec<Self>, Error> {
-        let sql_ulks = SqlUserLot::select_all(&db, user.username()).await?;
+        let uls = self::orm::user_lots::Entity::find()
+            .filter(self::orm::user_lots::Column::Username.eq(user.username()))
+            .all(db.connection())
+            .await?;
         let mut lots = Vec::new();
-        for sql_ulk in sql_ulks {
-            if let Some(sql_lot) = SqlLot::select(db, &sql_ulk.lot).await? {
-                let lot = Self::decrypt_and_build(&db, &user, sql_lot, sql_ulk).await?;
+        for ul in uls {
+            if let Some(model) = self::orm::Entity::find_by_id(&ul.lot_uuid)
+                .one(db.connection())
+                .await?
+            {
+                let lot = Self::decrypt_and_build(&user, model, ul)?;
                 lots.push(lot);
             }
         }
         Ok(lots)
     }
 
-    async fn decrypt_and_build(
-        db: &Database,
+    fn decrypt_and_build(
         user: &User,
-        sql_lot: SqlLot,
-        sql_ulk: SqlUserLot,
+        model: self::orm::Model,
+        ul: self::orm::user_lots::Model,
     ) -> Result<Lot, Error> {
         let encrypted = Encrypted {
-            data: sql_ulk.data,
-            nonce: sql_ulk.nonce,
+            data: ul.data,
+            nonce: ul.nonce,
         };
         let key_bytes = user.key().decrypt(&encrypted)?;
-        let mut lot = Lot {
-            uuid: Uuid::parse(&sql_lot.uuid)?,
-            name: sql_ulk.name,
-            records: Vec::new(),
+        Ok(Lot {
+            uuid: Uuid::parse(&model.uuid)?,
+            name: ul.name,
             key: Key::from_bytes(&key_bytes),
-        };
-        lot.records = Record::load_all(&db, &lot).await?;
-        Ok(lot)
+        })
     }
 }
 
@@ -144,13 +221,13 @@ impl fmt::Debug for Lot {
         f.debug_struct("Lot")
             .field("uuid", &self.uuid)
             .field("name", &self.name)
-            .field("records", &self.records)
             .finish()
     }
 }
 
 #[derive(Debug)]
 pub enum Error {
+    MissingLotKey,
     Uuid(crate::uuid::Error),
     Encrypt(encrypt::Error),
     Record(record::Error),
@@ -169,17 +246,28 @@ impl From<encrypt::Error> for Error {
     }
 }
 
+impl From<db::Error> for Error {
+    fn from(err: db::Error) -> Self {
+        Error::Database(err)
+    }
+}
+
+impl From<sea_orm::DbErr> for Error {
+    fn from(err: sea_orm::DbErr) -> Self {
+        Error::Database(err.into())
+    }
+}
+
 impl From<record::Error> for Error {
     fn from(err: record::Error) -> Self {
         Error::Record(err)
     }
 }
 
-impl From<db::Error> for Error {
-    fn from(err: db::Error) -> Self {
-        Error::Database(err)
-    }
-}
+#[cfg(feature = "orm")]
+pub mod orm;
+#[cfg(not(feature = "orm"))]
+pub(crate) mod orm;
 
 #[cfg(test)]
 mod tests {
@@ -190,7 +278,6 @@ mod tests {
     fn new() {
         let lot = Lot::new("lot a");
         assert_eq!(36, lot.uuid.to_string().len());
-        assert!(lot.records().is_empty());
     }
 
     #[tokio::test]
@@ -203,25 +290,24 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot_a = Lot::new("lot a");
-        // Save the lot without any records.
+        let lot_a = Lot::new("lot a");
         lot_a.save(&db, &user).await.expect("failed to save lot");
-        // Insert a record.
         Record::new(&lot_a, RecordData::plain("a", "1"))
-            .insert(&db, &mut lot_a)
+            .upsert(&db, &lot_a)
             .await
-            .expect("failed to insert record");
-        // Manually insert a record.
-        lot_a
-            .records
-            .push(Record::new(&lot_a, RecordData::plain("b", "2")));
-        lot_a.save(&db, &user).await.expect("failed to save lot");
+            .expect("failed to upsert record");
+        Record::new(&lot_a, RecordData::plain("b", "2"))
+            .upsert(&db, &lot_a)
+            .await
+            .expect("failed to upsert record");
 
         let lot_b = Lot::load(&db, lot_a.name(), &user)
             .await
             .expect("failed to load lot")
             .expect("no lot");
-        assert_eq!(lot_a.records, lot_b.records);
+        let records_a = lot_a.records(&db).await.expect("failed to load records");
+        let records_b = lot_b.records(&db).await.expect("failed to load records");
+        assert_eq!(records_a, records_b);
     }
 
     #[tokio::test]
@@ -234,18 +320,18 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot_a = Lot::new("lot a");
+        let lot_a = Lot::new("lot a");
         lot_a.save(&db, &user).await.expect("failed to save lot");
         Record::new(&lot_a, RecordData::plain("a", "1"))
-            .insert(&db, &mut lot_a)
+            .upsert(&db, &lot_a)
             .await
-            .expect("failed to insert record");
-        let mut lot_b = Lot::new("lot b");
+            .expect("failed to upsert record");
+        let lot_b = Lot::new("lot b");
         lot_b.save(&db, &user).await.expect("failed to save lot");
         Record::new(&lot_b, RecordData::plain("b", "2"))
-            .insert(&db, &mut lot_b)
+            .upsert(&db, &lot_b)
             .await
-            .expect("failed to insert record");
+            .expect("failed to upsert record");
 
         let lots = Lot::load_all(&db, &user)
             .await
@@ -280,34 +366,41 @@ mod tests {
             .await
             .expect("failed to register user");
         let mut lot = Lot::new("lot a");
-        lot.records
-            .push(Record::new(&lot, RecordData::plain("a", "1")));
         lot.save(&db, &user).await.expect("failed to save lot");
+        Record::new(&lot, RecordData::plain("a", "1"))
+            .upsert(&db, &lot)
+            .await
+            .expect("failed to upsert record");
         let lot_key_a = get_user_lot_key(&db, &user, &lot).await;
         lot.key = Key::<Lot>::generate();
-        // Update lot key, user_lot, and reencrypt all records.
+        // Update lot key, user_lot, and re-encrypt all records.
         lot.save(&db, &user).await.expect("failed to save lot");
         let lot_key_b = get_user_lot_key(&db, &user, &lot).await;
         assert_ne!(lot_key_a.as_bytes(), lot_key_b.as_bytes());
-        // Ensure the records got reencrypted and we can still access them.
+        // Ensure the records got re-encrypted and we can still access them.
         let lot = Lot::load(&db, lot.name(), &user)
             .await
             .expect("failed to load lot")
             .expect("no lot");
-        assert_eq!(1, lot.records.len());
-        assert_eq!("a", lot.records[0].data.label());
+        let records = lot.records(&db).await.expect("failed to load records");
+        assert_eq!(1, records.len());
+        assert_eq!("a", records[0].data().label());
     }
 
     /// Returns the lot key for a given user/lot as decrypted from the
     /// user_lots table.
     async fn get_user_lot_key(db: &Database, user: &User, lot: &Lot) -> Key<Lot> {
-        let sql_user_lot =
-            db::user_lots::SqlUserLot::select(&db, user.username(), &lot.uuid().to_string())
-                .await
-                .expect("failed to select user lot key");
+        let ul = self::orm::user_lots::Entity::find_by_id((
+            user.username().to_owned(),
+            lot.uuid().to_string(),
+        ))
+        .one(db.connection())
+        .await
+        .expect("failed to select user lot key")
+        .expect("missing lot key");
         let encrypted = Encrypted {
-            data: sql_user_lot.data,
-            nonce: sql_user_lot.nonce,
+            data: ul.data,
+            nonce: ul.nonce,
         };
         Key::<Lot>::from_bytes(
             &user

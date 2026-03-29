@@ -170,7 +170,12 @@ async fn main() -> Result<(), valet::user::Error> {
                     for lot in user.lots(&db).await.expect("failed to load lots").iter() {
                         if lot.name().starts_with(&path.lot) {
                             if let Ok(Some(lot)) = Lot::load(&db, &path.lot, &user).await {
-                                for record in lot.records() {
+                                for record in lot
+                                    .records(&db)
+                                    .await
+                                    .expect("failed to load records")
+                                    .iter()
+                                {
                                     let label = record.data().label();
                                     if label.starts_with(&path.label) {
                                         println!("{}", Path::new(&path.lot, label));
@@ -184,16 +189,16 @@ async fn main() -> Result<(), valet::user::Error> {
                 }
                 Repl::Put { path, data } => {
                     let path = Path::parse(&path);
-                    if let Some(mut lot) = Lot::load(&db, &path.lot, &user)
+                    if let Some(lot) = Lot::load(&db, &path.lot, &user)
                         .await
                         .expect("failed to load lot")
                     {
                         // TODO: Delete old record if it exists.
                         // TODO: Add deleted record to new record's history.
                         Record::new(&lot, RecordData::plain(&path.label, &data))
-                            .insert(&db, &mut lot)
+                            .upsert(&db, &lot)
                             .await
-                            .expect("failed to insert record");
+                            .expect("failed to save record");
                     }
                 }
                 Repl::Get { path } => {
@@ -203,7 +208,9 @@ async fn main() -> Result<(), valet::user::Error> {
                         .expect("failed to load lot")
                     {
                         if let Some(record) = lot
-                            .records()
+                            .records(&db)
+                            .await
+                            .expect("failed to load records")
                             .iter()
                             .find(|r| r.data().label() == path.label)
                         {
@@ -390,7 +397,7 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                     data.insert("otp".into(), otp);
                 }
                 match Record::new(&lot, RecordData::domain(&csv_record.title, data))
-                    .insert(&db, lot)
+                    .upsert(&db, lot)
                     .await
                 {
                     Ok(uuid) => {

@@ -3,6 +3,7 @@ use crate::{
     encrypt::{self, Encrypted, Key, Password, SALT_SIZE},
     lot::{self, Lot},
 };
+use sea_orm::{ActiveValue::Set, QuerySelect, entity::prelude::*};
 use std::{fmt::Debug, fmt::Formatter};
 
 const VALIDATION: &[u8] = b"VALID";
@@ -49,6 +50,19 @@ impl User {
         })
     }
 
+    pub async fn register(self, db: &Database) -> Result<Self, Error> {
+        let active = self::orm::ActiveModel {
+            username: Set(self.username.clone()),
+            salt: Set(self.salt.to_vec()),
+            validation_data: Set(self.validation.data.clone()),
+            validation_nonce: Set(self.validation.nonce.clone()),
+        };
+        self::orm::Entity::insert(active)
+            .exec(db.connection())
+            .await?;
+        Ok(self)
+    }
+
     pub fn username(&self) -> &str {
         &self.username
     }
@@ -65,32 +79,24 @@ impl User {
         }
     }
 
-    // TODO: Return type, insert or update info.
-    pub async fn register(self, db: &Database) -> Result<Self, Error> {
-        let sql_user = db::users::SqlUser {
-            username: self.username.clone(),
-            salt: self.salt.to_vec(),
-            validation_data: self.validation.data.clone(),
-            validation_nonce: self.validation.nonce.clone(),
-        };
-        sql_user.insert(&db).await?;
-        Ok(self)
-    }
-
     pub async fn load<'a>(
         db: &'a Database,
         username: &'a str,
         password: Password<'a>,
     ) -> Result<Self, Error> {
-        let sql_user = db::users::SqlUser::select(&db, &username).await?;
-        let key = Key::from_password(password, &sql_user.salt[..])?;
+        let model = self::orm::Entity::find_by_id(username.to_owned())
+            .one(db.connection())
+            .await?
+            .ok_or(Error::NotFound)?;
+
+        let key = Key::from_password(password, &model.salt[..])?;
         let validation = Encrypted {
-            data: sql_user.validation_data,
-            nonce: sql_user.validation_nonce,
+            data: model.validation_data,
+            nonce: model.validation_nonce,
         };
         let user = User {
-            username: sql_user.username,
-            salt: sql_user.salt.try_into().map_err(|_| Error::SaltError)?,
+            username: model.username,
+            salt: model.salt.try_into().map_err(|_| Error::SaltError)?,
             validation,
             key,
         };
@@ -114,7 +120,13 @@ impl User {
 
     /// Return the list of registered usernames from the database.
     pub async fn list(db: &Database) -> Result<Vec<String>, Error> {
-        db::users::SqlUser::list(db).await.map_err(Into::into)
+        self::orm::Entity::find()
+            .select_only()
+            .column(self::orm::Column::Username)
+            .into_tuple::<String>()
+            .all(db.connection())
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -128,6 +140,7 @@ impl Debug for User {
 
 #[derive(Debug)]
 pub enum Error {
+    NotFound,
     Invalid,
     SaltError,
     Encrypt(encrypt::Error),
@@ -147,16 +160,27 @@ impl From<db::Error> for Error {
     }
 }
 
+impl From<sea_orm::DbErr> for Error {
+    fn from(err: sea_orm::DbErr) -> Self {
+        Error::Database(err.into())
+    }
+}
+
 impl From<lot::Error> for Error {
     fn from(err: lot::Error) -> Self {
         Error::Lot(err)
     }
 }
 
+#[cfg(feature = "orm")]
+pub mod orm;
+#[cfg(not(feature = "orm"))]
+pub(crate) mod orm;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Record, db::Database, pw, record::RecordData};
+    use crate::{db::Database, pw};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -214,18 +238,10 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot_a = Lot::new("lot a");
+        let lot_a = Lot::new("lot a");
         lot_a.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot_a, RecordData::plain("a", "1"))
-            .insert(&db, &mut lot_a)
-            .await
-            .expect("failed to insert record");
-        let mut lot_b = Lot::new("lot b");
+        let lot_b = Lot::new("lot b");
         lot_b.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot_b, RecordData::plain("b", "2"))
-            .insert(&db, &mut lot_b)
-            .await
-            .expect("failed to insert record");
 
         let lots = user.lots(&db).await.expect("failed to load lots");
         assert_eq!(lots, vec![lot_a, lot_b]);

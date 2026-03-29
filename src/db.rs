@@ -1,24 +1,30 @@
-use sqlx::{Pool, Sqlite, SqlitePool};
+use sea_orm::DatabaseConnection;
+use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
+use std::str::FromStr;
 use url::Url;
 
 pub const DEFAULT_URL: &'static str = "valet.sqlite";
 
-pub struct Database(SqlitePool);
+pub struct Database(DatabaseConnection);
 
 impl Database {
     pub async fn new(input: &str) -> Result<Database, Error> {
         let url = Self::parse_url(input)?;
-        let pool: Pool<Sqlite> = SqlitePool::connect(&url).await?;
 
+        // Create the sqlx pool and run migrations on it.
+        let opts = SqliteConnectOptions::from_str(&url)?.pragma("foreign_keys", "ON");
+        let pool = SqlitePool::connect_with(opts).await?;
         sqlx::migrate!("./migrations")
             .run(&pool)
             .await
             .map_err(|e| sqlx::Error::from(e))?;
 
-        Ok(Database(pool))
+        // Convert to a sea-orm connection backed by the same pool.
+        let db = sea_orm::SqlxSqliteConnector::from_sqlx_sqlite_pool(pool);
+        Ok(Database(db))
     }
 
-    pub(crate) fn pool(&self) -> &SqlitePool {
+    pub(crate) fn connection(&self) -> &DatabaseConnection {
         &self.0
     }
 
@@ -48,8 +54,15 @@ impl Database {
 
 #[derive(Debug)]
 pub enum Error {
+    SeaOrm(sea_orm::DbErr),
     Sqlx(sqlx::Error),
     Url(url::ParseError),
+}
+
+impl From<sea_orm::DbErr> for Error {
+    fn from(err: sea_orm::DbErr) -> Self {
+        Error::SeaOrm(err)
+    }
 }
 
 impl From<sqlx::Error> for Error {
@@ -63,8 +76,3 @@ impl From<url::ParseError> for Error {
         Error::Url(err)
     }
 }
-
-pub(crate) mod lots;
-pub(crate) mod records;
-pub(crate) mod user_lots;
-pub(crate) mod users;
