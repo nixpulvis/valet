@@ -5464,6 +5464,7 @@ dependencies = [
  "eframe",
  "egui_inbox",
  "rand_core",
+ "regex",
  "rpassword",
  "sea-orm",
  "serde",

@@ -2,6 +2,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use clap_repl::ClapEditor;
 use clap_repl::reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory};
+use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
@@ -386,6 +387,20 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
     for result in rdr.deserialize::<CsvRecord>() {
         match result {
             Ok(csv_record) => {
+                let re = Regex::new(r"(\S+)\s*(?:\((.*)\))?").unwrap();
+                let label;
+                if let Some(captures) = re.captures(&csv_record.title) {
+                    let domain_or_label = captures[1].to_owned();
+                    if let Some(user) = captures.get(2) {
+                        label = format!("{}@{domain_or_label}", user.as_str());
+                    } else {
+                        label = domain_or_label;
+                    }
+                } else {
+                    eprintln!("Bad title: {}", csv_record.title);
+                    continue;
+                }
+
                 let mut data = HashMap::new();
                 data.insert("url".into(), csv_record.url);
                 data.insert("username".into(), csv_record.username);
@@ -396,12 +411,12 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                 if let Some(otp) = csv_record.otp {
                     data.insert("otp".into(), otp);
                 }
-                match Record::new(&lot, RecordData::domain(&csv_record.title, data))
+                match Record::new(&lot, RecordData::domain(&label, data))
                     .upsert(&db, lot)
                     .await
                 {
                     Ok(uuid) => {
-                        println!("Inserted {} => {}", csv_record.title, uuid.as_hyphenated())
+                        println!("Inserted {} => {}", label, uuid.as_hyphenated())
                     }
                     Err(e) => {
                         dbg!(e);
