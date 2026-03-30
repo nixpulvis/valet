@@ -203,6 +203,9 @@ impl eframe::App for ValetApp {
                                             .min_size(egui::vec2(unlocked_width, 0.)),
                                     );
                                     if lock_btn.hovered() {
+                                        ui.ctx().output_mut(|o| {
+                                            o.cursor_icon = egui::CursorIcon::PointingHand
+                                        });
                                         self.lock_label = "Lock".into();
                                     } else {
                                         self.lock_label = "Unlocked".into();
@@ -240,7 +243,7 @@ impl eframe::App for ValetApp {
                             );
                         }
                     });
-                }); // Frame
+                });
         });
         if let Some(user) = self.user.clone() {
             if self.lots.is_empty() {
