@@ -25,6 +25,73 @@ fn generate_password() -> String {
 const MIN_SIZE: [f32; 2] = [200., 168.];
 const UNLOCKED_DEFAULT_SIZE: [f32; 2] = [400., 600.];
 
+struct PasswordInput<'a> {
+    // TODO: Use a Password type
+    text: &'a mut String,
+    visible: &'a mut bool,
+    reserved_right: f32,
+}
+
+impl<'a> PasswordInput<'a> {
+    fn new(text: &'a mut String, visible: &'a mut bool) -> Self {
+        Self {
+            text,
+            visible,
+            reserved_right: 0.0,
+        }
+    }
+
+    fn reserved_right(mut self, width: f32) -> Self {
+        self.reserved_right = width;
+        self
+    }
+}
+
+impl egui::Widget for PasswordInput<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        ui.horizontal(|ui| {
+            let spacing = ui.spacing().item_spacing.x;
+
+            // Measure the wider of "Show"/"Hide" so the width is stable when toggling.
+            // Include interact_size.x minimum to match egui's actual button sizing.
+            let font_id = egui::TextStyle::Button.resolve(ui.style());
+            let btn_width = (ui.fonts(|f| {
+                ["Show", "Hide"]
+                    .iter()
+                    .map(|s| {
+                        f.layout_no_wrap(s.to_string(), font_id.clone(), egui::Color32::WHITE)
+                            .rect
+                            .width()
+                    })
+                    .fold(0.0_f32, f32::max)
+            }) + ui.spacing().button_padding.x * 2.0)
+                .max(ui.spacing().interact_size.x)
+                .ceil();
+
+            // TextEdit is added first so tab order is: input → toggle button.
+            let reserved = btn_width
+                + spacing * 2.
+                + if self.reserved_right > 0.0 {
+                    self.reserved_right + spacing
+                } else {
+                    0.0
+                };
+            let text_width = (ui.available_width() - reserved).max(0.0);
+            let response = ui.add(
+                egui::TextEdit::singleline(self.text)
+                    .password(!*self.visible)
+                    .desired_width(text_width),
+            );
+            let label = if *self.visible { "Hide" } else { "Show" };
+            if ui.button(label).clicked() {
+                *self.visible = !*self.visible;
+            }
+            response
+        })
+        .inner
+    }
+}
+
 fn main() {
     let mut options = eframe::NativeOptions::default();
     options.viewport = options
@@ -224,24 +291,27 @@ impl eframe::App for ValetApp {
                                 );
                                 ui.label("Value:");
                                 ui.horizontal(|ui| {
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui.button("Generate").clicked() {
-                                                self.new_value = generate_password();
-                                            }
-                                            let eye_label =
-                                                if self.show_new_value { "Hide" } else { "Show" };
-                                            if ui.button(eye_label).clicked() {
-                                                self.show_new_value = !self.show_new_value;
-                                            }
-                                            ui.add(
-                                                egui::TextEdit::singleline(&mut self.new_value)
-                                                    .password(!self.show_new_value)
-                                                    .desired_width(f32::INFINITY),
-                                            );
-                                        },
+                                    let font_id = egui::TextStyle::Button.resolve(ui.style());
+                                    let gen_width = (ui.fonts(|f| {
+                                        f.layout_no_wrap(
+                                            "Generate".to_string(),
+                                            font_id,
+                                            egui::Color32::WHITE,
+                                        )
+                                        .rect
+                                        .width()
+                                    }) + ui.spacing().button_padding.x * 2.0)
+                                        .max(ui.spacing().interact_size.x);
+                                    ui.add(
+                                        PasswordInput::new(
+                                            &mut self.new_value,
+                                            &mut self.show_new_value,
+                                        )
+                                        .reserved_right(gen_width),
                                     );
+                                    if ui.button("Generate").clicked() {
+                                        self.new_value = generate_password();
+                                    }
                                 });
                                 ui.add_space(4.);
                                 ui.horizontal(|ui| {
@@ -377,11 +447,10 @@ impl eframe::App for ValetApp {
                 ui.label("Username:");
                 let username_re = ui.add(egui::TextEdit::singleline(&mut self.username));
                 ui.label("Password:");
-                let password_re = ui.add(
-                    egui::TextEdit::singleline(self.password.as_mut())
-                        .password(!self.show_password),
-                );
-                ui.checkbox(&mut self.show_password, "Show password");
+                let password_re = ui.add(PasswordInput::new(
+                    self.password.as_mut(),
+                    &mut self.show_password,
+                ));
                 ui.add_space(5.);
                 ui.horizontal(|ui| {
                     if ui.add(egui::Button::new("Unlock")).clicked()
