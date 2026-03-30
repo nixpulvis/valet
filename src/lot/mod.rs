@@ -88,9 +88,10 @@ impl Lot {
                 .one(db.connection())
                 .await?;
 
+        let aad = Lot::aad(user.username(), &uuid);
         match existing_ul {
             None => {
-                let encrypted = user.key().encrypt(self.key.as_bytes())?;
+                let encrypted = user.key().encrypt_with_aad(self.key.as_bytes(), &aad)?;
                 let active = self::orm::user_lots::ActiveModel {
                     username: Set(user.username().into()),
                     lot_uuid: Set(uuid),
@@ -116,7 +117,7 @@ impl Lot {
                     data: existing.data.clone(),
                     nonce: existing.nonce.clone(),
                 };
-                let existing_key_bytes = user.key().decrypt(&existing_encrypted)?;
+                let existing_key_bytes = user.key().decrypt_with_aad(&existing_encrypted, &aad)?;
                 let key_changed = existing_key_bytes != self.key.as_bytes();
 
                 let mut active = existing.into_active_model();
@@ -126,7 +127,7 @@ impl Lot {
                 }
 
                 if key_changed {
-                    let encrypted = user.key().encrypt(self.key.as_bytes())?;
+                    let encrypted = user.key().encrypt_with_aad(self.key.as_bytes(), &aad)?;
                     active.data = Set(encrypted.data);
                     active.nonce = Set(encrypted.nonce);
 
@@ -215,12 +216,17 @@ impl Lot {
             data: ul.data,
             nonce: ul.nonce,
         };
-        let key_bytes = user.key().decrypt(&encrypted)?;
+        let aad = Lot::aad(user.username(), &ul.lot_uuid);
+        let key_bytes = user.key().decrypt_with_aad(&encrypted, &aad)?;
         Ok(Lot {
             uuid: Uuid::parse(&model.uuid)?,
             name: ul.name,
             key: Key::from_bytes(&key_bytes),
         })
+    }
+
+    fn aad(username: &str, lot_uuid: &str) -> Vec<u8> {
+        [username.as_bytes(), lot_uuid.as_bytes()].concat()
     }
 }
 
@@ -447,10 +453,11 @@ mod tests {
             data: ul.data,
             nonce: ul.nonce,
         };
+        let aad = Lot::aad(user.username(), &lot.uuid().to_string());
         Key::<Lot>::from_bytes(
             &user
                 .key()
-                .decrypt(&encrypted)
+                .decrypt_with_aad(&encrypted, &aad)
                 .expect("failed to decrypted lot key"),
         )
     }

@@ -1,7 +1,7 @@
 use crate::encrypt::{Encrypted, Error, Password};
 use aes_gcm_siv::{
     Aes256GcmSiv, KeySizeUser, Nonce,
-    aead::{Aead, Key as AesKey, KeyInit, generic_array::typenum::Unsigned},
+    aead::{Aead, Key as AesKey, KeyInit, Payload, generic_array::typenum::Unsigned},
 };
 use argon2::Argon2;
 use rand_core::{OsRng, RngCore};
@@ -57,12 +57,22 @@ impl<T> Key<T> {
     }
 
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Encrypted, Error> {
+        self.encrypt_with_aad(plaintext, &[])
+    }
+
+    pub fn encrypt_with_aad(&self, plaintext: &[u8], aad: &[u8]) -> Result<Encrypted, Error> {
         let mut nonce = Nonce::default();
         OsRng.fill_bytes(&mut nonce.as_mut_slice());
 
         let cipher = Aes256GcmSiv::new(&self.0);
         let ciphertext = cipher
-            .encrypt(&nonce, plaintext)
+            .encrypt(
+                &nonce,
+                Payload {
+                    msg: plaintext,
+                    aad,
+                },
+            )
             .map_err(|e| Error::Encryption(format!("{}", e)))?;
         Ok(Encrypted {
             data: ciphertext,
@@ -71,10 +81,20 @@ impl<T> Key<T> {
     }
 
     pub fn decrypt(&self, encrypted: &Encrypted) -> Result<Vec<u8>, Error> {
+        self.decrypt_with_aad(encrypted, &[])
+    }
+
+    pub fn decrypt_with_aad(&self, encrypted: &Encrypted, aad: &[u8]) -> Result<Vec<u8>, Error> {
         let nonce = Nonce::from_slice(&encrypted.nonce);
         let cipher = Aes256GcmSiv::new(&self.0);
         let plaintext = cipher
-            .decrypt(nonce, &encrypted.data[..])
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: &encrypted.data,
+                    aad,
+                },
+            )
             .map_err(|e| Error::Decryption(format!("{}", e)))?;
         Ok(plaintext)
     }
