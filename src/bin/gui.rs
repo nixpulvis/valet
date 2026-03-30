@@ -1,8 +1,26 @@
 use eframe::egui::{self, ViewportCommand};
 use egui_inbox::UiInbox;
+use rand_core::{OsRng, RngCore};
 use std::{env, sync::Arc};
 use tokio::runtime;
 use valet::prelude::*;
+
+fn generate_password() -> String {
+    const CHARSET: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
+    let mut rng = OsRng;
+    let mut buf = [0u8; 1];
+    let mut password = String::with_capacity(20);
+    while password.len() < 20 {
+        rng.fill_bytes(&mut buf);
+        let idx = buf[0] as usize;
+        // rejection sampling to avoid modulo bias
+        if idx < 256 - (256 % CHARSET.len()) {
+            password.push(CHARSET[idx % CHARSET.len()] as char);
+        }
+    }
+    password
+}
 
 const MIN_SIZE: [f32; 2] = [200., 168.];
 const UNLOCKED_DEFAULT_SIZE: [f32; 2] = [400., 600.];
@@ -41,6 +59,7 @@ struct ValetApp {
     show_new_record: bool,
     new_label: String,
     new_value: String,
+    show_new_value: bool,
 
     search: String,
     lock_label: String,
@@ -74,6 +93,7 @@ impl ValetApp {
             show_new_record: false,
             new_label: String::new(),
             new_value: String::new(),
+            show_new_value: false,
 
             search: String::new(),
             lock_label: String::new(),
@@ -203,10 +223,26 @@ impl eframe::App for ValetApp {
                                         .desired_width(f32::INFINITY),
                                 );
                                 ui.label("Value:");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.new_value)
-                                        .desired_width(f32::INFINITY),
-                                );
+                                ui.horizontal(|ui| {
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.button("Generate").clicked() {
+                                                self.new_value = generate_password();
+                                            }
+                                            let eye_label =
+                                                if self.show_new_value { "Hide" } else { "Show" };
+                                            if ui.button(eye_label).clicked() {
+                                                self.show_new_value = !self.show_new_value;
+                                            }
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut self.new_value)
+                                                    .password(!self.show_new_value)
+                                                    .desired_width(f32::INFINITY),
+                                            );
+                                        },
+                                    );
+                                });
                                 ui.add_space(4.);
                                 ui.horizontal(|ui| {
                                     let can_add =
@@ -220,6 +256,7 @@ impl eframe::App for ValetApp {
                                         let label = std::mem::take(&mut self.new_label);
                                         let value = std::mem::take(&mut self.new_value);
                                         self.show_new_record = false;
+                                        self.show_new_value = false;
                                         self.lots.clear();
                                         self.rt.spawn(async move {
                                             let db = Database::new(&db_url)
@@ -255,6 +292,7 @@ impl eframe::App for ValetApp {
                                     }
                                     if ui.button("Cancel").clicked() {
                                         self.show_new_record = false;
+                                        self.show_new_value = false;
                                         self.new_label.clear();
                                         self.new_value.clear();
                                     }
