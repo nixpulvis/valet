@@ -21,23 +21,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum ValetCommand {
-    #[command(subcommand)]
-    User(UserCommand),
-
-    #[command(subcommand)]
-    Config(ConfigCommand),
-}
-
-#[derive(Subcommand)]
-enum UserCommand {
-    Register {
-        username: String,
-    },
-    Validate {
-        #[arg(short, long = "user")]
-        username: Option<String>,
-    },
-    List,
     Unlock {
         #[arg(short, long = "user")]
         username: Option<String>,
@@ -55,6 +38,23 @@ enum UserCommand {
     //     #[arg(short, long = "type", required = true)]
     //     ty: String,
     // },
+    #[command(subcommand)]
+    User(UserCommand),
+
+    #[command(subcommand)]
+    Config(ConfigCommand),
+}
+
+#[derive(Subcommand)]
+enum UserCommand {
+    Register {
+        username: String,
+    },
+    Validate {
+        #[arg(short, long = "user")]
+        username: Option<String>,
+    },
+    List,
 }
 
 #[derive(Subcommand)]
@@ -131,7 +131,7 @@ async fn main() -> Result<(), valet::user::Error> {
                 println!("{user}")
             }
         }
-        ValetCommand::User(UserCommand::Unlock { username }) => {
+        ValetCommand::Unlock { username } => {
             let db = Database::new(&cli.database).await?;
 
             let username = get_default_username(username, &db).await?;
@@ -233,11 +233,11 @@ async fn main() -> Result<(), valet::user::Error> {
             })
             .await;
         }
-        ValetCommand::User(UserCommand::Import {
+        ValetCommand::Import {
             username,
             ty,
             filepath,
-        }) => {
+        } => {
             let db = Database::new(&cli.database).await?;
             let username = get_default_username(username, &db).await?;
             let password = get_password!();
