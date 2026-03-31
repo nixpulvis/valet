@@ -8,7 +8,7 @@ use crate::{
 };
 
 #[derive(Encode, Decode, Debug, Eq, PartialEq)]
-pub enum RecordData {
+pub enum Data {
     // TODO: We should really generalize the concept of a "label" to allow for
     // the HashMap to be the label here. We can then store a single (or many)
     // passwords separately.
@@ -18,10 +18,10 @@ pub enum RecordData {
 }
 
 // TODO: Don't display passwords.
-impl fmt::Display for RecordData {
+impl fmt::Display for Data {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RecordData::Domain(label, attributes) => {
+            Data::Domain(label, attributes) => {
                 write!(f, "{label}: {{ ")?;
                 for (i, (k, v)) in attributes.iter().enumerate() {
                     write!(f, "{k}: {v}")?;
@@ -32,7 +32,7 @@ impl fmt::Display for RecordData {
                 write!(f, " }}")?;
                 Ok(())
             }
-            RecordData::Plain(label, text) => {
+            Data::Plain(label, text) => {
                 if text.contains("\n") {
                     write!(f, "{label}:\n{text}")
                 } else {
@@ -43,7 +43,7 @@ impl fmt::Display for RecordData {
     }
 }
 
-impl RecordData {
+impl Data {
     pub fn domain(label: &str, values: HashMap<String, String>) -> Self {
         Self::Domain(label.into(), values)
     }
@@ -54,14 +54,14 @@ impl RecordData {
 
     pub fn label(&self) -> &str {
         match self {
-            RecordData::Domain(s, _) => &s,
-            RecordData::Plain(s, _) => &s,
+            Data::Domain(s, _) => &s,
+            Data::Plain(s, _) => &s,
         }
     }
 
     pub fn password(&self) -> &str {
         match self {
-            RecordData::Domain(_, attrs) => {
+            Data::Domain(_, attrs) => {
                 if attrs.contains_key("password") {
                     &attrs["password"]
                 } else if attrs.len() == 1 {
@@ -70,7 +70,7 @@ impl RecordData {
                     ""
                 }
             }
-            RecordData::Plain(_, s) => &s,
+            Data::Plain(_, s) => &s,
         }
     }
 
@@ -94,7 +94,7 @@ impl RecordData {
         let mut decompressed = Vec::new();
         let mut decoder = snap::read::FrameDecoder::new(buf);
         io::copy(&mut decoder, &mut decompressed).map_err(|e| Error::Compression(e))?;
-        let decoded = RecordData::decode(&decompressed)?;
+        let decoded = Data::decode(&decompressed)?;
         Ok(decoded)
     }
 
@@ -142,47 +142,47 @@ mod tests {
 
     #[test]
     fn label() {
-        let data = RecordData::plain("plain", "secret");
+        let data = Data::plain("plain", "secret");
         assert_eq!("plain", data.label());
-        let data = RecordData::domain("domain", HashMap::new());
+        let data = Data::domain("domain", HashMap::new());
         assert_eq!("domain", data.label());
     }
 
     #[test]
     fn encode_decode() {
-        let data = RecordData::plain("label", "secret");
+        let data = Data::plain("label", "secret");
         let encoded = data.encode();
-        let decoded = RecordData::decode(&encoded).expect("failed to decode");
+        let decoded = Data::decode(&encoded).expect("failed to decode");
         assert_eq!(data, decoded);
     }
 
     #[test]
     fn compress_decompress() {
-        let data = RecordData::plain("label", "secret");
+        let data = Data::plain("label", "secret");
         let compressed = data.compress().expect("failed to compress");
-        let decompressed = RecordData::decompress(&compressed).expect("failed to decompress");
+        let decompressed = Data::decompress(&compressed).expect("failed to decompress");
         assert_eq!(data, decompressed);
     }
 
     #[test]
     fn encrypt_decrypt() {
         let lot = Lot::new("test");
-        let data = RecordData::plain("label", "secret");
+        let data = Data::plain("label", "secret");
         let encrypted = data.encrypt(lot.key()).expect("failed to encrypt");
-        let decrypted = RecordData::decrypt(&encrypted, lot.key()).expect("failed to decrypt");
+        let decrypted = Data::decrypt(&encrypted, lot.key()).expect("failed to decrypt");
         assert_eq!(data, decrypted);
     }
 
     #[test]
     fn encrypt_decrypt_with_aad() {
         let lot = Lot::new("test");
-        let data = RecordData::plain("label", "secret");
+        let data = Data::plain("label", "secret");
         let aad = [1, 2, 3];
         let encrypted = data
             .encrypt_with_aad(lot.key(), &aad)
             .expect("failed to encrypt");
         let decrypted =
-            RecordData::decrypt_with_aad(&encrypted, lot.key(), &aad).expect("failed to decrypt");
+            Data::decrypt_with_aad(&encrypted, lot.key(), &aad).expect("failed to decrypt");
         assert_eq!(data, decrypted);
     }
 }

@@ -286,7 +286,7 @@ pub(crate) mod orm;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db::Database, pw, record::RecordData};
+    use crate::{db::Database, pw, record::Data};
 
     #[test]
     fn new() {
@@ -306,11 +306,11 @@ mod tests {
             .expect("failed to register user");
         let lot_a = Lot::new("lot a");
         lot_a.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot_a, RecordData::plain("a", "1"))
+        Record::new(&lot_a, Data::plain("a", "1"))
             .upsert(&db, &lot_a)
             .await
             .expect("failed to upsert record");
-        Record::new(&lot_a, RecordData::plain("b", "2"))
+        Record::new(&lot_a, Data::plain("b", "2"))
             .upsert(&db, &lot_a)
             .await
             .expect("failed to upsert record");
@@ -336,13 +336,13 @@ mod tests {
             .expect("failed to register user");
         let lot_a = Lot::new("lot a");
         lot_a.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot_a, RecordData::plain("a", "1"))
+        Record::new(&lot_a, Data::plain("a", "1"))
             .upsert(&db, &lot_a)
             .await
             .expect("failed to upsert record");
         let lot_b = Lot::new("lot b");
         lot_b.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot_b, RecordData::plain("b", "2"))
+        Record::new(&lot_b, Data::plain("b", "2"))
             .upsert(&db, &lot_b)
             .await
             .expect("failed to upsert record");
@@ -381,7 +381,7 @@ mod tests {
             .expect("failed to register user");
         let mut lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot, RecordData::plain("a", "1"))
+        Record::new(&lot, Data::plain("a", "1"))
             .upsert(&db, &lot)
             .await
             .expect("failed to upsert record");
@@ -413,7 +413,7 @@ mod tests {
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot, RecordData::plain("a", "1"))
+        Record::new(&lot, Data::plain("a", "1"))
             .upsert(&db, &lot)
             .await
             .expect("failed to upsert record");

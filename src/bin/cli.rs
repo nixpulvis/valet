@@ -220,7 +220,7 @@ async fn main() -> Result<(), valet::user::Error> {
                     {
                         // TODO: Delete old record if it exists.
                         // TODO: Add deleted record to new record's history.
-                        Record::new(&lot, RecordData::plain(&path.label, &data))
+                        Record::new(&lot, Data::plain(&path.label, &data))
                             .upsert(&db, &lot)
                             .await
                             .expect("failed to save record");
@@ -439,7 +439,7 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                 if let Some(otp) = csv_record.otp {
                     data.insert("otp".into(), otp);
                 }
-                match Record::new(&lot, RecordData::domain(&label, data))
+                match Record::new(&lot, Data::domain(&label, data))
                     .upsert(&db, lot)
                     .await
                 {

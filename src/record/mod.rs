@@ -10,11 +10,11 @@ use std::{fmt, io};
 pub struct Record {
     pub(crate) uuid: Uuid<Self>,
     pub(crate) lot_uuid: Uuid<Lot>,
-    pub(crate) data: RecordData,
+    pub(crate) data: Data,
 }
 
 impl Record {
-    pub fn new(lot: &Lot, data: RecordData) -> Self {
+    pub fn new(lot: &Lot, data: Data) -> Self {
         Record {
             uuid: Uuid::now(),
             lot_uuid: lot.uuid().clone(),
@@ -34,7 +34,7 @@ impl Record {
         unimplemented!()
     }
 
-    pub fn data(&self) -> &RecordData {
+    pub fn data(&self) -> &Data {
         &self.data
     }
 
@@ -59,7 +59,7 @@ impl Record {
         key: &Key<Lot>,
     ) -> Result<Self, Error> {
         let aad = Record::aad(&uuid.to_string(), &lot_uuid.to_string());
-        let data = RecordData::decrypt_with_aad(encrypted, key, &aad)?;
+        let data = Data::decrypt_with_aad(encrypted, key, &aad)?;
         Ok(Record {
             uuid,
             lot_uuid,
@@ -188,7 +188,7 @@ impl From<sea_orm::DbErr> for Error {
 }
 
 mod data;
-pub use self::data::RecordData; // TODO: Remove
+pub use self::data::Data; // TODO: Remove
 // pub use self::data::{Data, Label, Secret};
 
 #[cfg(feature = "orm")]
@@ -204,11 +204,11 @@ mod tests {
     #[test]
     fn new() {
         let lot = Lot::new("test");
-        let record = Record::new(&lot, RecordData::plain("foo", "bar"));
+        let record = Record::new(&lot, Data::plain("foo", "bar"));
         assert_eq!(lot.uuid(), &record.lot_uuid);
         assert_eq!(36, record.uuid.to_string().len());
         match record.data {
-            RecordData::Plain(ref label, ref value) => {
+            Data::Plain(ref label, ref value) => {
                 assert_eq!("foo", label);
                 assert_eq!("bar", value);
             }
@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt() {
         let lot = Lot::new("test");
-        let record = Record::new(&lot, RecordData::plain("foo", "bar"));
+        let record = Record::new(&lot, Data::plain("foo", "bar"));
         let encrypted = record.encrypt(&lot.key()).expect("failed to encrypt");
         let decrypted = Record::decrypt(
             record.uuid.clone(),
@@ -243,7 +243,7 @@ mod tests {
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        let inserted_uuid = Record::new(&lot, RecordData::plain("foo", "bar"))
+        let inserted_uuid = Record::new(&lot, Data::plain("foo", "bar"))
             .upsert(&db, &lot)
             .await
             .expect("failed to upsert record");
@@ -264,7 +264,7 @@ mod tests {
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        let record = Record::new(&lot, RecordData::plain("foo", "bar"));
+        let record = Record::new(&lot, Data::plain("foo", "bar"));
         let inserted_uuid = record
             .upsert(&db, &lot)
             .await
@@ -288,7 +288,7 @@ mod tests {
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        let record = Record::new(&lot, RecordData::plain("foo", "bar"));
+        let record = Record::new(&lot, Data::plain("foo", "bar"));
         record
             .upsert(&db, &lot)
             .await
