@@ -10,7 +10,9 @@ use eframe::egui::{
 use egui_inbox::UiInbox;
 use std::sync::{Arc, RwLock};
 use tokio::runtime::Runtime;
-use valet::{Lot, Record, User, db::Database, lot::DEFAULT_LOT, record::RecordData};
+use valet::{
+    Lot, Record, User, db::Database, lot::DEFAULT_LOT, prelude::PasswordBuf, record::RecordData,
+};
 
 type Store = Vec<(Lot, Vec<Record>)>;
 
@@ -145,7 +147,7 @@ impl<'a> View for Unlocked<'a> {
                             let gen_width = button_width(ui, &["Generate"]);
                             ui.add(
                                 PasswordInput::new(
-                                    &mut state.new_password,
+                                    &mut state.new_password.as_mut(),
                                     &mut state.show_new_value,
                                 )
                                 .reserved_right(gen_width),
@@ -165,6 +167,8 @@ impl<'a> View for Unlocked<'a> {
                                 let label = state.new_label.clone();
                                 let password = state.new_password.clone();
                                 state.show_new_record = false;
+                                state.new_label = String::new();
+                                state.new_password = PasswordBuf::empty();
                                 state.show_new_value = false;
                                 state.store.write().unwrap().clear();
                                 self.rt.spawn(async move {
@@ -197,7 +201,7 @@ impl<'a> View for Unlocked<'a> {
                                 state.show_new_record = false;
                                 state.show_new_value = false;
                                 state.new_label.clear();
-                                state.new_password.clear();
+                                state.new_password = PasswordBuf::empty();
                             }
                         });
                     }); // inner_margin Frame
@@ -251,7 +255,7 @@ struct State {
     // TODO: Move into NewRecord widget
     show_new_record: bool,
     new_label: String,
-    new_password: String,
+    new_password: PasswordBuf,
     show_new_value: bool,
 }
 
@@ -268,7 +272,10 @@ impl State {
             show_new_record: ctx
                 .data(|d| d.get_temp(id.with("show_new_record")).unwrap_or_default()),
             new_label: ctx.data(|d| d.get_temp(id.with("new_label")).unwrap_or_default()),
-            new_password: ctx.data(|d| d.get_temp(id.with("new_password")).unwrap_or_default()),
+            new_password: ctx.data(|d| {
+                d.get_temp(id.with("new_password"))
+                    .unwrap_or(PasswordBuf::empty())
+            }),
             show_new_value: ctx.data(|d| d.get_temp(id.with("show_new_value")).unwrap_or_default()),
         }
     }
