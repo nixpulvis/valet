@@ -311,7 +311,7 @@ async fn get_default_username(
             if usernames.len() == 1 {
                 Ok(usernames[0].to_owned())
             } else {
-                Err(user::Error::Invalid)
+                Err(user::Error::NotFound)
             }
         }
     }
