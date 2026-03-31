@@ -112,8 +112,10 @@ macro_rules! get_password {
         // altogether by disabling the buffered input (raw mode) and copies each
         // input character into a fixed length buffer. Maximum password lengths
         // could be something like 200 characters.
-        let password_string = rpassword::read_password().unwrap();
-        Password::from(password_string.as_str())
+        let mut password_string = rpassword::read_password().unwrap();
+        let password = Password::from(password_string.as_str());
+        zeroize::Zeroize::zeroize(&mut password_string);
+        password
     }};
 }
 
