@@ -1,2 +1,2 @@
-createSrcSidebar('[["valet",["",[["encrypt",[],["key.rs","mod.rs","password.rs"]],["lot",[],["mod.rs","orm.rs"]],["record",[],["mod.rs","orm.rs"]],["user",[],["mod.rs","orm.rs"]]],["db.rs","lib.rs","prelude.rs","uuid.rs"]]]]');
-//{"start":19,"fragment_lengths":[204]}
+createSrcSidebar('[["valet",["",[["encrypt",[],["key.rs","mod.rs"]],["lot",[],["mod.rs","orm.rs"]],["record",[["data",[],["label.rs","mod.rs"]]],["mod.rs","orm.rs"]],["user",[],["mod.rs","orm.rs"]]],["db.rs","lib.rs","password.rs","prelude.rs","uuid.rs"]]]]');
+//{"start":19,"fragment_lengths":[237]}

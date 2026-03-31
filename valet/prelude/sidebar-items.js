@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"macro":["pw"]};
+window.SIDEBAR_ITEMS = {};
