@@ -108,11 +108,12 @@ macro_rules! get_password {
     () => {{
         print!("Password: ");
         std::io::stdout().flush().ok();
-        // TODO: Can we write our own STDIN reader which avoids allocation
+        // TODO: Can we write our own STDIN reader which avoids extra allocation
         // altogether by disabling the buffered input (raw mode) and copies each
         // input character into a fixed length buffer. Maximum password lengths
         // could be something like 200 characters.
-        pw!(rpassword::read_password().unwrap())
+        let password_string = rpassword::read_password().unwrap();
+        Password::from(password_string.as_str())
     }};
 }
 
@@ -221,8 +222,10 @@ async fn main() -> Result<(), valet::user::Error> {
                     {
                         match Label::from_str(&path.label) {
                             Ok(label) => {
+                                // TODO: Delete old record if it exists.
                                 // TODO: Add deleted record to new record's history.
-                                Record::new(&lot, Data::new(label, data.clone().into()))
+                                // TODO: Put data in a Password itself.
+                                Record::new(&lot, Data::new(label, Password::from(data.as_str())))
                                     .upsert(&db, &lot)
                                     .await
                                     .expect("failed to save record");
@@ -446,10 +449,11 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                 if let Some(otp) = csv_record.otp {
                     data.insert("otp".into(), otp);
                 }
-                let password = data.remove("password").unwrap_or_default();
+                // TODO: Put text directly into a Password
+                let password = Password::from(data.remove("password").unwrap_or_default().as_str());
                 match Record::new(
                     &lot,
-                    Data::new(Label::Simple(label.clone()), password.into()).with_extra(data),
+                    Data::new(Label::Simple(label.clone()), password).with_extra(data),
                 )
                 .upsert(&db, lot)
                 .await

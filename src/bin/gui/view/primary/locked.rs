@@ -6,7 +6,7 @@ use eframe::egui::{Button, CentralPanel, Context, Id, Key, TextEdit, ViewportCom
 use egui_inbox::UiInbox;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use valet::{Lot, User, db::Database, encrypt::PasswordBuf, lot::DEFAULT_LOT, pw};
+use valet::{Lot, User, db::Database, lot::DEFAULT_LOT, password::Password};
 
 pub struct Locked<'a> {
     // TODO: come up with a better organization for these shared values.
@@ -56,10 +56,8 @@ impl<'a> View for Locked<'a> {
             ui.label("Username:");
             let username_re = ui.add(TextEdit::singleline(&mut state.username));
             ui.label("Password:");
-            let password_re = ui.add(PasswordInput::new(
-                state.password.as_mut(),
-                &mut state.show_password,
-            ));
+            // TODO: Update PasswordInput to operate on Password directly.
+            let password_re = ui.add(PasswordInput::new(&mut state.password));
             ui.add_space(5.);
             ui.horizontal(|ui| {
                 if ui.add(Button::new("Unlock")).clicked()
@@ -77,9 +75,7 @@ impl<'a> View for Locked<'a> {
                         let db = Database::new(&db_url)
                             .await
                             .expect("error getting database");
-                        let user = User::load(&db, &username, pw!(password))
-                            .await
-                            .expect("TODO");
+                        let user = User::load(&db, &username, password).await.expect("TODO");
                         if user.validate() {
                             tx.send(user).ok();
                         }
@@ -93,7 +89,7 @@ impl<'a> View for Locked<'a> {
                     let tx = self.login_inbox.sender();
                     self.rt.spawn(async move {
                         let db = Database::new(&db_url).await.expect("error getting DB");
-                        let user = User::new(&username, pw!(password))
+                        let user = User::new(&username, password)
                             .expect("TODO")
                             .register(&db)
                             .await
@@ -115,8 +111,7 @@ impl<'a> View for Locked<'a> {
 
 struct State {
     username: String,
-    password: PasswordBuf,
-    show_password: bool,
+    password: Password,
 }
 
 impl State {
@@ -125,9 +120,8 @@ impl State {
             username: ctx.data(|d| d.get_temp(id.with("username")).unwrap_or_default()),
             password: ctx.data(|d| {
                 d.get_temp(id.with("password"))
-                    .unwrap_or(PasswordBuf::empty())
+                    .unwrap_or(Password::default())
             }),
-            show_password: ctx.data(|d| d.get_temp(id.with("show_password")).unwrap_or_default()),
         }
     }
 
@@ -135,7 +129,6 @@ impl State {
         ctx.data_mut(|d| {
             d.insert_temp(id.with("username"), self.username);
             d.insert_temp(id.with("password"), self.password);
-            d.insert_temp(id.with("show_password"), self.show_password);
         });
     }
 }

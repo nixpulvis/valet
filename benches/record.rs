@@ -2,10 +2,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use valet::{prelude::*, record::Label, uuid::Uuid};
 
 fn small_data(c: &mut Criterion) {
-    let data = Data::new(
-        Label::Simple("label".to_string()),
-        "secret".to_string().into(),
-    );
+    let data = Data::new(Label::Simple("label".to_string()), "secret".into());
 
     let encode = || data.encode();
     c.bench_function("Record::encode", |b| b.iter(encode));

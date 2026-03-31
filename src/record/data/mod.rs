@@ -1,15 +1,16 @@
 use crate::{
     Lot,
-    encrypt::{Encrypted, Key, Password, PasswordBuf},
+    encrypt::{Encrypted, Key},
+    password::Password,
     record::Error,
 };
 use bitcode::{Decode, Encode};
-use std::{collections::HashMap, fmt, io, pin::Pin};
+use std::{collections::HashMap, fmt, io};
 
 #[derive(Encode, Decode, Debug, Eq, PartialEq)]
 pub struct Data {
     label: Label,
-    password: PasswordBuf,
+    password: Password,
     extra: HashMap<String, String>,
 }
 
@@ -20,7 +21,7 @@ impl fmt::Display for Data {
 }
 
 impl Data {
-    pub fn new(label: Label, password: PasswordBuf) -> Self {
+    pub fn new(label: Label, password: Password) -> Self {
         Data {
             label,
             password,
@@ -42,11 +43,7 @@ impl Data {
         &self.label
     }
 
-    pub fn password<'a>(&'a mut self) -> Password<'a> {
-        unsafe { Pin::new_unchecked(&mut self.password) }
-    }
-
-    pub fn password_str(&self) -> &str {
+    pub fn password<'a>(&'a self) -> &'a Password {
         &self.password
     }
 

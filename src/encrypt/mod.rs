@@ -27,5 +27,3 @@ pub enum Error {
 
 mod key;
 pub use self::key::Key;
-mod password;
-pub use self::password::{Password, PasswordBuf};

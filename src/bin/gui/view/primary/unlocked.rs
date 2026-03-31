@@ -17,7 +17,7 @@ use valet::{
     Lot, Record, User,
     db::Database,
     lot::DEFAULT_LOT,
-    prelude::PasswordBuf,
+    password::Password,
     record::{Data, Label},
 };
 
@@ -139,11 +139,8 @@ impl<'a> View for Unlocked<'a> {
                         ui.horizontal(|ui| {
                             let gen_width = button_width(ui, &["Generate"]);
                             ui.add(
-                                PasswordInput::new(
-                                    &mut state.new_password.as_mut(),
-                                    &mut state.show_new_value,
-                                )
-                                .reserved_right(gen_width),
+                                PasswordInput::new(&mut state.new_password)
+                                    .reserved_right(gen_width),
                             );
                             if ui.button("Generate").clicked() {
                                 state.new_password = generate_password();
@@ -161,8 +158,7 @@ impl<'a> View for Unlocked<'a> {
                                 let new_password = state.new_password.clone();
                                 state.show_new_record = false;
                                 state.new_label = String::new();
-                                state.new_password = PasswordBuf::empty();
-                                state.show_new_value = false;
+                                state.new_password = Password::default();
                                 state.store.write().unwrap().clear();
                                 self.rt.spawn(async move {
                                     let db = Database::new(&db_url)
@@ -199,9 +195,8 @@ impl<'a> View for Unlocked<'a> {
                             }
                             if ui.button("Cancel").clicked() {
                                 state.show_new_record = false;
-                                state.show_new_value = false;
                                 state.new_label.clear();
-                                state.new_password = PasswordBuf::empty();
+                                state.new_password = Password::default();
                             }
                         });
                     }); // inner_margin Frame
@@ -264,8 +259,7 @@ struct State {
     // TODO: Move into NewRecord widget
     show_new_record: bool,
     new_label: String,
-    new_password: PasswordBuf,
-    show_new_value: bool,
+    new_password: Password,
 }
 
 impl State {
@@ -283,9 +277,8 @@ impl State {
             new_label: ctx.data(|d| d.get_temp(id.with("new_label")).unwrap_or_default()),
             new_password: ctx.data(|d| {
                 d.get_temp(id.with("new_password"))
-                    .unwrap_or(PasswordBuf::empty())
+                    .unwrap_or(Password::default())
             }),
-            show_new_value: ctx.data(|d| d.get_temp(id.with("show_new_value")).unwrap_or_default()),
         }
     }
 
@@ -298,7 +291,6 @@ impl State {
             d.insert_temp(id.with("show_new_record"), self.show_new_record);
             d.insert_temp(id.with("new_label"), self.new_label);
             d.insert_temp(id.with("new_password"), self.new_password);
-            d.insert_temp(id.with("show_new_value"), self.show_new_value);
         });
     }
 }

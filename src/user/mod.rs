@@ -1,7 +1,8 @@
 use crate::{
     db::{self, Database},
-    encrypt::{self, Encrypted, Key, Password, SALT_SIZE},
+    encrypt::{self, Encrypted, Key, SALT_SIZE},
     lot::{self, Lot},
+    password::Password,
 };
 use sea_orm::{ActiveValue::Set, QuerySelect, entity::prelude::*};
 use std::{fmt::Debug, fmt::Formatter};
@@ -40,7 +41,7 @@ pub struct User {
 impl User {
     pub fn new(username: &str, password: Password) -> Result<Self, Error> {
         let salt = encrypt::generate_salt();
-        let key = Key::from_password(password, &salt)?;
+        let key = Key::from_password(&password, &salt)?;
         let validation = key.encrypt_with_aad(VALIDATION, User::aad(username))?;
         Ok(User {
             username: username.into(),
@@ -85,14 +86,14 @@ impl User {
     pub async fn load<'a>(
         db: &'a Database,
         username: &'a str,
-        password: Password<'a>,
+        password: Password,
     ) -> Result<Self, Error> {
         let model = self::orm::Entity::find_by_id(username.to_owned())
             .one(db.connection())
             .await?
             .ok_or(Error::NotFound)?;
 
-        let key = Key::from_password(password, &model.salt[..])?;
+        let key = Key::from_password(&password, &model.salt[..])?;
         let validation = Encrypted {
             data: model.validation_data,
             nonce: model.validation_nonce,
@@ -187,19 +188,21 @@ pub(crate) mod orm;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db::Database, pw};
+    use crate::db::Database;
     use std::time::{Duration, Instant};
 
     #[test]
     fn new_validate() {
-        let user = User::new("alice", pw!("password")).expect("failed to create user");
+        let user = User::new("alice", Password::from("password")).expect("failed to create user");
         assert!(user.validate());
     }
 
     #[test]
     fn invalid() {
-        let mut user = User::new("alice", pw!("password")).expect("failed to create user");
-        let imposter = User::new("charlie", pw!("password")).expect("failed to create user");
+        let mut user =
+            User::new("alice", Password::from("password")).expect("failed to create user");
+        let imposter =
+            User::new("charlie", Password::from("password")).expect("failed to create user");
         user.validation = imposter
             .key()
             .encrypt(VALIDATION)
@@ -210,7 +213,7 @@ mod tests {
     #[test]
     fn new_is_slow() {
         let start = Instant::now();
-        User::new("alice", pw!("password")).expect("failed to create user");
+        User::new("alice", Password::from("password")).expect("failed to create user");
         let duration = start.elapsed();
         assert!(duration > Duration::from_millis(200));
     }
@@ -221,8 +224,8 @@ mod tests {
             .await
             .expect("failed to create database");
 
-        let password = pw!("password");
-        let user = User::new("alice", pw!(password.clone()))
+        let password = Password::from("password");
+        let user = User::new("alice", Password::from(password.clone()))
             .expect("failed to create user")
             .register(&db)
             .await
@@ -240,7 +243,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", pw!("password"))
+        let user = User::new("nixpulvis", Password::from("password"))
             .expect("failed to make user")
             .register(&db)
             .await
@@ -259,12 +262,12 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        User::new("alice", pw!("password"))
+        User::new("alice", Password::from("password"))
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
-        User::new("bob", pw!("password"))
+        User::new("bob", Password::from("password"))
             .expect("failed to make user")
             .register(&db)
             .await

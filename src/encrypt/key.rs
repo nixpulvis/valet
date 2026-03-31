@@ -1,4 +1,7 @@
-use crate::encrypt::{Encrypted, Error, Password};
+use crate::{
+    encrypt::{Encrypted, Error},
+    password::Password,
+};
 use aes_gcm_siv::{
     Aes256GcmSiv, KeySizeUser, Nonce,
     aead::{Aead, Key as AesKey, KeyInit, Payload, generic_array::typenum::Unsigned},
@@ -33,7 +36,7 @@ impl<T> Key<T> {
     /// Derive a key from a password and salt using [`argon2`].
     ///
     /// [`argon2`]: https://docs.rs/argon2/latest/argon2/
-    pub fn from_password(password: Password, salt: &[u8]) -> Result<Self, Error> {
+    pub fn from_password(password: &Password, salt: &[u8]) -> Result<Self, Error> {
         let argon2 = Argon2::default();
         let mut output_key_material = [0u8; <Aes256GcmSiv as KeySizeUser>::KeySize::USIZE];
         argon2
@@ -103,13 +106,13 @@ impl<T> Key<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{encrypt::generate_salt, pw};
+    use crate::encrypt::generate_salt;
 
     #[test]
     fn from_password() {
         let salt = generate_salt();
-        let key =
-            Key::<()>::from_password(pw!("user1password"), &salt).expect("error generating key");
+        let key = Key::<()>::from_password(&Password::from("user1password"), &salt)
+            .expect("error generating key");
         assert_eq!(256 / 8, key.0.len());
     }
 

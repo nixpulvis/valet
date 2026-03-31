@@ -1,6 +1,6 @@
 use eframe::egui;
 use rand_core::{OsRng, RngCore};
-use valet::prelude::PasswordBuf;
+use valet::password::Password;
 
 pub fn button_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
     let font_id = egui::TextStyle::Button.resolve(ui.style());
@@ -18,7 +18,7 @@ pub fn button_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
         .ceil()
 }
 
-pub fn generate_password() -> PasswordBuf {
+pub fn generate_password() -> Password {
     const CHARSET: &[u8] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
     let mut rng = OsRng;
@@ -33,5 +33,5 @@ pub fn generate_password() -> PasswordBuf {
             password.push(CHARSET[idx % CHARSET.len()] as char);
         }
     }
-    PasswordBuf::from(password)
+    Password::from(password.as_str())
 }

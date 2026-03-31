@@ -2,6 +2,7 @@ use crate::{
     db::{self, Database},
     encrypt::{self, Encrypted, Key},
     lot::Lot,
+    password::Password,
     uuid::Uuid,
 };
 use sea_orm::{IntoActiveModel, entity::prelude::*, sea_query::OnConflict};
@@ -42,9 +43,8 @@ impl Record {
         self.data.label()
     }
 
-    // TODO: Should be a Password type
-    pub fn password(&self) -> &str {
-        self.data.password_str()
+    pub fn password(&self) -> &Password {
+        self.data.password()
     }
 
     pub fn encrypt(&self, key: &Key<Lot>) -> Result<Encrypted, Error> {
@@ -199,7 +199,7 @@ pub(crate) mod orm;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lot::Lot, pw, record::data::Label, user::User};
+    use crate::{lot::Lot, record::data::Label, user::User};
 
     #[test]
     fn new() {
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(lot.uuid(), &record.lot_uuid);
         assert_eq!(36, record.uuid.to_string().len());
         assert_eq!(record.data.label(), &Label::Simple("foo".into()));
-        assert_eq!(record.data.password_str(), "bar");
+        assert_eq!(record.data.password().to_string(), "bar");
     }
 
     #[test]
@@ -231,7 +231,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", pw!("password"))
+        let user = User::new("nixpulvis", Password::from("password"))
             .expect("failed to make user")
             .register(&db)
             .await
@@ -252,7 +252,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", pw!("password"))
+        let user = User::new("nixpulvis", Password::from("password"))
             .expect("failed to make user")
             .register(&db)
             .await
@@ -276,7 +276,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", pw!("password"))
+        let user = User::new("nixpulvis", Password::from("password"))
             .expect("failed to make user")
             .register(&db)
             .await

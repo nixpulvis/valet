@@ -288,7 +288,7 @@ mod tests {
     use super::*;
     use crate::{
         db::Database,
-        pw,
+        password::Password,
         record::{Data, Label},
     };
 
@@ -303,7 +303,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", pw!("password"))
+        let user = User::new("nixpulvis", Password::from("password"))
             .expect("failed to make user")
             .register(&db)
             .await
@@ -333,7 +333,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", pw!("password"))
+        let user = User::new("nixpulvis", Password::from("password"))
             .expect("failed to make user")
             .register(&db)
             .await
@@ -362,7 +362,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", pw!("password"))
+        let user = User::new("nixpulvis", Password::from("password"))
             .expect("failed to make user")
             .register(&db)
             .await
@@ -378,7 +378,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", pw!("password"))
+        let user = User::new("nixpulvis", Password::from("password"))
             .expect("failed to make user")
             .register(&db)
             .await
@@ -410,7 +410,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", pw!("password"))
+        let user = User::new("nixpulvis", Password::from("password"))
             .expect("failed to make user")
             .register(&db)
             .await
