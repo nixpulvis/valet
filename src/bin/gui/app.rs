@@ -1,4 +1,4 @@
-use crate::view::{View, Locked, Unlocked};
+use crate::view::{Locked, Unlocked, View};
 use eframe::egui;
 use egui_inbox::UiInbox;
 use std::{env, sync::Arc};
