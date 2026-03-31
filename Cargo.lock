@@ -5451,7 +5451,7 @@ dependencies = [
 
 [[package]]
 name = "valet"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aes-gcm-siv",
  "argon2",

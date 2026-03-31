@@ -1,11 +1,12 @@
 [package]
 name = "valet"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 default-run = "valet"
 license = "MIT"
 documentation = "https://nixpulvis.com/valet/valet"
 repository = "https://github.com/nixpulvis/valet"
+authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 description = """
 Valet is a password management framework and manager CLI/GUI application.
 """
@@ -43,7 +44,7 @@ uuid = { version = "1.17", features = ["v7"] }
 zeroize = { version = "1.8", features = ["derive"] }
 
 # CLI Dependencies
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "cargo"] }
 clap-repl = { version = "0.3", features = ["async"] }
 clap_complete = "4.5"
 

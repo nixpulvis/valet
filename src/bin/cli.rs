@@ -1,4 +1,4 @@
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, crate_description};
 use clap_complete::{Shell, generate};
 use clap_repl::ClapEditor;
 use clap_repl::reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory};
@@ -11,12 +11,13 @@ use tokio;
 use valet::{prelude::*, user};
 
 #[derive(Parser)]
+#[command(version, about = crate_description!())]
 struct Cli {
-    #[command(subcommand)]
-    command: ValetCommand,
-
     #[arg(short, long, default_value = valet::db::DEFAULT_URL)]
     database: String,
+
+    #[command(subcommand)]
+    command: ValetCommand,
 }
 
 #[derive(Subcommand)]
