@@ -69,6 +69,8 @@ enum Repl {
     List {
         #[clap(default_value = "")]
         path: String,
+        #[arg(long = "uuid")]
+        uuid: bool,
     },
     Put {
         path: String,
@@ -76,6 +78,8 @@ enum Repl {
     },
     Get {
         path: String,
+        #[arg(long = "uuid")]
+        uuid: bool,
     },
     Clear,
     Lock,
@@ -83,11 +87,18 @@ enum Repl {
 
 #[derive(Subcommand)]
 enum LotCommand {
-    Create { name: String },
-    List,
+    Create {
+        name: String,
+    },
+    List {
+        #[arg(long = "uuid")]
+        uuid: bool,
+    },
     // Share { name: String, users: Vec<String> },
     // Unshare { name: String, users: Vec<String> },
-    Delete { name: String },
+    Delete {
+        name: String,
+    },
 }
 
 // TODO: Error handling.
@@ -157,16 +168,20 @@ async fn main() -> Result<(), valet::user::Error> {
                         .await
                         .expect("failed to save lot");
                 }
-                Repl::Lot(LotCommand::List) => {
+                Repl::Lot(LotCommand::List { uuid }) => {
                     for lot in user.lots(&db).await.expect("failed to load lots").iter() {
-                        println!("{}", lot.name());
+                        if *uuid {
+                            println!("{} <{}>", lot.name(), lot.uuid());
+                        } else {
+                            println!("{}", lot.name());
+                        }
                     }
                 }
                 Repl::Lot(LotCommand::Delete { name }) => {
                     dbg!(&name);
                     unimplemented!();
                 }
-                Repl::List { path } => {
+                Repl::List { path, uuid } => {
                     let path = Path::parse(&path);
                     for lot in user.lots(&db).await.expect("failed to load lots").iter() {
                         if lot.name().starts_with(&path.lot) {
@@ -179,7 +194,15 @@ async fn main() -> Result<(), valet::user::Error> {
                                 {
                                     let label = record.data().label();
                                     if label.starts_with(&path.label) {
-                                        println!("{}", Path::new(&path.lot, label));
+                                        if *uuid {
+                                            println!(
+                                                "{} <{}>",
+                                                Path::new(&path.lot, label),
+                                                record.uuid()
+                                            );
+                                        } else {
+                                            println!("{}", Path::new(&path.lot, label));
+                                        }
                                     }
                                 }
                             } else {
@@ -202,7 +225,7 @@ async fn main() -> Result<(), valet::user::Error> {
                             .expect("failed to save record");
                     }
                 }
-                Repl::Get { path } => {
+                Repl::Get { path, uuid } => {
                     let path = Path::parse(&path);
                     if let Some(lot) = Lot::load(&db, &path.lot, &user)
                         .await
@@ -215,7 +238,11 @@ async fn main() -> Result<(), valet::user::Error> {
                             .iter()
                             .find(|r| r.data().label() == path.label)
                         {
-                            println!("{}::{}", lot.name(), record);
+                            if *uuid {
+                                println!("{}::{} <{}>", lot.name(), record, record.uuid());
+                            } else {
+                                println!("{}::{}", lot.name(), record);
+                            }
                         }
                     }
                 }

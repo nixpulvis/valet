@@ -1,3 +1,4 @@
+use core::fmt;
 use std::marker::PhantomData;
 use std::ops::Deref;
 
@@ -11,6 +12,12 @@ impl<T> Uuid<T> {
 
     pub fn parse(s: &str) -> Result<Self, Error> {
         Ok(Uuid(uuid::Uuid::parse_str(s)?, PhantomData))
+    }
+}
+
+impl<T> fmt::Display for Uuid<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.to_string())
     }
 }
 
