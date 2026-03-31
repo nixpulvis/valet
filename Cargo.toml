@@ -3,6 +3,12 @@ name = "valet"
 version = "0.0.1"
 edition = "2024"
 default-run = "valet"
+license = "MIT"
+documentation = "https://nixpulvis.com/valet/valet"
+repository = "https://github.com/nixpulvis/valet"
+description = """
+Valet is a password management framework and manager CLI/GUI application.
+"""
 
 [package.metadata.bundle.bin.gui]
 name = "Valet"
@@ -15,19 +21,9 @@ required-features = ["gui"]
 name = "valet"
 path = "src/bin/cli.rs"
 
-[[bench]]
-name = "encrypt"
-harness = false
-[[bench]]
-name = "record"
-harness = false
-
 [features]
 orm = []
 gui = ["dep:eframe", "dep:egui_inbox"]
-
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
 
 [dependencies]
 aes-gcm-siv = "0.11"
@@ -48,10 +44,19 @@ zeroize = { version = "1.8", features = ["derive"] }
 
 # CLI Dependencies
 clap = { version = "4.5", features = ["derive"] }
-# TODO: I'll probably need to implement something like this myself.
 clap-repl = { version = "0.3", features = ["async"] }
 clap_complete = "4.5"
 
 # GUI Dependencies
 eframe = { version = "0.32", optional = true }
 egui_inbox = { version = "0.9", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "encrypt"
+harness = false
+[[bench]]
+name = "record"
+harness = false
