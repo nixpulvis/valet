@@ -38,7 +38,7 @@ fn button_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
         .ceil()
 }
 
-const MIN_SIZE: [f32; 2] = [200., 168.];
+const MIN_SIZE: [f32; 2] = [200., 150.];
 const UNLOCKED_DEFAULT_SIZE: [f32; 2] = [400., 600.];
 
 struct PasswordInput<'a> {
