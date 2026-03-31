@@ -1,219 +1,15 @@
+use crate::{
+    MIN_SIZE, UNLOCKED_DEFAULT_SIZE,
+    util::{button_width, generate_password},
+    widget::{PasswordInput, RecordRow},
+};
 use eframe::egui::{self, ViewportCommand};
 use egui_inbox::UiInbox;
-use rand_core::{OsRng, RngCore};
 use std::{env, sync::Arc};
 use tokio::runtime;
 use valet::prelude::*;
 
-fn generate_password() -> String {
-    const CHARSET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
-    let mut rng = OsRng;
-    let mut buf = [0u8; 1];
-    let mut password = String::with_capacity(20);
-    while password.len() < 20 {
-        rng.fill_bytes(&mut buf);
-        let idx = buf[0] as usize;
-        // rejection sampling to avoid modulo bias
-        if idx < 256 - (256 % CHARSET.len()) {
-            password.push(CHARSET[idx % CHARSET.len()] as char);
-        }
-    }
-    password
-}
-
-fn button_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
-    let font_id = egui::TextStyle::Button.resolve(ui.style());
-    (ui.fonts(|f| {
-        labels
-            .iter()
-            .map(|s| {
-                f.layout_no_wrap(s.to_string(), font_id.clone(), egui::Color32::WHITE)
-                    .rect
-                    .width()
-            })
-            .fold(0., f32::max)
-    }) + ui.spacing().button_padding.x * 2.)
-        .max(ui.spacing().interact_size.x)
-        .ceil()
-}
-
-const MIN_SIZE: [f32; 2] = [200., 150.];
-const UNLOCKED_DEFAULT_SIZE: [f32; 2] = [400., 600.];
-
-struct PasswordInput<'a> {
-    // TODO: Use a Password type
-    text: &'a mut String,
-    visible: &'a mut bool,
-    reserved_right: f32,
-}
-
-impl<'a> PasswordInput<'a> {
-    fn new(text: &'a mut String, visible: &'a mut bool) -> Self {
-        Self {
-            text,
-            visible,
-            reserved_right: 0.,
-        }
-    }
-
-    fn reserved_right(mut self, width: f32) -> Self {
-        self.reserved_right = width;
-        self
-    }
-}
-
-impl egui::Widget for PasswordInput<'_> {
-    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        ui.horizontal(|ui| {
-            let spacing = ui.spacing().item_spacing.x;
-            let btn_width = button_width(ui, &["Show", "Hide"]);
-
-            let reserved = btn_width
-                + spacing * 2.
-                + if self.reserved_right > 0. {
-                    self.reserved_right + spacing
-                } else {
-                    0.
-                };
-            let text_width = (ui.available_width() - reserved).max(0.);
-            let response = ui.add(
-                egui::TextEdit::singleline(self.text)
-                    .password(!*self.visible)
-                    .desired_width(text_width),
-            );
-            let label = if *self.visible { "Hide" } else { "Show" };
-            if ui
-                .add(egui::Button::new(label).min_size(egui::vec2(btn_width, 0.)))
-                .clicked()
-            {
-                *self.visible = !*self.visible;
-            }
-            response
-        })
-        .inner
-    }
-}
-
-struct RecordRow<'a> {
-    label: &'a str,
-    password: &'a str,
-}
-
-impl<'a> RecordRow<'a> {
-    fn new(label: &'a str, password: &'a str) -> Self {
-        Self { label, password }
-    }
-}
-
-impl egui::Widget for RecordRow<'_> {
-    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let id = ui.make_persistent_id(("record", self.label));
-        let expanded_id = id.with("expanded");
-        let show_pw_id = id.with("show_pw");
-        let expanded = ui.data(|d| d.get_temp::<bool>(expanded_id).unwrap_or(false));
-        let show_pw = ui.data(|d| d.get_temp::<bool>(show_pw_id).unwrap_or(false));
-
-        ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                let copy_width = button_width(ui, &["Copy"]);
-                let spacing = ui.spacing().item_spacing.x;
-                let label_width = (ui.available_width() - copy_width - spacing).max(0.);
-
-                // allocate_space advances the cursor by exactly label_width.
-                // new_child renders into that rect with an explicit left-to-right layout
-                // without touching the cursor again, keeping the label left-aligned.
-                let (_, label_rect) =
-                    ui.allocate_space(egui::vec2(label_width, ui.spacing().interact_size.y));
-                let resp = ui
-                    .new_child(
-                        egui::UiBuilder::new()
-                            .max_rect(label_rect)
-                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                    )
-                    .add(
-                        egui::Label::new(self.label)
-                            .truncate()
-                            .sense(egui::Sense::click()),
-                    );
-                if resp.clicked() {
-                    ui.data_mut(|d| d.insert_temp(expanded_id, !expanded));
-                    if expanded {
-                        ui.data_mut(|d| d.insert_temp(show_pw_id, false));
-                    }
-                }
-                if resp.hovered() {
-                    ui.ctx()
-                        .output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                }
-
-                if ui
-                    .add(egui::Button::new("Copy").min_size(egui::vec2(copy_width, 0.)))
-                    .clicked()
-                {
-                    ui.ctx().copy_text(self.password.to_owned());
-                }
-            });
-
-            if expanded {
-                egui::Frame::NONE
-                    .inner_margin(egui::Margin {
-                        left: 0,
-                        right: 0,
-                        top: 2,
-                        bottom: 4,
-                    })
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let btn_width = button_width(ui, &["Show", "Hide"]);
-                            let spacing = ui.spacing().item_spacing.x;
-                            // With min_size on the button it renders at exactly btn_width,
-                            // so one spacing gap is the correct reservation.
-                            let text_width =
-                                (ui.available_width() - btn_width - spacing * 2.).max(0.);
-
-                            let mut pw = self.password.to_owned();
-                            ui.add(
-                                egui::TextEdit::singleline(&mut pw)
-                                    .password(!show_pw)
-                                    .interactive(false)
-                                    .desired_width(text_width),
-                            );
-
-                            let toggle_label = if show_pw { "Hide" } else { "Show" };
-                            if ui
-                                .add(
-                                    egui::Button::new(toggle_label)
-                                        .min_size(egui::vec2(btn_width, 0.)),
-                                )
-                                .clicked()
-                            {
-                                ui.data_mut(|d| d.insert_temp(show_pw_id, !show_pw));
-                            }
-                        });
-                    });
-            }
-        })
-        .response
-    }
-}
-
-fn main() {
-    let mut options = eframe::NativeOptions::default();
-    options.viewport = options
-        .viewport
-        .with_inner_size(MIN_SIZE)
-        .with_min_inner_size(MIN_SIZE)
-        .with_resizable(false);
-    eframe::run_native(
-        "Valet",
-        options,
-        Box::new(|ctx| Ok(Box::new(ValetApp::new(ctx)))),
-    )
-    .expect("eframe run failed");
-}
-
-struct ValetApp {
+pub struct App {
     db_url: String,
     rt: runtime::Runtime,
 
@@ -238,15 +34,15 @@ struct ValetApp {
     lock_label: String,
 }
 
-impl ValetApp {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+impl App {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut dir = env::current_exe().unwrap();
         dir.pop();
         dir.pop();
         let dir = String::from(dir.to_str().unwrap());
         let db_url = format!("sqlite://{}/valet.sqlite?mode=rwc", dir);
         dbg!(&db_url);
-        ValetApp {
+        App {
             db_url,
             rt: runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -274,7 +70,7 @@ impl ValetApp {
     }
 }
 
-impl eframe::App for ValetApp {
+impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Fill the entire screen with the panel background before any panels render,
         // preventing a dark flash on startup or window resize.
