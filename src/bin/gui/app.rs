@@ -111,6 +111,7 @@ impl eframe::App for App {
                                         self.search.clear();
                                         self.lock_label = "Unlocked".into();
                                         self.login_inbox = UiInbox::new();
+                                        ctx.data_mut(|d| d.clear());
                                         ctx.send_viewport_cmd(ViewportCommand::InnerSize(
                                             MIN_SIZE.into(),
                                         ));
