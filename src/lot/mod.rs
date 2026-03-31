@@ -286,7 +286,11 @@ pub(crate) mod orm;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db::Database, pw, record::Data};
+    use crate::{
+        db::Database,
+        pw,
+        record::{Data, Label},
+    };
 
     #[test]
     fn new() {
@@ -306,11 +310,11 @@ mod tests {
             .expect("failed to register user");
         let lot_a = Lot::new("lot a");
         lot_a.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot_a, Data::plain("a", "1"))
+        Record::new(&lot_a, Data::new(Label::Simple("a".into()), "1".into()))
             .upsert(&db, &lot_a)
             .await
             .expect("failed to upsert record");
-        Record::new(&lot_a, Data::plain("b", "2"))
+        Record::new(&lot_a, Data::new(Label::Simple("b".into()), "2".into()))
             .upsert(&db, &lot_a)
             .await
             .expect("failed to upsert record");
@@ -336,13 +340,13 @@ mod tests {
             .expect("failed to register user");
         let lot_a = Lot::new("lot a");
         lot_a.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot_a, Data::plain("a", "1"))
+        Record::new(&lot_a, Data::new(Label::Simple("a".into()), "1".into()))
             .upsert(&db, &lot_a)
             .await
             .expect("failed to upsert record");
         let lot_b = Lot::new("lot b");
         lot_b.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot_b, Data::plain("b", "2"))
+        Record::new(&lot_b, Data::new(Label::Simple("b".into()), "2".into()))
             .upsert(&db, &lot_b)
             .await
             .expect("failed to upsert record");
@@ -381,7 +385,7 @@ mod tests {
             .expect("failed to register user");
         let mut lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot, Data::plain("a", "1"))
+        Record::new(&lot, Data::new(Label::Simple("a".into()), "1".into()))
             .upsert(&db, &lot)
             .await
             .expect("failed to upsert record");
@@ -398,7 +402,7 @@ mod tests {
             .expect("no lot");
         let records = lot.records(&db).await.expect("failed to load records");
         assert_eq!(1, records.len());
-        assert_eq!("a", records[0].data().label());
+        assert_eq!(&Label::Simple("a".into()), records[0].data().label());
     }
 
     #[tokio::test]
@@ -413,7 +417,7 @@ mod tests {
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        Record::new(&lot, Data::plain("a", "1"))
+        Record::new(&lot, Data::new(Label::Simple("a".into()), "1".into()))
             .upsert(&db, &lot)
             .await
             .expect("failed to upsert record");

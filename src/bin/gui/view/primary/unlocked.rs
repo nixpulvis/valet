@@ -8,10 +8,17 @@ use eframe::egui::{
     TextEdit, ViewportCommand,
 };
 use egui_inbox::UiInbox;
-use std::sync::{Arc, RwLock};
+use std::{
+    str::FromStr,
+    sync::{Arc, RwLock},
+};
 use tokio::runtime::Runtime;
 use valet::{
-    Lot, Record, User, db::Database, lot::DEFAULT_LOT, prelude::PasswordBuf, record::RecordData,
+    Lot, Record, User,
+    db::Database,
+    lot::DEFAULT_LOT,
+    prelude::PasswordBuf,
+    record::{Data, Label},
 };
 
 type Store = Vec<(Lot, Vec<Record>)>;
@@ -73,20 +80,6 @@ impl<'a> View for Unlocked<'a> {
         if let Some(store) = state.store_inbox.read(ctx).last() {
             *state.store.write().unwrap() = store;
         }
-
-        // Snapshot the records for the main lot to avoid borrow conflicts in the closure.
-        let main_lot_records: Option<Vec<(String, String)>> = state
-            .store
-            .read()
-            .unwrap()
-            .iter()
-            .find(|(l, _)| l.name() == DEFAULT_LOT)
-            .map(|(_, records)| {
-                records
-                    .iter()
-                    .map(|r| (r.data().label().to_owned(), r.password().to_owned()))
-                    .collect()
-            });
 
         egui::TopBottomPanel::top("my_panel").show(ctx, |ui| {
             Frame::NONE
@@ -164,8 +157,8 @@ impl<'a> View for Unlocked<'a> {
                                 let db_url = self.db_url.clone();
                                 let tx = state.store_inbox.sender();
                                 let user = user.clone();
-                                let label = state.new_label.clone();
-                                let password = state.new_password.clone();
+                                let new_label = state.new_label.clone();
+                                let new_password = state.new_password.clone();
                                 state.show_new_record = false;
                                 state.new_label = String::new();
                                 state.new_password = PasswordBuf::empty();
@@ -179,12 +172,19 @@ impl<'a> View for Unlocked<'a> {
                                         .await
                                         .expect("failed to load main lot")
                                     {
-                                        let record =
-                                            Record::new(&lot, RecordData::plain(&label, &password));
-                                        record
-                                            .upsert(&db, &lot)
-                                            .await
-                                            .expect("failed to save record");
+                                        match Label::from_str(&new_label) {
+                                            Ok(label) => {
+                                                // TODO: Add deleted record to new record's history.
+                                                Record::new(&lot, Data::new(label, new_password))
+                                                    .upsert(&db, &lot)
+                                                    .await
+                                                    .expect("failed to save record");
+                                            }
+                                            Err(error) => {
+                                                // TODO: We need error flashes in the UI.
+                                                eprintln!("{error:?}: {}", new_label)
+                                            }
+                                        }
                                     }
                                     // TODO: We probably just need to query this one record.
                                     let lots = user.lots(&db).await.expect("failed to reload lots");
@@ -217,20 +217,29 @@ impl<'a> View for Unlocked<'a> {
                             bottom: 0,
                         })
                         .show(ui, |ui| {
+                            let store = state.store.read().unwrap();
+                            let main_lot_records: Option<&(Lot, Vec<Record>)> =
+                                store.iter().find(|(l, _)| l.name() == DEFAULT_LOT);
+
                             let query = state.search.to_lowercase();
-                            match &main_lot_records {
+                            match main_lot_records {
                                 None => {
                                     ui.label("Loading...");
                                 }
-                                Some(records) if records.is_empty() => {
+                                Some((_lot, records)) if records.is_empty() => {
                                     ui.label("No records yet.");
                                 }
-                                Some(records) => {
+                                Some((_lot, records)) => {
                                     let mut any = false;
-                                    for (label, password) in records {
-                                        if query.is_empty() || label.to_lowercase().contains(&query)
+                                    for record in records {
+                                        if query.is_empty()
+                                            || record
+                                                .label()
+                                                .to_string()
+                                                .to_lowercase()
+                                                .contains(&query)
                                         {
-                                            ui.add(RecordRow::new(label, password));
+                                            ui.add(RecordRow::new(record));
                                             ui.separator();
                                             any = true;
                                         }
@@ -240,7 +249,7 @@ impl<'a> View for Unlocked<'a> {
                                     }
                                 }
                             }
-                        }); // inner_margin Frame
+                        });
                 });
             });
         state.store(ctx, id);

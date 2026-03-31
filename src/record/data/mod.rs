@@ -1,77 +1,53 @@
-use bitcode::{Decode, Encode};
-use std::{collections::HashMap, fmt, io};
-
 use crate::{
     Lot,
-    encrypt::{Encrypted, Key},
+    encrypt::{Encrypted, Key, Password, PasswordBuf},
     record::Error,
 };
+use bitcode::{Decode, Encode};
+use std::{collections::HashMap, fmt, io, pin::Pin};
 
 #[derive(Encode, Decode, Debug, Eq, PartialEq)]
-pub enum Data {
-    // TODO: We should really generalize the concept of a "label" to allow for
-    // the HashMap to be the label here. We can then store a single (or many)
-    // passwords separately.
-    // TODO: Use PasswordBuf here.
-    Domain(String, HashMap<String, String>),
-    Plain(String, String),
+pub struct Data {
+    label: Label,
+    password: PasswordBuf,
+    extra: HashMap<String, String>,
 }
 
-// TODO: Don't display passwords.
 impl fmt::Display for Data {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Data::Domain(label, attributes) => {
-                write!(f, "{label}: {{ ")?;
-                for (i, (k, v)) in attributes.iter().enumerate() {
-                    write!(f, "{k}: {v}")?;
-                    if i < attributes.len() - 1 {
-                        write!(f, ", ")?;
-                    }
-                }
-                write!(f, " }}")?;
-                Ok(())
-            }
-            Data::Plain(label, text) => {
-                if text.contains("\n") {
-                    write!(f, "{label}:\n{text}")
-                } else {
-                    write!(f, "{label}: {text}")
-                }
-            }
-        }
+        write!(f, "{}", self.label)
     }
 }
 
 impl Data {
-    pub fn domain(label: &str, values: HashMap<String, String>) -> Self {
-        Self::Domain(label.into(), values)
-    }
-
-    pub fn plain(label: &str, value: &str) -> Self {
-        Self::Plain(label.into(), value.into())
-    }
-
-    pub fn label(&self) -> &str {
-        match self {
-            Data::Domain(s, _) => &s,
-            Data::Plain(s, _) => &s,
+    pub fn new(label: Label, password: PasswordBuf) -> Self {
+        Data {
+            label,
+            password,
+            extra: HashMap::new(),
         }
     }
 
-    pub fn password(&self) -> &str {
-        match self {
-            Data::Domain(_, attrs) => {
-                if attrs.contains_key("password") {
-                    &attrs["password"]
-                } else if attrs.len() == 1 {
-                    &attrs.iter().next().unwrap().1
-                } else {
-                    ""
-                }
-            }
-            Data::Plain(_, s) => &s,
-        }
+    pub fn add_extra(mut self, attr: String, value: String) -> Self {
+        self.extra.insert(attr, value);
+        self
+    }
+
+    pub fn with_extra(mut self, extra: HashMap<String, String>) -> Self {
+        self.extra = extra;
+        self
+    }
+
+    pub fn label(&self) -> &Label {
+        &self.label
+    }
+
+    pub fn password<'a>(&'a mut self) -> Password<'a> {
+        unsafe { Pin::new_unchecked(&mut self.password) }
+    }
+
+    pub fn password_str(&self) -> &str {
+        &self.password
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -135,6 +111,9 @@ impl Data {
     }
 }
 
+mod label;
+pub use self::label::Label;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,15 +121,22 @@ mod tests {
 
     #[test]
     fn label() {
-        let data = Data::plain("plain", "secret");
-        assert_eq!("plain", data.label());
-        let data = Data::domain("domain", HashMap::new());
-        assert_eq!("domain", data.label());
+        let data = Data::new(Label::Simple("label".into()), "secret".into());
+        assert_eq!("label", format!("{}", data.label()));
+    }
+
+    #[test]
+    fn extra() {
+        let data = Data::new(Label::Simple("label".into()), "secret".into())
+            .add_extra("foo".into(), "bar".into())
+            .add_extra("foo".into(), "bar".into());
+        assert_eq!(data.extra.len(), 1);
+        assert_eq!(data.extra["foo"], "bar");
     }
 
     #[test]
     fn encode_decode() {
-        let data = Data::plain("label", "secret");
+        let data = Data::new(Label::Simple("label".into()), "secret".into());
         let encoded = data.encode();
         let decoded = Data::decode(&encoded).expect("failed to decode");
         assert_eq!(data, decoded);
@@ -158,7 +144,7 @@ mod tests {
 
     #[test]
     fn compress_decompress() {
-        let data = Data::plain("label", "secret");
+        let data = Data::new(Label::Simple("label".into()), "secret".into());
         let compressed = data.compress().expect("failed to compress");
         let decompressed = Data::decompress(&compressed).expect("failed to decompress");
         assert_eq!(data, decompressed);
@@ -167,7 +153,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt() {
         let lot = Lot::new("test");
-        let data = Data::plain("label", "secret");
+        let data = Data::new(Label::Simple("label".into()), "secret".into());
         let encrypted = data.encrypt(lot.key()).expect("failed to encrypt");
         let decrypted = Data::decrypt(&encrypted, lot.key()).expect("failed to decrypt");
         assert_eq!(data, decrypted);
@@ -176,7 +162,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt_with_aad() {
         let lot = Lot::new("test");
-        let data = Data::plain("label", "secret");
+        let data = Data::new(Label::Simple("label".into()), "secret".into());
         let aad = [1, 2, 3];
         let encrypted = data
             .encrypt_with_aad(lot.key(), &aad)

@@ -6,9 +6,10 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
+use std::str::FromStr;
 use std::{fmt, io};
 use tokio;
-use valet::{prelude::*, user};
+use valet::{prelude::*, record::Label, user};
 
 #[derive(Parser)]
 #[command(version, about = crate_description!())]
@@ -193,16 +194,16 @@ async fn main() -> Result<(), valet::user::Error> {
                                     .expect("failed to load records")
                                     .iter()
                                 {
-                                    let label = record.data().label();
+                                    let label = record.data().label().to_string();
                                     if label.starts_with(&path.label) {
                                         if *uuid {
                                             println!(
                                                 "{} <{}>",
-                                                Path::new(&path.lot, label),
+                                                Path::new(&path.lot, &label),
                                                 record.uuid()
                                             );
                                         } else {
-                                            println!("{}", Path::new(&path.lot, label));
+                                            println!("{}", Path::new(&path.lot, &label));
                                         }
                                     }
                                 }
@@ -218,12 +219,18 @@ async fn main() -> Result<(), valet::user::Error> {
                         .await
                         .expect("failed to load lot")
                     {
-                        // TODO: Delete old record if it exists.
-                        // TODO: Add deleted record to new record's history.
-                        Record::new(&lot, Data::plain(&path.label, &data))
-                            .upsert(&db, &lot)
-                            .await
-                            .expect("failed to save record");
+                        match Label::from_str(&path.label) {
+                            Ok(label) => {
+                                // TODO: Add deleted record to new record's history.
+                                Record::new(&lot, Data::new(label, data.clone().into()))
+                                    .upsert(&db, &lot)
+                                    .await
+                                    .expect("failed to save record");
+                            }
+                            Err(error) => {
+                                println!("{error:?}: {}", path.label)
+                            }
+                        }
                     }
                 }
                 Repl::Get { path, uuid } => {
@@ -237,12 +244,12 @@ async fn main() -> Result<(), valet::user::Error> {
                             .await
                             .expect("failed to load records")
                             .iter()
-                            .find(|r| r.data().label() == path.label)
+                            .find(|r| r.data().label().to_string() == path.label)
                         {
                             if *uuid {
-                                println!("{}::{} <{}>", lot.name(), record, record.uuid());
+                                println!("{} <{}>", record.password(), record.uuid());
                             } else {
-                                println!("{}::{}", lot.name(), record);
+                                println!("{}", record.password());
                             }
                         }
                     }
@@ -439,12 +446,21 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                 if let Some(otp) = csv_record.otp {
                     data.insert("otp".into(), otp);
                 }
-                match Record::new(&lot, Data::domain(&label, data))
-                    .upsert(&db, lot)
-                    .await
+                let password = data.remove("password").unwrap_or_default();
+                match Record::new(
+                    &lot,
+                    Data::new(Label::Simple(label.clone()), password.into()).with_extra(data),
+                )
+                .upsert(&db, lot)
+                .await
                 {
                     Ok(uuid) => {
-                        println!("Inserted {} => {}", label, uuid.as_hyphenated())
+                        println!(
+                            "Inserted {}::{} <{}>",
+                            lot.name(),
+                            label,
+                            uuid.as_hyphenated()
+                        )
                     }
                     Err(e) => {
                         dbg!(e);

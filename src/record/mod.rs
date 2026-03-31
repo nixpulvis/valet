@@ -38,13 +38,13 @@ impl Record {
         &self.data
     }
 
-    pub fn label(&self) -> &str {
+    pub fn label(&self) -> &Label {
         self.data.label()
     }
 
     // TODO: Should be a Password type
     pub fn password(&self) -> &str {
-        self.data.password()
+        self.data.password_str()
     }
 
     pub fn encrypt(&self, key: &Key<Lot>) -> Result<Encrypted, Error> {
@@ -188,7 +188,7 @@ impl From<sea_orm::DbErr> for Error {
 }
 
 mod data;
-pub use self::data::Data; // TODO: Remove
+pub use self::data::{Data, Label}; // TODO: Remove
 // pub use self::data::{Data, Label, Secret};
 
 #[cfg(feature = "orm")]
@@ -199,27 +199,22 @@ pub(crate) mod orm;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lot::Lot, pw, user::User};
+    use crate::{lot::Lot, pw, record::data::Label, user::User};
 
     #[test]
     fn new() {
         let lot = Lot::new("test");
-        let record = Record::new(&lot, Data::plain("foo", "bar"));
+        let record = Record::new(&lot, Data::new(Label::Simple("foo".into()), "bar".into()));
         assert_eq!(lot.uuid(), &record.lot_uuid);
         assert_eq!(36, record.uuid.to_string().len());
-        match record.data {
-            Data::Plain(ref label, ref value) => {
-                assert_eq!("foo", label);
-                assert_eq!("bar", value);
-            }
-            _ => unreachable!(),
-        }
+        assert_eq!(record.data.label(), &Label::Simple("foo".into()));
+        assert_eq!(record.data.password_str(), "bar");
     }
 
     #[test]
     fn encrypt_decrypt() {
         let lot = Lot::new("test");
-        let record = Record::new(&lot, Data::plain("foo", "bar"));
+        let record = Record::new(&lot, Data::new(Label::Simple("foo".into()), "bar".into()));
         let encrypted = record.encrypt(&lot.key()).expect("failed to encrypt");
         let decrypted = Record::decrypt(
             record.uuid.clone(),
@@ -243,7 +238,7 @@ mod tests {
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        let inserted_uuid = Record::new(&lot, Data::plain("foo", "bar"))
+        let inserted_uuid = Record::new(&lot, Data::new(Label::Simple("foo".into()), "bar".into()))
             .upsert(&db, &lot)
             .await
             .expect("failed to upsert record");
@@ -264,7 +259,7 @@ mod tests {
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        let record = Record::new(&lot, Data::plain("foo", "bar"));
+        let record = Record::new(&lot, Data::new(Label::Simple("foo".into()), "bar".into()));
         let inserted_uuid = record
             .upsert(&db, &lot)
             .await
@@ -288,7 +283,7 @@ mod tests {
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        let record = Record::new(&lot, Data::plain("foo", "bar"));
+        let record = Record::new(&lot, Data::new(Label::Simple("foo".into()), "bar".into()));
         record
             .upsert(&db, &lot)
             .await

@@ -1,20 +1,20 @@
 use crate::util::button_width;
 use eframe::egui;
+use valet::Record;
 
 pub struct RecordRow<'a> {
-    label: &'a str,
-    password: &'a str,
+    record: &'a Record,
 }
 
 impl<'a> RecordRow<'a> {
-    pub fn new(label: &'a str, password: &'a str) -> Self {
-        Self { label, password }
+    pub fn new(record: &'a Record) -> Self {
+        Self { record }
     }
 }
 
 impl egui::Widget for RecordRow<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let id = ui.make_persistent_id(("record", self.label));
+        let id = ui.make_persistent_id(("record", self.record.uuid().to_string()));
         let expanded_id = id.with("expanded");
         let show_pw_id = id.with("show_pw");
         let expanded = ui.data(|d| d.get_temp::<bool>(expanded_id).unwrap_or(false));
@@ -38,7 +38,7 @@ impl egui::Widget for RecordRow<'_> {
                             .layout(egui::Layout::left_to_right(egui::Align::Center)),
                     )
                     .add(
-                        egui::Label::new(self.label)
+                        egui::Label::new(self.record.label().to_string())
                             .truncate()
                             .sense(egui::Sense::click()),
                     );
@@ -57,7 +57,7 @@ impl egui::Widget for RecordRow<'_> {
                     .add(egui::Button::new("Copy").min_size(egui::vec2(copy_width, 0.)))
                     .clicked()
                 {
-                    ui.ctx().copy_text(self.password.to_owned());
+                    ui.ctx().copy_text(self.record.password().to_string());
                 }
             });
 
@@ -78,7 +78,7 @@ impl egui::Widget for RecordRow<'_> {
                             let text_width =
                                 (ui.available_width() - btn_width - spacing * 2.).max(0.);
 
-                            let mut pw = self.password.to_owned();
+                            let mut pw = self.record.password().to_string();
                             ui.add(
                                 egui::TextEdit::singleline(&mut pw)
                                     .password(!show_pw)

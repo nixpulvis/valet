@@ -1,3 +1,4 @@
+use bitcode::{Decode, Encode};
 use std::pin::Pin;
 use std::{marker::PhantomPinned, ops::Deref};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -23,8 +24,8 @@ macro_rules! pw {
 //
 // TODO: Is there a way in the GUI to avoid cloning the password to send it to
 // a async function?
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub struct PasswordBuf(String, PhantomPinned);
+#[derive(Encode, Decode, Zeroize, ZeroizeOnDrop, Clone, Debug, Eq, PartialEq)]
+pub struct PasswordBuf(String, #[bitcode(skip)] PhantomPinned);
 
 impl PasswordBuf {
     pub fn empty() -> Self {
@@ -36,6 +37,7 @@ impl PasswordBuf {
     }
 }
 
+// TODO: It would be really nice if we could never need this.
 impl From<String> for PasswordBuf {
     fn from(password: String) -> Self {
         PasswordBuf(password, PhantomPinned)
