@@ -23,7 +23,7 @@ const VALIDATION: &[u8] = b"VALID";
 ///
 /// In addition to the salt, each user also stores a short encrypted validation
 /// string which is used to authenticate the user. Simply being able
-/// to decrpyt the string is enough to verify the user, since we use
+/// to decrypt the string is enough to verify the user, since we use
 /// ["Authenticated Encryption"][2] (the AE in AEAD).
 ///
 /// [1]: https://en.wikipedia.org/wiki/Rainbow_table
@@ -41,7 +41,7 @@ impl User {
     pub fn new(username: &str, password: Password) -> Result<Self, Error> {
         let salt = encrypt::generate_salt();
         let key = Key::from_password(password, &salt)?;
-        let validation = key.encrypt(VALIDATION)?;
+        let validation = key.encrypt_with_aad(VALIDATION, User::aad(username))?;
         Ok(User {
             username: username.into(),
             salt,
@@ -72,7 +72,10 @@ impl User {
     }
 
     pub fn validate(&self) -> bool {
-        if let Ok(v) = self.key().decrypt(&self.validation) {
+        if let Ok(v) = self
+            .key()
+            .decrypt_with_aad(&self.validation, User::aad(&self.username))
+        {
             v == VALIDATION // This should never be false.
         } else {
             false
@@ -127,6 +130,10 @@ impl User {
             .all(db.connection())
             .await
             .map_err(Into::into)
+    }
+
+    fn aad(username: &str) -> &[u8] {
+        username.as_bytes()
     }
 }
 

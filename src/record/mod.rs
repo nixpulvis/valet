@@ -50,13 +50,30 @@ impl Record {
     }
 
     pub fn encrypt(&self, key: &Key<Lot>) -> Result<Encrypted, Error> {
-        self.data.encrypt(key)
+        let aad = Record::aad(&self.uuid.to_string(), &self.lot_uuid.to_string());
+        self.data.encrypt_with_aad(key, &aad)
+    }
+
+    pub fn decrypt(
+        uuid: Uuid<Self>,
+        lot_uuid: Uuid<Lot>,
+        encrypted: &Encrypted,
+        key: &Key<Lot>,
+    ) -> Result<Self, Error> {
+        let aad = Record::aad(&uuid.to_string(), &lot_uuid.to_string());
+        let data = RecordData::decrypt_with_aad(encrypted, key, &aad)?;
+        Ok(Record {
+            uuid,
+            lot_uuid,
+            data,
+        })
     }
 
     /// Save this record to the database and return its uuid.
     pub async fn upsert(&self, db: &Database, lot: &Lot) -> Result<Uuid<Self>, Error> {
         let uuid = self.uuid.clone();
-        let encrypted = self.data.encrypt(lot.key())?;
+        let aad = Record::aad(&self.uuid.to_string(), &self.lot_uuid.to_string());
+        let encrypted = self.data.encrypt_with_aad(lot.key(), &aad)?;
         // TODO: Only Set values that changed? To do this we'd need to track the
         // changed values in this Record struct... which seems redundant, since
         // the orm::ActiveModel already does that. Perhaps we can figure out a
@@ -104,16 +121,20 @@ impl Record {
                 data: model.data,
                 nonce: model.nonce,
             };
-            let data = RecordData::decrypt(&encrypted, lot.key())?;
-            let record = Record {
-                lot_uuid: lot.uuid().clone(),
-                uuid: Uuid::parse(&model.uuid)?,
-                data,
-            };
+            let record = Record::decrypt(
+                Uuid::parse(&model.uuid)?,
+                lot.uuid().clone(),
+                &encrypted,
+                lot.key(),
+            )?;
             records.push(record);
         }
 
         Ok(records)
+    }
+
+    fn aad(record_uuid: &str, lot_uuid: &str) -> Vec<u8> {
+        [record_uuid.as_bytes(), lot_uuid.as_bytes()].concat()
     }
 }
 
@@ -232,12 +253,38 @@ impl RecordData {
     }
 
     pub fn encrypt(&self, key: &Key<Lot>) -> Result<Encrypted, Error> {
+        self._encrypt(key, None)
+    }
+
+    pub fn encrypt_with_aad(&self, key: &Key<Lot>, aad: &[u8]) -> Result<Encrypted, Error> {
+        self._encrypt(key, Some(aad))
+    }
+
+    fn _encrypt(&self, key: &Key<Lot>, aad: Option<&[u8]>) -> Result<Encrypted, Error> {
         let compressed = self.compress()?;
-        key.encrypt(&compressed).map_err(|e| Error::Encryption(e))
+        if let Some(aad) = aad {
+            key.encrypt_with_aad(&compressed, aad)
+                .map_err(|e| Error::Encryption(e))
+        } else {
+            key.encrypt(&compressed).map_err(|e| Error::Encryption(e))
+        }
     }
 
     pub fn decrypt(buf: &Encrypted, key: &Key<Lot>) -> Result<Self, Error> {
-        let decrypted = key.decrypt(buf).map_err(|e| Error::Encryption(e))?;
+        Self::_decrypt(buf, key, None)
+    }
+
+    pub fn decrypt_with_aad(buf: &Encrypted, key: &Key<Lot>, aad: &[u8]) -> Result<Self, Error> {
+        Self::_decrypt(buf, key, Some(aad))
+    }
+
+    fn _decrypt(buf: &Encrypted, key: &Key<Lot>, aad: Option<&[u8]>) -> Result<Self, Error> {
+        let decrypted = if let Some(aad) = aad {
+            key.decrypt_with_aad(buf, aad)
+                .map_err(|e| Error::Encryption(e))?
+        } else {
+            key.decrypt(buf).map_err(|e| Error::Encryption(e))?
+        };
         Self::decompress(&decrypted)
     }
 }
@@ -295,15 +342,20 @@ mod tests {
         }
     }
 
-    // TODO: Record::decrypt (does #14 help get the UUID?)
     #[test]
     fn encrypt_decrypt() {
         let lot = Lot::new("test");
         let key = Key::<Lot>::generate();
         let record = Record::new(&lot, RecordData::plain("foo", "bar"));
         let encrypted = record.encrypt(&key).expect("failed to encrypt");
-        let decrypted_data = RecordData::decrypt(&encrypted, &key).expect("failed to decrypt");
-        assert_eq!(record.data, decrypted_data);
+        let decrypted = Record::decrypt(
+            record.uuid.clone(),
+            record.lot_uuid.clone(),
+            &encrypted,
+            &key,
+        )
+        .expect("failed to decrypt");
+        assert_eq!(record, decrypted);
     }
 
     #[tokio::test]
@@ -403,6 +455,19 @@ mod tests {
         let data = RecordData::plain("label", "secret");
         let encrypted = data.encrypt(lot.key()).expect("failed to encrypt");
         let decrypted = RecordData::decrypt(&encrypted, lot.key()).expect("failed to decrypt");
+        assert_eq!(data, decrypted);
+    }
+
+    #[test]
+    fn data_encrypt_decrypt_with_aad() {
+        let lot = Lot::new("test");
+        let data = RecordData::plain("label", "secret");
+        let aad = [1, 2, 3];
+        let encrypted = data
+            .encrypt_with_aad(lot.key(), &aad)
+            .expect("failed to encrypt");
+        let decrypted =
+            RecordData::decrypt_with_aad(&encrypted, lot.key(), &aad).expect("failed to decrypt");
         assert_eq!(data, decrypted);
     }
 }
