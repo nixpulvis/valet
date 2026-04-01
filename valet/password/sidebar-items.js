@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["LENGTH"],"struct":["Password"]};
+window.SIDEBAR_ITEMS = {"constant":["MAX_LENGTH","MIN_LENGTH"],"struct":["Password"]};
