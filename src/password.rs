@@ -43,7 +43,7 @@ impl Password {
         unsafe { str::from_utf8_unchecked(self.as_bytes()) }
     }
 
-    pub fn as_str_mut<'a>(&'a mut self) -> &'a mut str {
+    pub unsafe fn as_str_mut<'a>(&'a mut self) -> &'a mut str {
         unsafe { str::from_utf8_unchecked_mut(self.as_bytes_mut()) }
     }
 }
