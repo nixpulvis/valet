@@ -204,7 +204,10 @@ mod tests {
     #[test]
     fn new() {
         let lot = Lot::new("test");
-        let record = Record::new(&lot, Data::new(Label::Simple("foo".into()), "bar".into()));
+        let record = Record::new(
+            &lot,
+            Data::new(Label::Simple("foo".into()), "bar".try_into().unwrap()),
+        );
         assert_eq!(lot.uuid(), &record.lot_uuid);
         assert_eq!(36, record.uuid.to_string().len());
         assert_eq!(record.data.label(), &Label::Simple("foo".into()));
@@ -214,7 +217,10 @@ mod tests {
     #[test]
     fn encrypt_decrypt() {
         let lot = Lot::new("test");
-        let record = Record::new(&lot, Data::new(Label::Simple("foo".into()), "bar".into()));
+        let record = Record::new(
+            &lot,
+            Data::new(Label::Simple("foo".into()), "bar".try_into().unwrap()),
+        );
         let encrypted = record.encrypt(&lot.key()).expect("failed to encrypt");
         let decrypted = Record::decrypt(
             record.uuid.clone(),
@@ -231,17 +237,20 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", Password::from("password"))
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        let inserted_uuid = Record::new(&lot, Data::new(Label::Simple("foo".into()), "bar".into()))
-            .upsert(&db, &lot)
-            .await
-            .expect("failed to upsert record");
+        let inserted_uuid = Record::new(
+            &lot,
+            Data::new(Label::Simple("foo".into()), "bar".try_into().unwrap()),
+        )
+        .upsert(&db, &lot)
+        .await
+        .expect("failed to upsert record");
         let records = lot.records(&db).await.expect("failed to load records");
         assert_eq!(lot.uuid(), &records[0].lot_uuid);
         assert_eq!(inserted_uuid, records[0].uuid);
@@ -252,14 +261,17 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", Password::from("password"))
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        let record = Record::new(&lot, Data::new(Label::Simple("foo".into()), "bar".into()));
+        let record = Record::new(
+            &lot,
+            Data::new(Label::Simple("foo".into()), "bar".try_into().unwrap()),
+        );
         let inserted_uuid = record
             .upsert(&db, &lot)
             .await
@@ -276,14 +288,17 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", Password::from("password"))
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
         let lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        let record = Record::new(&lot, Data::new(Label::Simple("foo".into()), "bar".into()));
+        let record = Record::new(
+            &lot,
+            Data::new(Label::Simple("foo".into()), "bar".try_into().unwrap()),
+        );
         record
             .upsert(&db, &lot)
             .await

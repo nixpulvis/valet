@@ -15,32 +15,30 @@ pub const LENGTH: usize = 255;
 //
 // TODO: Is there a way in the GUI to avoid cloning the password to send it to
 // a async function?
-#[derive(Encode, Decode, Zeroize, ZeroizeOnDrop, Clone, Debug, Eq, PartialEq)]
+#[derive(Encode, Decode, Zeroize, ZeroizeOnDrop, Clone, Eq, PartialEq)]
 pub struct Password(Pin<Box<[u8; LENGTH]>>);
 
 impl Password {
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.as_bytes().is_empty()
     }
 
     pub fn as_bytes<'a>(&'a self) -> &'a [u8] {
-        &*self.0
+        let null_pos = self.0.iter().position(|c| *c == 0).unwrap_or(self.0.len());
+        &self.0[0..null_pos]
     }
 
     pub fn as_bytes_mut<'a>(&'a mut self) -> &'a mut [u8] {
-        &mut *self.0
+        let null_pos = self.0.iter().position(|c| *c == 0).unwrap_or(self.0.len());
+        &mut self.0[0..null_pos]
     }
 
     pub fn as_str<'a>(&'a self) -> &'a str {
-        let utf8 = unsafe { str::from_utf8_unchecked(&*self.0) };
-        let null_pos = utf8.find(|c| c == '\0').unwrap_or(utf8.len());
-        &utf8[0..null_pos]
+        unsafe { str::from_utf8_unchecked(self.as_bytes()) }
     }
 
     pub fn as_str_mut<'a>(&'a mut self) -> &'a mut str {
-        let utf8 = unsafe { str::from_utf8_unchecked_mut(&mut *self.0) };
-        let null_pos = utf8.find(|c| c == '\0').unwrap_or(utf8.len());
-        &mut utf8[0..null_pos]
+        unsafe { str::from_utf8_unchecked_mut(self.as_bytes_mut()) }
     }
 }
 
@@ -52,13 +50,18 @@ impl Default for Password {
     }
 }
 
-impl From<&str> for Password {
-    fn from(str: &str) -> Self {
+impl TryFrom<&str> for Password {
+    type Error = ();
+
+    fn try_from(str: &str) -> Result<Self, Self::Error> {
+        if str.len() > LENGTH {
+            return Err(());
+        }
         let mut buf = [0; LENGTH];
         for (d, s) in buf.iter_mut().zip(str.bytes()) {
             *d = s;
         }
-        Password(Box::pin(buf))
+        Ok(Password(Box::pin(buf)))
     }
 }
 
@@ -70,6 +73,23 @@ impl fmt::Display for Password {
             write!(f, "{}", &utf8[0..null_pos])
         } else {
             write!(f, "<invalid utf8>")
+        }
+    }
+}
+
+impl fmt::Debug for Password {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let null_pos = self.0.iter().position(|c| *c == 0).unwrap_or(self.0.len());
+        let zero = self.0[null_pos..].iter().fold(0, |a, c| a ^ c);
+        if zero > 0 {
+            write!(
+                f,
+                "{:?} + {:?}...",
+                &self.0[0..null_pos],
+                &self.0[null_pos..]
+            )
+        } else {
+            write!(f, "{:?}", &self.0[0..null_pos])
         }
     }
 }
@@ -116,15 +136,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn is_empty() {
+        let password: Password = "".try_into().unwrap();
+        assert!(password.is_empty());
+    }
+
+    #[test]
     fn from_str() {
         let password_string = String::from("password");
-        let password = Password::from(password_string.as_str());
+        let password: Password = password_string.as_str().try_into().unwrap();
         assert_eq!(&password.as_bytes()[0..8], password_string.as_bytes());
     }
 
     #[test]
     fn encode_decode() {
-        let password = Password::from("password");
+        let password: Password = "password".try_into().unwrap();
         let encoded = bitcode::encode(&password);
         println!("{:?}", encoded);
         let decoded: Password = bitcode::decode(&encoded).unwrap();

@@ -103,20 +103,21 @@ enum LotCommand {
     },
 }
 
-// TODO: Error handling.
-macro_rules! get_password {
-    () => {{
-        print!("Password: ");
-        std::io::stdout().flush().ok();
-        // TODO: Can we write our own STDIN reader which avoids extra allocation
-        // altogether by disabling the buffered input (raw mode) and copies each
-        // input character into a fixed length buffer. Maximum password lengths
-        // could be something like 200 characters.
-        let mut password_string = rpassword::read_password().unwrap();
-        let password = Password::from(password_string.as_str());
-        zeroize::Zeroize::zeroize(&mut password_string);
+fn get_password() -> Result<Password, valet::user::Error> {
+    print!("Password: ");
+    io::stdout().flush().ok();
+    // TODO: Can we write our own STDIN reader which avoids extra allocation
+    // altogether by disabling the buffered input (raw mode) and copies each
+    // input character into a fixed length buffer. Maximum password lengths
+    // could be something like 200 characters.
+    let mut password_string = rpassword::read_password().unwrap();
+    let password: Password = if let Ok(password) = password_string.as_str().try_into() {
         password
-    }};
+    } else {
+        return Err(valet::user::Error::Invalid);
+    };
+    zeroize::Zeroize::zeroize(&mut password_string);
+    Ok(password)
 }
 
 #[tokio::main]
@@ -126,7 +127,7 @@ async fn main() -> Result<(), valet::user::Error> {
     match &cli.command {
         ValetCommand::User(UserCommand::Register { username }) => {
             let db = Database::new(&cli.database).await?;
-            let password = get_password!();
+            let password = get_password()?;
             let user = User::new(&username, password)?.register(&db).await?;
             Lot::new(DEFAULT_LOT)
                 .save(&db, &user)
@@ -137,7 +138,7 @@ async fn main() -> Result<(), valet::user::Error> {
         ValetCommand::User(UserCommand::Validate { username }) => {
             let db = Database::new(&cli.database).await?;
             let username = get_default_username(username, &db).await?;
-            let password = get_password!();
+            let password = get_password()?;
             let user = User::load(&db, &username, password).await?;
             println!("{} validated", user.username());
         }
@@ -151,7 +152,7 @@ async fn main() -> Result<(), valet::user::Error> {
             let db = Database::new(&cli.database).await?;
 
             let username = get_default_username(username, &db).await?;
-            let password = get_password!();
+            let password = get_password()?;
             let user = User::load(&db, &username, password).await?;
 
             let prompt = DefaultPrompt {
@@ -224,13 +225,17 @@ async fn main() -> Result<(), valet::user::Error> {
                     {
                         match Label::from_str(&path.label) {
                             Ok(label) => {
-                                // TODO: Delete old record if it exists.
-                                // TODO: Add deleted record to new record's history.
-                                // TODO: Put data in a Password itself.
-                                Record::new(&lot, Data::new(label, Password::from(data.as_str())))
-                                    .upsert(&db, &lot)
-                                    .await
-                                    .expect("failed to save record");
+                                if let Ok(password) = data.as_str().try_into() {
+                                    // TODO: Delete old record if it exists.
+                                    // TODO: Add deleted record to new record's history.
+                                    // TODO: Put data in a Password itself.
+                                    Record::new(&lot, Data::new(label, password))
+                                        .upsert(&db, &lot)
+                                        .await
+                                        .expect("failed to save record");
+                                } else {
+                                    println!("Invalid password");
+                                }
                             }
                             Err(error) => {
                                 println!("{error:?}: {}", path.label)
@@ -280,7 +285,7 @@ async fn main() -> Result<(), valet::user::Error> {
         } => {
             let db = Database::new(&cli.database).await?;
             let username = get_default_username(username, &db).await?;
-            let password = get_password!();
+            let password = get_password()?;
             let user = User::load(&db, &username, password).await?;
             if let Some(mut lot) = Lot::load(&db, DEFAULT_LOT, &user).await? {
                 if ty == "apple" {
@@ -452,24 +457,30 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                     data.insert("otp".into(), otp);
                 }
                 // TODO: Put text directly into a Password
-                let password = Password::from(data.remove("password").unwrap_or_default().as_str());
-                match Record::new(
-                    &lot,
-                    Data::new(Label::Simple(label.clone()), password).with_extra(data),
-                )
-                .upsert(&db, lot)
-                .await
+                if let Ok(password) = data
+                    .remove("password")
+                    .unwrap_or_default()
+                    .as_str()
+                    .try_into()
                 {
-                    Ok(uuid) => {
-                        println!(
-                            "Inserted {}::{} <{}>",
-                            lot.name(),
-                            label,
-                            uuid.as_hyphenated()
-                        )
-                    }
-                    Err(e) => {
-                        dbg!(e);
+                    match Record::new(
+                        &lot,
+                        Data::new(Label::Simple(label.clone()), password).with_extra(data),
+                    )
+                    .upsert(&db, lot)
+                    .await
+                    {
+                        Ok(uuid) => {
+                            println!(
+                                "Inserted {}::{} <{}>",
+                                lot.name(),
+                                label,
+                                uuid.as_hyphenated()
+                            )
+                        }
+                        Err(e) => {
+                            dbg!(e);
+                        }
                     }
                 }
             }

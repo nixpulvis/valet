@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn from_password() {
         let salt = generate_salt();
-        let key = Key::<()>::from_password(&Password::from("user1password"), &salt)
+        let key = Key::<()>::from_password(&"user1password".try_into().unwrap(), &salt)
             .expect("error generating key");
         assert_eq!(256 / 8, key.0.len());
     }

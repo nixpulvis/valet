@@ -193,16 +193,17 @@ mod tests {
 
     #[test]
     fn new_validate() {
-        let user = User::new("alice", Password::from("password")).expect("failed to create user");
+        let user =
+            User::new("alice", "password".try_into().unwrap()).expect("failed to create user");
         assert!(user.validate());
     }
 
     #[test]
     fn invalid() {
         let mut user =
-            User::new("alice", Password::from("password")).expect("failed to create user");
+            User::new("alice", "password".try_into().unwrap()).expect("failed to create user");
         let imposter =
-            User::new("charlie", Password::from("password")).expect("failed to create user");
+            User::new("charlie", "password".try_into().unwrap()).expect("failed to create user");
         user.validation = imposter
             .key()
             .encrypt(VALIDATION)
@@ -213,7 +214,7 @@ mod tests {
     #[test]
     fn new_is_slow() {
         let start = Instant::now();
-        User::new("alice", Password::from("password")).expect("failed to create user");
+        User::new("alice", "password".try_into().unwrap()).expect("failed to create user");
         let duration = start.elapsed();
         assert!(duration > Duration::from_millis(200));
     }
@@ -224,7 +225,7 @@ mod tests {
             .await
             .expect("failed to create database");
 
-        let password = Password::from("password");
+        let password: Password = "password".try_into().unwrap();
         let user = User::new("alice", Password::from(password.clone()))
             .expect("failed to create user")
             .register(&db)
@@ -243,7 +244,7 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        let user = User::new("nixpulvis", Password::from("password"))
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
@@ -262,12 +263,12 @@ mod tests {
         let db = Database::new("sqlite://:memory:")
             .await
             .expect("failed to create database");
-        User::new("alice", Password::from("password"))
+        User::new("alice", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
-        User::new("bob", Password::from("password"))
+        User::new("bob", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await

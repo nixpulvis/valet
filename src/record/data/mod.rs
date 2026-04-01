@@ -118,13 +118,13 @@ mod tests {
 
     #[test]
     fn label() {
-        let data = Data::new(Label::Simple("label".into()), "secret".into());
+        let data = Data::new(Label::Simple("label".into()), "secret".try_into().unwrap());
         assert_eq!("label", format!("{}", data.label()));
     }
 
     #[test]
     fn extra() {
-        let data = Data::new(Label::Simple("label".into()), "secret".into())
+        let data = Data::new(Label::Simple("label".into()), "secret".try_into().unwrap())
             .add_extra("foo".into(), "bar".into())
             .add_extra("foo".into(), "bar".into());
         assert_eq!(data.extra.len(), 1);
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn encode_decode() {
-        let data = Data::new(Label::Simple("label".into()), "secret".into());
+        let data = Data::new(Label::Simple("label".into()), "secret".try_into().unwrap());
         let encoded = data.encode();
         let decoded = Data::decode(&encoded).expect("failed to decode");
         assert_eq!(data, decoded);
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn compress_decompress() {
-        let data = Data::new(Label::Simple("label".into()), "secret".into());
+        let data = Data::new(Label::Simple("label".into()), "secret".try_into().unwrap());
         let compressed = data.compress().expect("failed to compress");
         let decompressed = Data::decompress(&compressed).expect("failed to decompress");
         assert_eq!(data, decompressed);
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt() {
         let lot = Lot::new("test");
-        let data = Data::new(Label::Simple("label".into()), "secret".into());
+        let data = Data::new(Label::Simple("label".into()), "secret".try_into().unwrap());
         let encrypted = data.encrypt(lot.key()).expect("failed to encrypt");
         let decrypted = Data::decrypt(&encrypted, lot.key()).expect("failed to decrypt");
         assert_eq!(data, decrypted);
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt_with_aad() {
         let lot = Lot::new("test");
-        let data = Data::new(Label::Simple("label".into()), "secret".into());
+        let data = Data::new(Label::Simple("label".into()), "secret".try_into().unwrap());
         let aad = [1, 2, 3];
         let encrypted = data
             .encrypt_with_aad(lot.key(), &aad)

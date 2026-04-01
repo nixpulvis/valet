@@ -33,5 +33,5 @@ pub fn generate_password() -> Password {
             password.push(CHARSET[idx % CHARSET.len()] as char);
         }
     }
-    Password::from(password.as_str())
+    password.as_str().try_into().unwrap()
 }
