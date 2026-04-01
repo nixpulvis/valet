@@ -3,7 +3,8 @@ use std::fmt;
 use std::pin::Pin;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-pub const LENGTH: usize = 255;
+pub const MIN_LENGTH: usize = 8;
+pub const MAX_LENGTH: usize = 255;
 
 /// A safe wrapper for plaintext password strings.
 ///
@@ -16,11 +17,16 @@ pub const LENGTH: usize = 255;
 // TODO: Is there a way in the GUI to avoid cloning the password to send it to
 // a async function?
 #[derive(Encode, Decode, Zeroize, ZeroizeOnDrop, Clone, Eq, PartialEq)]
-pub struct Password(Pin<Box<[u8; LENGTH]>>);
+pub struct Password(Pin<Box<[u8; MAX_LENGTH]>>);
 
 impl Password {
     pub fn is_empty(&self) -> bool {
         self.as_bytes().is_empty()
+    }
+
+    // TODO: Impose some more requirements
+    pub fn is_valid(&self) -> bool {
+        self.as_bytes().len() >= MIN_LENGTH
     }
 
     pub fn as_bytes<'a>(&'a self) -> &'a [u8] {
@@ -46,7 +52,7 @@ impl Password {
 // Password::valid method.
 impl Default for Password {
     fn default() -> Self {
-        Password(Box::pin([0; LENGTH]))
+        Password(Box::pin([0; MAX_LENGTH]))
     }
 }
 
@@ -54,10 +60,10 @@ impl TryFrom<&str> for Password {
     type Error = ();
 
     fn try_from(str: &str) -> Result<Self, Self::Error> {
-        if str.len() > LENGTH {
+        if str.len() > MAX_LENGTH {
             return Err(());
         }
-        let mut buf = [0; LENGTH];
+        let mut buf = [0; MAX_LENGTH];
         for (d, s) in buf.iter_mut().zip(str.bytes()) {
             *d = s;
         }
@@ -139,6 +145,14 @@ mod tests {
     fn is_empty() {
         let password: Password = "".try_into().unwrap();
         assert!(password.is_empty());
+    }
+
+    #[test]
+    fn is_valid() {
+        let valid: Password = "12345678".try_into().unwrap();
+        assert!(valid.is_valid());
+        let invalid: Password = "123".try_into().unwrap();
+        assert!(!invalid.is_valid());
     }
 
     #[test]
