@@ -330,14 +330,14 @@ mod tests {
         lot_a.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_a,
-            Data::new(Label::Simple("a".into()), "1".try_into().unwrap()),
+            Data::new(Label::Simple("a".into()), "password1".try_into().unwrap()).unwrap(),
         )
         .upsert(&db, &lot_a)
         .await
         .expect("failed to upsert record");
         Record::new(
             &lot_a,
-            Data::new(Label::Simple("b".into()), "2".try_into().unwrap()),
+            Data::new(Label::Simple("b".into()), "password2".try_into().unwrap()).unwrap(),
         )
         .upsert(&db, &lot_a)
         .await
@@ -366,7 +366,7 @@ mod tests {
         lot_a.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_a,
-            Data::new(Label::Simple("a".into()), "1".try_into().unwrap()),
+            Data::new(Label::Simple("a".into()), "password1".try_into().unwrap()).unwrap(),
         )
         .upsert(&db, &lot_a)
         .await
@@ -375,7 +375,7 @@ mod tests {
         lot_b.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_b,
-            Data::new(Label::Simple("b".into()), "2".try_into().unwrap()),
+            Data::new(Label::Simple("b".into()), "password2".try_into().unwrap()).unwrap(),
         )
         .upsert(&db, &lot_b)
         .await
@@ -417,7 +417,7 @@ mod tests {
         lot.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot,
-            Data::new(Label::Simple("a".into()), "1".try_into().unwrap()),
+            Data::new(Label::Simple("a".into()), "password1".try_into().unwrap()).unwrap(),
         )
         .upsert(&db, &lot)
         .await
@@ -452,7 +452,7 @@ mod tests {
         lot.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot,
-            Data::new(Label::Simple("a".into()), "1".try_into().unwrap()),
+            Data::new(Label::Simple("a".into()), "password1".try_into().unwrap()).unwrap(),
         )
         .upsert(&db, &lot)
         .await
