@@ -40,6 +40,9 @@ pub struct User {
 
 impl User {
     pub fn new(username: &str, password: Password) -> Result<Self, Error> {
+        if !password.is_valid() {
+            return Err(Error::InvalidPassword);
+        }
         let salt = encrypt::generate_salt();
         let key = Key::from_password(&password, &salt)?;
         let validation = key.encrypt_with_aad(VALIDATION, User::aad(username))?;
@@ -150,6 +153,7 @@ impl Debug for User {
 pub enum Error {
     NotFound,
     Invalid,
+    InvalidPassword,
     SaltError,
     Encrypt(encrypt::Error),
     Database(db::Error),
@@ -217,6 +221,13 @@ mod tests {
         User::new("alice", "password".try_into().unwrap()).expect("failed to create user");
         let duration = start.elapsed();
         assert!(duration > Duration::from_millis(200));
+    }
+
+    #[test]
+    fn new_rejects_invalid_password() {
+        let invalid_password: Password = "short".try_into().unwrap();
+        let result = User::new("alice", invalid_password);
+        assert!(matches!(result, Err(Error::InvalidPassword)));
     }
 
     #[tokio::test]

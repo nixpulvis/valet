@@ -229,10 +229,17 @@ async fn main() -> Result<(), valet::user::Error> {
                                     // TODO: Delete old record if it exists.
                                     // TODO: Add deleted record to new record's history.
                                     // TODO: Put data in a Password itself.
-                                    Record::new(&lot, Data::new(label, password))
-                                        .upsert(&db, &lot)
-                                        .await
-                                        .expect("failed to save record");
+                                    match Data::new(label, password) {
+                                        Ok(data) => {
+                                            Record::new(&lot, data)
+                                                .upsert(&db, &lot)
+                                                .await
+                                                .expect("failed to save record");
+                                        }
+                                        Err(_) => {
+                                            println!("Invalid password");
+                                        }
+                                    }
                                 } else {
                                     println!("Invalid password");
                                 }
@@ -463,23 +470,27 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                     .as_str()
                     .try_into()
                 {
-                    match Record::new(
-                        &lot,
-                        Data::new(Label::Simple(label.clone()), password).with_extra(data),
-                    )
-                    .upsert(&db, lot)
-                    .await
-                    {
-                        Ok(uuid) => {
-                            println!(
-                                "Inserted {}::{} <{}>",
-                                lot.name(),
-                                label,
-                                uuid.as_hyphenated()
-                            )
+                    match Data::new(Label::Simple(label.clone()), password) {
+                        Ok(data_item) => {
+                            match Record::new(&lot, data_item.with_extra(data))
+                                .upsert(&db, lot)
+                                .await
+                            {
+                                Ok(uuid) => {
+                                    println!(
+                                        "Inserted {}::{} <{}>",
+                                        lot.name(),
+                                        label,
+                                        uuid.as_hyphenated()
+                                    );
+                                }
+                                Err(e) => {
+                                    dbg!(e);
+                                }
+                            }
                         }
-                        Err(e) => {
-                            dbg!(e);
+                        Err(_) => {
+                            println!("Invalid password");
                         }
                     }
                 }
