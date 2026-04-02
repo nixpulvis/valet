@@ -228,6 +228,43 @@ impl Lot {
     fn aad(username: &str, lot_uuid: &str) -> Vec<u8> {
         [username.as_bytes(), lot_uuid.as_bytes()].concat()
     }
+
+    /// Export this lot as plaintext JSON with all records.
+    ///
+    /// The returned bytes are a JSON representation of the lot with all records
+    /// in plaintext. This is suitable for sharing or analysis.
+    pub async fn export(&self, db: &Database) -> Result<Vec<u8>, Error> {
+        let records = self.records(db).await?;
+        let exported_records = records
+            .iter()
+            .map(|r| export::ExportedRecord {
+                uuid: r.uuid().to_string(),
+                lot_uuid: r.lot_uuid().to_string(),
+                label: r.data().label().to_string(),
+                value: r.password().to_string(),
+            })
+            .collect();
+
+        let exported = export::ExportedLot {
+            uuid: self.uuid.to_string(),
+            name: self.name.clone(),
+            key: hex::encode(self.key.as_bytes()),
+            records: exported_records,
+        };
+
+        exported.to_json().map_err(|e| Error::Encrypt(encrypt::Error::Encryption(e.to_string())))
+    }
+
+    /// Create a backup of this lot encrypted with a user's key.
+    ///
+    /// Returns encrypted JSON containing the lot and all records. The backup is
+    /// encrypted with the user's key, so only that user can decrypt it without
+    /// needing the lot key separately.
+    pub async fn backup(&self, db: &Database, user: &User) -> Result<Encrypted, Error> {
+        let json = self.export(db).await?;
+        let aad = b"valet-lot-backup";
+        user.key().encrypt_with_aad(&json, aad).map_err(Into::into)
+    }
 }
 
 impl fmt::Debug for Lot {
@@ -277,6 +314,8 @@ impl From<record::Error> for Error {
         Error::Record(err)
     }
 }
+
+pub mod export;
 
 #[cfg(feature = "orm")]
 pub mod orm;
@@ -481,5 +520,112 @@ mod tests {
                 .decrypt_with_aad(&encrypted, &aad)
                 .expect("failed to decrypted lot key"),
         )
+    }
+
+    #[tokio::test]
+    async fn export() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        Record::new(
+            &lot,
+            Data::new(Label::Simple("github".into()), "secret123".try_into().unwrap()),
+        )
+        .upsert(&db, &lot)
+        .await
+        .expect("failed to upsert record");
+        Record::new(
+            &lot,
+            Data::new(Label::Simple("email".into()), "pass456".try_into().unwrap()),
+        )
+        .upsert(&db, &lot)
+        .await
+        .expect("failed to upsert record");
+
+        let exported_json = lot.export(&db).await.expect("failed to export lot");
+        let exported = export::ExportedLot::from_json(&exported_json)
+            .expect("failed to deserialize export");
+
+        assert_eq!(exported.name, "lot a");
+        assert_eq!(exported.records.len(), 2);
+        assert_eq!(exported.records[0].label, "github");
+        assert_eq!(exported.records[0].value, "secret123");
+        assert_eq!(exported.records[1].label, "email");
+        assert_eq!(exported.records[1].value, "pass456");
+    }
+
+    #[tokio::test]
+    async fn backup() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        Record::new(
+            &lot,
+            Data::new(Label::Simple("github".into()), "secret123".try_into().unwrap()),
+        )
+        .upsert(&db, &lot)
+        .await
+        .expect("failed to upsert record");
+
+        let backup_encrypted = lot.backup(&db, &user).await.expect("failed to backup lot");
+
+        // Verify it's encrypted (not readable as JSON)
+        assert!(serde_json::from_slice::<export::ExportedLot>(&backup_encrypted.data).is_err());
+
+        // Decrypt the backup with the user's key
+        let aad = b"valet-lot-backup";
+        let decrypted = user
+            .key()
+            .decrypt_with_aad(&backup_encrypted, aad)
+            .expect("failed to decrypt backup");
+        let restored = export::ExportedLot::from_json(&decrypted)
+            .expect("failed to deserialize backup");
+
+        assert_eq!(restored.name, "lot a");
+        assert_eq!(restored.records.len(), 1);
+        assert_eq!(restored.records[0].label, "github");
+        assert_eq!(restored.records[0].value, "secret123");
+    }
+
+    #[tokio::test]
+    async fn backup_decrypt_without_user_key_fails() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        Record::new(
+            &lot,
+            Data::new(Label::Simple("github".into()), "secret123".try_into().unwrap()),
+        )
+        .upsert(&db, &lot)
+        .await
+        .expect("failed to upsert record");
+
+        let backup_encrypted = lot.backup(&db, &user).await.expect("failed to backup lot");
+
+        // Try to decrypt with the lot key instead of user key - should fail
+        let aad = b"valet-lot-backup";
+        let result = lot.key().decrypt_with_aad(&backup_encrypted, aad);
+        assert!(result.is_err());
     }
 }
