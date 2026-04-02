@@ -5,7 +5,7 @@ fn small_data(c: &mut Criterion) {
     let data = Data::new(
         Label::Simple("label".to_string()),
         "secret".try_into().unwrap(),
-    );
+    ).expect("password validation failed");
 
     let encode = || data.encode();
     c.bench_function("Record::encode", |b| b.iter(encode));
