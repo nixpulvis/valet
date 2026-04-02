@@ -261,25 +261,7 @@ impl Lot {
     /// encrypted with the user's key, so only that user can decrypt it without
     /// needing the lot key separately.
     pub async fn backup(&self, db: &Database, user: &User) -> Result<Encrypted, Error> {
-        let records = self.records(db).await?;
-        let exported_records = records
-            .iter()
-            .map(|r| export::ExportedRecord {
-                uuid: r.uuid().to_string(),
-                lot_uuid: r.lot_uuid().to_string(),
-                label: r.data().label().to_string(),
-                value: r.password().to_string(),
-            })
-            .collect();
-
-        let exported = export::ExportedLot {
-            uuid: self.uuid.to_string(),
-            name: self.name.clone(),
-            key: hex::encode(self.key.as_bytes()),
-            records: exported_records,
-        };
-
-        let json = exported.to_json().map_err(|e| Error::Encrypt(encrypt::Error::Encryption(e.to_string())))?;
+        let json = self.export(db).await?;
         let aad = b"valet-lot-backup";
         user.key().encrypt_with_aad(&json, aad).map_err(Into::into)
     }
