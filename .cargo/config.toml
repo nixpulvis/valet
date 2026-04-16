@@ -1,0 +1,2 @@
+[alias]
+firefox-xtask = "run --package xtask --"

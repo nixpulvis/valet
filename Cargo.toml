@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/storgit", "valet-build", "valetd"]
+members = [
+    "crates/storgit",
+    "valet-build",
+    "valetd",
+    "platform/firefox",
+    "platform/firefox/native-host",
+    "platform/firefox/xtask",
+]
 
 [package]
 name = "valet"
