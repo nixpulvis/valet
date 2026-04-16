@@ -1,13 +1,17 @@
+#[cfg(feature = "db")]
+use crate::db::{self, Database};
 use crate::{
-    db::{self, Database},
     encrypt::{self, Encrypted, Key},
     lot::Lot,
     password::Password,
     uuid::Uuid,
 };
+use bitcode::{Decode, Encode};
+#[cfg(feature = "db")]
 use sea_orm::{IntoActiveModel, entity::prelude::*, sea_query::OnConflict};
 use std::{fmt, io};
 
+#[derive(Encode, Decode)]
 pub struct Record {
     pub(crate) uuid: Uuid<Self>,
     pub(crate) lot_uuid: Uuid<Lot>,
@@ -29,10 +33,6 @@ impl Record {
 
     pub fn lot_uuid(&self) -> &Uuid<Lot> {
         &self.lot_uuid
-    }
-
-    pub fn lot(&self) -> Lot {
-        unimplemented!()
     }
 
     pub fn data(&self) -> &Data {
@@ -68,6 +68,7 @@ impl Record {
     }
 
     /// Save this record to the database and return its uuid.
+    #[cfg(feature = "db")]
     pub async fn upsert(&self, db: &Database, lot: &Lot) -> Result<Uuid<Self>, Error> {
         let uuid = self.uuid.clone();
         let aad = Record::aad(&self.uuid.to_string(), &self.lot_uuid.to_string());
@@ -100,6 +101,7 @@ impl Record {
     }
 
     /// Delete this record from the database.
+    #[cfg(feature = "db")]
     pub async fn delete(&self, db: &Database) -> Result<(), Error> {
         self::orm::Entity::delete_by_id(self.uuid.to_string())
             .exec(db.connection())
@@ -107,6 +109,7 @@ impl Record {
         Ok(())
     }
 
+    #[cfg(feature = "db")]
     pub async fn load_all(db: &Database, lot: &Lot) -> Result<Vec<Self>, Error> {
         let models = self::orm::Entity::find()
             .filter(self::orm::Column::LotUuid.eq(lot.uuid().to_string()))
@@ -163,6 +166,7 @@ impl fmt::Debug for Record {
 pub enum Error {
     MissingLot,
     Uuid(crate::uuid::Error),
+    #[cfg(feature = "db")]
     Database(db::Error),
     Encoding(bitcode::Error),
     Compression(io::Error),
@@ -175,12 +179,14 @@ impl From<crate::uuid::Error> for Error {
     }
 }
 
+#[cfg(feature = "db")]
 impl From<db::Error> for Error {
     fn from(err: db::Error) -> Self {
         Error::Database(err)
     }
 }
 
+#[cfg(feature = "db")]
 impl From<sea_orm::DbErr> for Error {
     fn from(err: sea_orm::DbErr) -> Self {
         Error::Database(err.into())
@@ -191,15 +197,17 @@ mod data;
 pub use self::data::{Data, Label}; // TODO: Remove
 // pub use self::data::{Data, Label, Secret};
 
-#[cfg(feature = "orm")]
+#[cfg(all(feature = "db", feature = "orm"))]
 pub mod orm;
-#[cfg(not(feature = "orm"))]
+#[cfg(all(feature = "db", not(feature = "orm")))]
 pub(crate) mod orm;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lot::Lot, record::data::Label, user::User};
+    #[cfg(feature = "db")]
+    use crate::{db::Database, user::User};
+    use crate::{lot::Lot, record::data::Label};
 
     #[test]
     fn new() {
@@ -232,6 +240,7 @@ mod tests {
         assert_eq!(record, decrypted);
     }
 
+    #[cfg(feature = "db")]
     #[tokio::test]
     async fn insert() {
         let db = Database::new("sqlite://:memory:")
@@ -256,6 +265,7 @@ mod tests {
         assert_eq!(inserted_uuid, records[0].uuid);
     }
 
+    #[cfg(feature = "db")]
     #[tokio::test]
     async fn load_all() {
         let db = Database::new("sqlite://:memory:")
@@ -283,6 +293,7 @@ mod tests {
         assert_eq!(inserted_uuid, records[0].uuid);
     }
 
+    #[cfg(feature = "db")]
     #[tokio::test]
     async fn delete() {
         let db = Database::new("sqlite://:memory:")

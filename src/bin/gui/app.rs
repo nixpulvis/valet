@@ -1,7 +1,7 @@
 use crate::view::{Locked, Unlocked, View};
 use eframe::egui;
 use egui_inbox::UiInbox;
-use std::{env, sync::Arc};
+use std::sync::Arc;
 use tokio::runtime;
 use valet::prelude::*;
 
@@ -14,12 +14,7 @@ pub struct App {
 
 impl App {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let mut dir = env::current_exe().unwrap();
-        dir.pop();
-        dir.pop();
-        let dir = String::from(dir.to_str().unwrap());
-        let db_url = format!("sqlite://{}/valet.sqlite?mode=rwc", dir);
-        dbg!(&db_url);
+        let db_url = valet::db::default_url();
         App {
             db_url,
             rt: runtime::Builder::new_multi_thread()

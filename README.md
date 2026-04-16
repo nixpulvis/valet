@@ -1,5 +1,16 @@
 # Valet
 
+Valet is a local-first, multi-user password manager. The core library handles
+encryption (AES-GCM-SIV + Argon2 key derivation), and multiple clients consume
+it:
+
+- **CLI** (`src/bin/cli.rs`) — Clap-based REPL for registering users, managing
+  lots, and storing/retrieving secrets from the terminal.
+- **GUI** (`src/bin/gui/`) — Native desktop app built with egui/eframe (behind
+  the `gui` feature flag).
+
+## CLI
+
 An idea for the CLI...
 ```sh
 $ valet register <username>

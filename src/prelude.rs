@@ -1,3 +1,4 @@
+#[cfg(feature = "db")]
 pub use crate::db::Database;
 pub use crate::lot::{DEFAULT_LOT, Lot};
 pub use crate::password::Password;

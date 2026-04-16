@@ -1,37 +1,35 @@
+use bitcode::{Decode, Encode};
 use core::fmt;
 use std::marker::PhantomData;
-use std::ops::Deref;
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct Uuid<T>(uuid::Uuid, PhantomData<T>);
+#[derive(Debug, PartialEq, Eq, Encode, Decode)]
+pub struct Uuid<T>([u8; 16], #[bitcode(skip)] PhantomData<T>);
 
 impl<T> Uuid<T> {
     pub fn now() -> Self {
-        Uuid(uuid::Uuid::now_v7(), PhantomData)
+        Uuid(*uuid::Uuid::now_v7().as_bytes(), PhantomData)
     }
 
     pub fn parse(s: &str) -> Result<Self, Error> {
-        Ok(Uuid(uuid::Uuid::parse_str(s)?, PhantomData))
+        let u = uuid::Uuid::parse_str(s)?;
+        Ok(Uuid(*u.as_bytes(), PhantomData))
+    }
+
+    /// Returns the underlying `uuid::Uuid`.
+    pub fn to_uuid(&self) -> uuid::Uuid {
+        uuid::Uuid::from_bytes(self.0)
     }
 }
 
 impl<T> fmt::Display for Uuid<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.to_string())
+        write!(f, "{}", self.to_uuid())
     }
 }
 
 impl<T> Clone for Uuid<T> {
     fn clone(&self) -> Self {
-        Uuid(self.0.clone(), PhantomData)
-    }
-}
-
-impl<T> Deref for Uuid<T> {
-    type Target = uuid::Uuid;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+        Uuid(self.0, PhantomData)
     }
 }
 

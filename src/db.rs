@@ -1,14 +1,46 @@
 use sea_orm::DatabaseConnection;
 use sqlx::SqlitePool;
+use std::path::PathBuf;
 use url::Url;
 
-pub const DEFAULT_URL: &'static str = "valet.sqlite";
+/// Default SQLite path: `$XDG_DATA_HOME/valet/valet.sqlite`, falling back to
+/// `$HOME/.local/share/valet/valet.sqlite` per the XDG Base Directory spec.
+/// Returns an absolute filesystem path (not a `sqlite://` URL).
+pub fn default_path() -> PathBuf {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
+            home.join(".local").join("share")
+        });
+    base.join("valet").join("valet.sqlite")
+}
+
+pub fn default_url() -> String {
+    default_path().to_string_lossy().into_owned()
+}
 
 pub struct Database(DatabaseConnection);
 
 impl Database {
     pub async fn new(input: &str) -> Result<Database, Error> {
         let url = Self::parse_url(input)?;
+
+        // Make sure the directory the sqlite file lives in exists, otherwise
+        // sqlx errors out even with mode=rwc.
+        if let Ok(parsed) = Url::parse(&url) {
+            let path = parsed.path();
+            if !path.is_empty() && path != "/" && path != "/:memory:" {
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    if !parent.as_os_str().is_empty() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                }
+            }
+        }
 
         // Create the sqlx pool and run migrations on it.
         let pool = SqlitePool::connect(&url).await?;

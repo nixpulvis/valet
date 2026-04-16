@@ -1,4 +1,5 @@
-/target
+**/target
+**/pkg
 valet.sqlite
 .zed
 .DS_Store

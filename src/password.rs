@@ -20,6 +20,26 @@ pub const MAX_LENGTH: usize = 255;
 pub struct Password(Pin<Box<[u8; MAX_LENGTH]>>);
 
 impl Password {
+    /// Generate a random 20-character password from `[A-Za-z0-9!@#$%^&*]`.
+    ///
+    /// Uses rejection sampling to avoid modulo bias.
+    pub fn generate() -> Self {
+        use rand_core::{OsRng, RngCore};
+        const CHARSET: &[u8] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
+        let mut rng = OsRng;
+        let mut buf = [0u8; 1];
+        let mut password = String::with_capacity(20);
+        while password.len() < 20 {
+            rng.fill_bytes(&mut buf);
+            let idx = buf[0] as usize;
+            if idx < 256 - (256 % CHARSET.len()) {
+                password.push(CHARSET[idx % CHARSET.len()] as char);
+            }
+        }
+        password.as_str().try_into().unwrap()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.as_bytes().is_empty()
     }

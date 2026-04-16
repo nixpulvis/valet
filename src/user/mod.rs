@@ -1,9 +1,13 @@
+#[cfg(feature = "db")]
 use crate::{
     db::{self, Database},
-    encrypt::{self, Encrypted, Key, SALT_SIZE},
     lot::{self, Lot},
+};
+use crate::{
+    encrypt::{self, Encrypted, Key, SALT_SIZE},
     password::Password,
 };
+#[cfg(feature = "db")]
 use sea_orm::{ActiveValue::Set, QuerySelect, entity::prelude::*};
 use std::{fmt::Debug, fmt::Formatter};
 
@@ -11,9 +15,8 @@ const VALIDATION: &[u8] = b"VALID";
 
 /// A user of valet, who is uniquely identified by username.
 ///
-/// As is standard practice with password handling, the user's password provided
-/// to either [`User::new`] or [`User::load`] is never saved anywhere and is
-/// kept in memory for as little time as possible.
+/// As is standard practice with password handling, the user's password is never
+/// saved anywhere and is kept in memory for as little time as possible.
 ///
 /// The user's password (and a random saved "salt") is used to derive the _user
 /// key_, i.e. [`Key<User>`]. To generate this key we use a common Key
@@ -51,6 +54,7 @@ impl User {
         })
     }
 
+    #[cfg(feature = "db")]
     pub async fn register(self, db: &Database) -> Result<Self, Error> {
         let active = self::orm::ActiveModel {
             username: Set(self.username.clone()),
@@ -83,6 +87,7 @@ impl User {
         }
     }
 
+    #[cfg(feature = "db")]
     pub async fn load<'a>(
         db: &'a Database,
         username: &'a str,
@@ -118,11 +123,13 @@ impl User {
     /// the user encrypted lot key for each lot.
     ///
     /// For more information, see [`Lot`].
+    #[cfg(feature = "db")]
     pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {
         Ok(Lot::load_all(&db, self).await?)
     }
 
     /// Return the list of registered usernames from the database.
+    #[cfg(feature = "db")]
     pub async fn list(db: &Database) -> Result<Vec<String>, Error> {
         self::orm::Entity::find()
             .select_only()
@@ -152,7 +159,9 @@ pub enum Error {
     Invalid,
     SaltError,
     Encrypt(encrypt::Error),
+    #[cfg(feature = "db")]
     Database(db::Error),
+    #[cfg(feature = "db")]
     Lot(lot::Error),
 }
 
@@ -162,27 +171,30 @@ impl From<encrypt::Error> for Error {
     }
 }
 
+#[cfg(feature = "db")]
 impl From<db::Error> for Error {
     fn from(err: db::Error) -> Self {
         Error::Database(err)
     }
 }
 
+#[cfg(feature = "db")]
 impl From<sea_orm::DbErr> for Error {
     fn from(err: sea_orm::DbErr) -> Self {
         Error::Database(err.into())
     }
 }
 
+#[cfg(feature = "db")]
 impl From<lot::Error> for Error {
     fn from(err: lot::Error) -> Self {
         Error::Lot(err)
     }
 }
 
-#[cfg(feature = "orm")]
+#[cfg(all(feature = "db", feature = "orm"))]
 pub mod orm;
-#[cfg(not(feature = "orm"))]
+#[cfg(all(feature = "db", not(feature = "orm")))]
 pub(crate) mod orm;
 
 #[cfg(test)]

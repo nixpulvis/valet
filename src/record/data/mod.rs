@@ -47,6 +47,10 @@ impl Data {
         &self.password
     }
 
+    pub fn extra(&self) -> &HashMap<String, String> {
+        &self.extra
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         bitcode::encode(self)
     }

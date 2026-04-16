@@ -1,10 +1,16 @@
+#[cfg(feature = "db")]
+use crate::encrypt::Encrypted;
+#[cfg(feature = "db")]
 use crate::{
     db::{self, Database},
-    encrypt::{self, Encrypted, Key},
     record::{self, Record},
     user::User,
+};
+use crate::{
+    encrypt::{self, Key},
     uuid::Uuid,
 };
+#[cfg(feature = "db")]
 use sea_orm::{
     ActiveValue::{Set, Unchanged},
     IntoActiveModel,
@@ -64,6 +70,7 @@ impl Lot {
     }
 
     /// Load this lot's records from the database.
+    #[cfg(feature = "db")]
     pub async fn records(&self, db: &Database) -> Result<Vec<Record>, Error> {
         Record::load_all(db, self).await.map_err(Into::into)
     }
@@ -72,6 +79,7 @@ impl Lot {
     ///
     /// If the lot key has changed since the last save, all records are
     /// re-encrypted with the new key before the updated key is stored.
+    #[cfg(feature = "db")]
     pub async fn save(&self, db: &Database, user: &User) -> Result<Uuid<Self>, Error> {
         let uuid = self.uuid.to_string();
         let active = self::orm::ActiveModel {
@@ -143,6 +151,7 @@ impl Lot {
         Ok(self.uuid.clone())
     }
 
+    #[cfg(feature = "db")]
     async fn reencrypt_records(
         &self,
         db: &Database,
@@ -162,6 +171,7 @@ impl Lot {
     }
 
     /// Load a user's lot by name.
+    #[cfg(feature = "db")]
     pub async fn load(db: &Database, name: &str, user: &User) -> Result<Option<Self>, Error> {
         let ul = self::orm::user_lots::Entity::find()
             .filter(self::orm::user_lots::Column::Username.eq(user.username()))
@@ -181,6 +191,7 @@ impl Lot {
     }
 
     /// Load a user's lots.
+    #[cfg(feature = "db")]
     pub async fn load_all(db: &Database, user: &User) -> Result<Vec<Self>, Error> {
         let uls = self::orm::user_lots::Entity::find()
             .filter(self::orm::user_lots::Column::Username.eq(user.username()))
@@ -200,6 +211,7 @@ impl Lot {
     }
 
     /// Delete this lot, cascading to records and user_lots.
+    #[cfg(feature = "db")]
     pub async fn delete(&self, db: &Database) -> Result<(), Error> {
         self::orm::Entity::delete_by_id(self.uuid.to_string())
             .exec(db.connection())
@@ -207,6 +219,7 @@ impl Lot {
         Ok(())
     }
 
+    #[cfg(feature = "db")]
     fn decrypt_and_build(
         user: &User,
         model: self::orm::Model,
@@ -225,6 +238,7 @@ impl Lot {
         })
     }
 
+    #[cfg(feature = "db")]
     fn aad(username: &str, lot_uuid: &str) -> Vec<u8> {
         [username.as_bytes(), lot_uuid.as_bytes()].concat()
     }
@@ -244,7 +258,9 @@ pub enum Error {
     MissingLotKey,
     Uuid(crate::uuid::Error),
     Encrypt(encrypt::Error),
+    #[cfg(feature = "db")]
     Record(record::Error),
+    #[cfg(feature = "db")]
     Database(db::Error),
 }
 
@@ -260,27 +276,30 @@ impl From<encrypt::Error> for Error {
     }
 }
 
+#[cfg(feature = "db")]
 impl From<db::Error> for Error {
     fn from(err: db::Error) -> Self {
         Error::Database(err)
     }
 }
 
+#[cfg(feature = "db")]
 impl From<sea_orm::DbErr> for Error {
     fn from(err: sea_orm::DbErr) -> Self {
         Error::Database(err.into())
     }
 }
 
+#[cfg(feature = "db")]
 impl From<record::Error> for Error {
     fn from(err: record::Error) -> Self {
         Error::Record(err)
     }
 }
 
-#[cfg(feature = "orm")]
+#[cfg(all(feature = "db", feature = "orm"))]
 pub mod orm;
-#[cfg(not(feature = "orm"))]
+#[cfg(all(feature = "db", not(feature = "orm")))]
 pub(crate) mod orm;
 
 #[cfg(test)]

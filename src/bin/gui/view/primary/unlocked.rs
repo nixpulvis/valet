@@ -1,5 +1,5 @@
 use crate::{
-    util::{button_width, generate_password},
+    util::button_width,
     view::{View, primary::LOCKED_SIZE},
     widget::{PasswordInput, RecordRow},
 };
@@ -143,7 +143,7 @@ impl<'a> View for Unlocked<'a> {
                                     .reserved_right(gen_width),
                             );
                             if ui.button("Generate").clicked() {
-                                state.new_password = generate_password();
+                                state.new_password = Password::generate();
                             }
                         });
                         ui.add_space(4.);

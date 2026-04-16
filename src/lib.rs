@@ -2,6 +2,7 @@
 //!
 //! TODO
 
+#[cfg(feature = "db")]
 pub mod db;
 pub mod encrypt;
 pub mod lot;

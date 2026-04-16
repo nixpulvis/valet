@@ -14,7 +14,7 @@ use valet::{prelude::*, record::Label, user};
 #[derive(Parser)]
 #[command(version, about = crate_description!())]
 struct Cli {
-    #[arg(short, long, default_value = valet::db::DEFAULT_URL)]
+    #[arg(short, long, default_value_t = valet::db::default_url())]
     database: String,
 
     #[command(subcommand)]
@@ -475,7 +475,7 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                                 "Inserted {}::{} <{}>",
                                 lot.name(),
                                 label,
-                                uuid.as_hyphenated()
+                                uuid.to_uuid().as_hyphenated()
                             )
                         }
                         Err(e) => {
