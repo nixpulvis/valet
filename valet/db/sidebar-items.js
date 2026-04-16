@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["DEFAULT_URL"],"enum":["Error"],"struct":["Database"]};
+window.SIDEBAR_ITEMS = {"enum":["Error"],"fn":["default_path","default_url"],"struct":["Database"]};
