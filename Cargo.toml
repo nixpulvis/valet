@@ -44,6 +44,9 @@ cli = [
 ]
 gui = ["db", "dep:tokio", "dep:eframe", "dep:egui_inbox"]
 
+[workspace]
+members = ["platform/firefox", "platform/firefox/native-host", "platform/firefox/xtask"]
+
 [dependencies]
 aes-gcm-siv = "0.11"
 argon2 = "0.5"
