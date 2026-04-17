@@ -8,6 +8,10 @@ it:
   lots, and storing/retrieving secrets from the terminal.
 - **GUI** (`src/bin/gui/`) — Native desktop app built with egui/eframe (behind
   the `gui` feature flag).
+- **Firefox extension** (`platform/firefox/`) — Browser popup that matches
+  credentials to the active tab's domain, with a native messaging host for
+  database access. See the [Firefox README](platform/firefox/README.md) for
+  build and development instructions.
 
 ## CLI
 

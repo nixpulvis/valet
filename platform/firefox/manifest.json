@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Valet",
+  "version": "0.0.2",
+  "description": "Valet password manager — access your secrets from the browser.",
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "valet@nixpulvis.com"
+    }
+  },
+
+  "permissions": ["nativeMessaging", "activeTab", "clipboardWrite", "storage"],
+  "host_permissions": ["*://*/*"],
+
+  "action": {
+    "default_title": "Valet",
+    "default_popup": "popup.html"
+  },
+
+  "background": {
+    "scripts": ["background.js"],
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "web_accessible_resources": [
+    {
+      "resources": ["pkg/*"],
+      "matches": ["*://*/*"]
+    }
+  ],
+
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
+}
