@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/storgit"]
+members = ["crates/storgit", "valet-build", "valetd"]
 
 [package]
 name = "valet"
@@ -13,6 +13,10 @@ authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 description = """
 Valet is a password management framework and manager CLI/GUI application.
 """
+
+[lib]
+# staticlib is always produced so the `ffi` feature can build `libvalet.a`.
+crate-type = ["rlib", "staticlib"]
 
 [package.metadata.bundle.bin.gui]
 name = "Valet"
@@ -28,12 +32,19 @@ required-features = ["cli"]
 
 [features]
 default = ["cli"]
-## Expose the SeaORM entity modules as `pub` instead of `pub(crate)`.
+
+# Enables the SQLite database layer (`db` module, CRUD operations on
+# `User`/`Lot`/`Record`, and the `prelude` convenience re-exports).
+# Without this feature the crate is a pure encryption/data library.
+db = ["dep:sqlx", "dep:sea-orm", "dep:url", "dep:storgit"]
+
+# Expose the SeaORM entity modules as `pub` instead of `pub(crate)`.
 orm = []
-## Enables the SQLite database layer (`db` module, CRUD operations on
-## `User`/`Lot`/`Record`, and the `prelude` convenience re-exports).
-## Without this feature the crate is a pure encryption/data library.
-db = ["dep:sqlx", "dep:sea-orm", "dep:url", "dep:regex", "dep:storgit"]
+
+# Exposes the stable C-ABI surface in `valet::ffi`, generates `valet.h` via
+# cbindgen, and produces a `libvalet.a`.
+ffi = []
+
 cli = [
     "db",
     "dep:tokio",
@@ -45,6 +56,7 @@ cli = [
     "dep:serde",
     "dep:chrono",
 ]
+
 gui = ["db", "dep:tokio", "dep:eframe", "dep:egui_inbox"]
 
 [dependencies]
@@ -67,7 +79,7 @@ url = { version = "2.5", optional = true }
 tokio = { version = "1.46", features = ["full"], optional = true }
 rpassword = { version = "7.4", optional = true }
 csv = { version = "1.3", optional = true }
-regex = { version = "1.12", optional = true }
+regex = "1.12"
 clap = { version = "4.5", features = ["derive", "cargo"], optional = true }
 clap-repl = { version = "0.3", features = ["async"], optional = true }
 clap_complete = { version = "4.5", optional = true }
@@ -77,6 +89,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"], opti
 # GUI Dependencies
 eframe = { version = "0.32", optional = true }
 egui_inbox = { version = "0.9", optional = true }
+
+[build-dependencies]
+valet-build = { path = "valet-build" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

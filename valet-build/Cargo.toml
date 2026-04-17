@@ -1,0 +1,9 @@
+[package]
+name = "valet-build"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "Shared build-script helpers for the valet workspace."
+
+[dependencies]
+cbindgen = "0.29"

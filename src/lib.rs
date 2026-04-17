@@ -5,6 +5,8 @@
 #[cfg(feature = "db")]
 pub mod db;
 pub mod encrypt;
+#[cfg(feature = "ffi")]
+pub mod ffi;
 pub mod lot;
 pub mod password;
 pub mod prelude;

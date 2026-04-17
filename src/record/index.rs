@@ -59,7 +59,7 @@ impl RecordIndex {
     }
 
     /// Look up the UUID of the record with the given primary name, ignoring
-    /// [`Label::extra`]. Record identity within a lot is the [`LabelName`]
+    /// [`Label::extra`]. Record identity within a lot is the [`LabelName`](super::LabelName)
     /// alone; extras are searchable metadata that may change across
     /// revisions of the same record. Returns the first match in
     /// [`Label: Ord`] order if the caller has historically stored multiple

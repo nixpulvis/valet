@@ -709,9 +709,7 @@ mod index;
 #[cfg(feature = "db")]
 pub use self::index::RecordIndex;
 
-#[cfg(feature = "db")]
 pub mod query;
-#[cfg(feature = "db")]
 pub use self::query::{Path, Query};
 
 #[cfg(all(feature = "db", feature = "orm"))]
