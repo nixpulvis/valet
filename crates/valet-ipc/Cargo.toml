@@ -1,0 +1,20 @@
+[package]
+name = "valet-ipc"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "Wire protocol and transport client for the Valet password manager."
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = ["stub"]
+stub = []
+
+[dependencies]
+valet = { path = "../..", default-features = false }
+bitcode = { git = "https://github.com/nixpulvis/bitcode", branch = "pin-support" }
+
+[build-dependencies]
+cbindgen = "0.29"

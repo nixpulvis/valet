@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.developer.authentication-services.autofill-credential-provider</key>
+    <true/>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <!--
+    TODO(valet-daemon): when the daemon lands, grant the extension access to
+    its Unix socket by uncommenting the temporary-exception below. Until then
+    the extension runs against a compiled-in stub and needs no socket access.
+    <key>com.apple.security.temporary-exception.files.absolute-path.read-write</key>
+    <array>
+        <string>/Users/$(USER)/.local/share/valet/valet.sock</string>
+    </array>
+    -->
+</dict>
+</plist>
