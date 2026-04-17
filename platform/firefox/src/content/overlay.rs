@@ -150,7 +150,14 @@ fn start_position_loop(host: Element, pw: HtmlInputElement) {
     let cb: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let cb_clone = cb.clone();
 
+    // Anchor DOM references on the JS heap so Safari's GC won't collect
+    // them from the WASM externref table.
+    let anchor = js_sys::Array::of2(host.as_ref(), pw.as_ref());
+
     let closure = Closure::wrap(Box::new(move || {
+        // Keep anchor alive — prevents Safari GC from collecting the refs.
+        let _ = &anchor;
+
         // Stop if the input was removed from the document.
         if !pw.is_connected() {
             host.remove();
