@@ -10,7 +10,7 @@ use valet::{Lot, User, db::Database, lot::DEFAULT_LOT, password::Password};
 
 pub struct Locked<'a> {
     // TODO: come up with a better organization for these shared values.
-    db_url: &'a String,
+    db: &'a Arc<Database>,
     rt: &'a Runtime,
     user: &'a mut Option<Arc<User>>,
     login_inbox: &'a UiInbox<User>,
@@ -18,13 +18,13 @@ pub struct Locked<'a> {
 
 impl<'a> Locked<'a> {
     pub fn new(
-        db_url: &'a String,
+        db: &'a Arc<Database>,
         rt: &'a Runtime,
         user: &'a mut Option<Arc<User>>,
         login_inbox: &'a UiInbox<User>,
     ) -> Self {
         Locked {
-            db_url,
+            db,
             rt,
             user,
             login_inbox,
@@ -69,12 +69,9 @@ impl<'a> View for Locked<'a> {
                     // XXX: This is obviously hacky, but I don't want to deal with sharing things now.
                     let username = state.username.clone();
                     let password = state.password.clone();
-                    let db_url = self.db_url.clone();
+                    let db = self.db.clone();
                     let tx = self.login_inbox.sender();
                     self.rt.spawn(async move {
-                        let db = Database::new(&db_url)
-                            .await
-                            .expect("error getting database");
                         let user = User::load(&db, &username, password).await.expect("TODO");
                         if user.validate() {
                             tx.send(user).ok();
@@ -85,10 +82,9 @@ impl<'a> View for Locked<'a> {
                     // XXX: This is obviously hacky, but I don't want to deal with sharing things now.
                     let username = state.username.clone();
                     let password = state.password.clone();
-                    let db_url = self.db_url.clone();
+                    let db = self.db.clone();
                     let tx = self.login_inbox.sender();
                     self.rt.spawn(async move {
-                        let db = Database::new(&db_url).await.expect("error getting DB");
                         let user = User::new(&username, password)
                             .expect("TODO")
                             .register(&db)

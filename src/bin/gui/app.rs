@@ -3,10 +3,10 @@ use eframe::egui;
 use egui_inbox::UiInbox;
 use std::sync::Arc;
 use tokio::runtime;
-use valet::prelude::*;
+use valet::{db::Database, prelude::*};
 
 pub struct App {
-    db_url: String,
+    db: Arc<Database>,
     rt: runtime::Runtime,
     user: Option<Arc<User>>,
     login_inbox: UiInbox<User>,
@@ -14,13 +14,16 @@ pub struct App {
 
 impl App {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let db_url = valet::db::default_url();
+        let rt = runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let db = rt
+            .block_on(Database::new(&valet::db::default_url()))
+            .expect("failed to open database");
         App {
-            db_url,
-            rt: runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap(),
+            db: Arc::new(db),
+            rt,
             user: None,
             login_inbox: UiInbox::new(),
         }
@@ -38,15 +41,9 @@ impl eframe::App for App {
         );
 
         if self.user.is_some() {
-            Unlocked::new(
-                &self.db_url,
-                &self.rt,
-                &mut self.user,
-                &mut self.login_inbox,
-            )
-            .show(ctx);
+            Unlocked::new(&self.db, &self.rt, &mut self.user, &mut self.login_inbox).show(ctx);
         } else {
-            Locked::new(&self.db_url, &self.rt, &mut self.user, &self.login_inbox).show(ctx);
+            Locked::new(&self.db, &self.rt, &mut self.user, &self.login_inbox).show(ctx);
         }
     }
 }

@@ -3,7 +3,7 @@ use crate::encrypt::Encrypted;
 #[cfg(feature = "db")]
 use crate::{
     db::{self, Database},
-    record::{self, Record},
+    record::{self, Record, RecordIndex},
     user::User,
 };
 use crate::{
@@ -69,10 +69,14 @@ impl Lot {
         &self.key
     }
 
-    /// Load this lot's records from the database.
+    /// Load the label-to-uuid index for this lot.
+    ///
+    /// The index decrypts only labels, leaving the password-bearing data
+    /// column on disk. Pair this with [`Record::show`] to reveal exactly one
+    /// password at a time.
     #[cfg(feature = "db")]
-    pub async fn records(&self, db: &Database) -> Result<Vec<Record>, Error> {
-        Record::load_all(db, self).await.map_err(Into::into)
+    pub async fn index(&self, db: &Database) -> Result<RecordIndex, Error> {
+        RecordIndex::load(db, self).await.map_err(Into::into)
     }
 
     /// Save this lot to the database, detecting and handling key rotation.
@@ -330,14 +334,16 @@ mod tests {
         lot_a.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_a,
-            Data::new(Label::Simple("a".into()), "1".try_into().unwrap()),
+            Label::Simple("a".into()),
+            Data::new("1".try_into().unwrap()),
         )
         .upsert(&db, &lot_a)
         .await
         .expect("failed to upsert record");
         Record::new(
             &lot_a,
-            Data::new(Label::Simple("b".into()), "2".try_into().unwrap()),
+            Label::Simple("b".into()),
+            Data::new("2".try_into().unwrap()),
         )
         .upsert(&db, &lot_a)
         .await
@@ -347,9 +353,13 @@ mod tests {
             .await
             .expect("failed to load lot")
             .expect("no lot");
-        let records_a = lot_a.records(&db).await.expect("failed to load records");
-        let records_b = lot_b.records(&db).await.expect("failed to load records");
-        assert_eq!(records_a, records_b);
+        let index_a = lot_a.index(&db).await.expect("failed to load index a");
+        let index_b = lot_b.index(&db).await.expect("failed to load index b");
+        let mut labels_a: Vec<_> = index_a.labels().collect();
+        let mut labels_b: Vec<_> = index_b.labels().collect();
+        labels_a.sort_by_key(|l| l.to_string());
+        labels_b.sort_by_key(|l| l.to_string());
+        assert_eq!(labels_a, labels_b);
     }
 
     #[tokio::test]
@@ -366,7 +376,8 @@ mod tests {
         lot_a.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_a,
-            Data::new(Label::Simple("a".into()), "1".try_into().unwrap()),
+            Label::Simple("a".into()),
+            Data::new("1".try_into().unwrap()),
         )
         .upsert(&db, &lot_a)
         .await
@@ -375,7 +386,8 @@ mod tests {
         lot_b.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_b,
-            Data::new(Label::Simple("b".into()), "2".try_into().unwrap()),
+            Label::Simple("b".into()),
+            Data::new("2".try_into().unwrap()),
         )
         .upsert(&db, &lot_b)
         .await
@@ -415,9 +427,10 @@ mod tests {
             .expect("failed to register user");
         let mut lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        Record::new(
+        let record_uuid = Record::new(
             &lot,
-            Data::new(Label::Simple("a".into()), "1".try_into().unwrap()),
+            Label::Simple("a".into()),
+            Data::new("1".try_into().unwrap()),
         )
         .upsert(&db, &lot)
         .await
@@ -433,9 +446,14 @@ mod tests {
             .await
             .expect("failed to load lot")
             .expect("no lot");
-        let records = lot.records(&db).await.expect("failed to load records");
-        assert_eq!(1, records.len());
-        assert_eq!(&Label::Simple("a".into()), records[0].data().label());
+        let index = lot.index(&db).await.expect("failed to load index");
+        assert_eq!(1, index.len());
+        assert_eq!(Some(&record_uuid), index.find(&Label::Simple("a".into())),);
+        let record = Record::show(&db, &lot, &record_uuid)
+            .await
+            .expect("failed to show record")
+            .expect("record missing");
+        assert_eq!("1", record.password().to_string());
     }
 
     #[tokio::test]
@@ -452,7 +470,8 @@ mod tests {
         lot.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot,
-            Data::new(Label::Simple("a".into()), "1".try_into().unwrap()),
+            Label::Simple("a".into()),
+            Data::new("1".try_into().unwrap()),
         )
         .upsert(&db, &lot)
         .await
@@ -463,9 +482,9 @@ mod tests {
             .expect("failed to load lots");
         assert!(lots.is_empty());
         assert!(
-            lot.records(&db)
+            lot.index(&db)
                 .await
-                .expect("failed to load records")
+                .expect("failed to load index")
                 .is_empty()
         );
         let user_lot = self::orm::user_lots::Entity::find_by_id((

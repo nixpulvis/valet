@@ -1,10 +1,39 @@
+use crate::{encrypt::Stash, lot::Lot};
 use bitcode::{Decode, Encode};
-use std::{fmt, str::FromStr};
+use std::{cmp::Ordering, fmt, str::FromStr};
 
-#[derive(Encode, Decode, Debug, Eq, PartialEq)]
+#[derive(Encode, Decode, Debug, Eq, PartialEq, Hash, Clone)]
 pub enum Label {
     Simple(String),
     Domain { id: String, domain: String },
+}
+
+impl Stash<Lot> for Label {}
+
+impl Ord for Label {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Label::Simple(a), Label::Simple(b)) => a.cmp(b),
+            (
+                Label::Domain {
+                    id: a_id,
+                    domain: a_domain,
+                },
+                Label::Domain {
+                    id: b_id,
+                    domain: b_domain,
+                },
+            ) => a_domain.cmp(b_domain).then_with(|| a_id.cmp(b_id)),
+            (Label::Domain { .. }, Label::Simple(_)) => Ordering::Less,
+            (Label::Simple(_), Label::Domain { .. }) => Ordering::Greater,
+        }
+    }
+}
+
+impl PartialOrd for Label {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl FromStr for Label {
@@ -58,6 +87,73 @@ pub enum Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lot::Lot;
+
+    #[test]
+    fn encode_decode() {
+        let label = Label::Simple("foo".into());
+        let encoded = label.encode();
+        let decoded = Label::decode(&encoded).expect("failed to decode");
+        assert_eq!(label, decoded);
+    }
+
+    #[test]
+    fn encrypt_decrypt() {
+        let lot = Lot::new("test");
+        let label = Label::Simple("foo".into());
+        let encrypted = label.encrypt(lot.key()).expect("failed to encrypt");
+        let decrypted = Label::decrypt(&encrypted, lot.key()).expect("failed to decrypt");
+        assert_eq!(label, decrypted);
+    }
+
+    #[test]
+    fn encrypt_decrypt_with_aad() {
+        let lot = Lot::new("test");
+        let label = Label::Simple("foo".into());
+        let aad = [1, 2, 3];
+        let encrypted = label
+            .encrypt_with_aad(lot.key(), &aad)
+            .expect("failed to encrypt");
+        let decrypted =
+            Label::decrypt_with_aad(&encrypted, lot.key(), &aad).expect("failed to decrypt");
+        assert_eq!(label, decrypted);
+    }
+
+    #[test]
+    fn ord_domain_sorts_by_domain_then_id() {
+        let mut labels = vec![
+            Label::Domain {
+                id: "bob".into(),
+                domain: "example.com".into(),
+            },
+            Label::Domain {
+                id: "alice".into(),
+                domain: "zeta.com".into(),
+            },
+            Label::Domain {
+                id: "alice".into(),
+                domain: "example.com".into(),
+            },
+        ];
+        labels.sort();
+        assert_eq!(
+            labels,
+            vec![
+                Label::Domain {
+                    id: "alice".into(),
+                    domain: "example.com".into(),
+                },
+                Label::Domain {
+                    id: "bob".into(),
+                    domain: "example.com".into(),
+                },
+                Label::Domain {
+                    id: "alice".into(),
+                    domain: "zeta.com".into(),
+                },
+            ]
+        );
+    }
 
     #[test]
     fn parse_simple() {

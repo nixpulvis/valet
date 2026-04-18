@@ -1,4 +1,6 @@
+use aes_gcm_siv::aead;
 use rand_core::{OsRng, RngCore};
+use std::io;
 
 // This value can be anything really, but is generally recommended to be about
 // 128-bits. The idea is that it just needs to contain more entropy than the
@@ -21,9 +23,14 @@ pub struct Encrypted {
 #[derive(Debug)]
 pub enum Error {
     KeyDerivation(String),
-    Encryption(String),
-    Decryption(String),
+    Encryption(aead::Error),
+    Decryption(aead::Error),
+    Decoding(bitcode::Error),
+    Compression(io::Error),
+    Decompression(io::Error),
 }
 
 mod key;
+mod stash;
 pub use self::key::Key;
+pub use self::stash::Stash;

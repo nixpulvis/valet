@@ -76,7 +76,7 @@ impl<T> Key<T> {
                     aad,
                 },
             )
-            .map_err(|e| Error::Encryption(format!("{}", e)))?;
+            .map_err(Error::Encryption)?;
         Ok(Encrypted {
             data: ciphertext,
             nonce: nonce.as_slice().into(),
@@ -98,7 +98,7 @@ impl<T> Key<T> {
                     aad,
                 },
             )
-            .map_err(|e| Error::Decryption(format!("{}", e)))?;
+            .map_err(Error::Decryption)?;
         Ok(plaintext)
     }
 }

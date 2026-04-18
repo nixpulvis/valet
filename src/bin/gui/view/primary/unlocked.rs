@@ -18,14 +18,14 @@ use valet::{
     db::Database,
     lot::DEFAULT_LOT,
     password::Password,
-    record::{Data, Label},
+    record::{Data, Label, RecordIndex},
 };
 
-type Store = Vec<(Lot, Vec<Record>)>;
+type Store = Vec<(Arc<Lot>, RecordIndex)>;
 
 pub struct Unlocked<'a> {
     // TODO: come up with a better organization for these shared values.
-    db_url: &'a String,
+    db: &'a Arc<Database>,
     rt: &'a Runtime,
     user: &'a mut Option<Arc<User>>,
     login_inbox: &'a mut UiInbox<User>,
@@ -33,13 +33,13 @@ pub struct Unlocked<'a> {
 
 impl<'a> Unlocked<'a> {
     pub fn new(
-        db_url: &'a String,
+        db: &'a Arc<Database>,
         rt: &'a Runtime,
         user: &'a mut Option<Arc<User>>,
         login_inbox: &'a mut UiInbox<User>,
     ) -> Self {
         Unlocked {
-            db_url,
+            db,
             rt,
             user,
             login_inbox,
@@ -60,20 +60,17 @@ impl<'a> View for Unlocked<'a> {
         };
 
         if state.store.read().unwrap().is_empty() {
-            let db_url = self.db_url.clone();
+            let db = self.db.clone();
             let tx = state.store_inbox.sender();
             let user2 = user.clone();
             self.rt.spawn(async move {
-                let db = Database::new(&db_url)
-                    .await
-                    .expect("error getting database");
                 let lots = user2.lots(&db).await.expect("failed to load lots");
-                let mut lots_with_records = Vec::new();
+                let mut lots_with_index = Vec::new();
                 for lot in lots {
-                    let records = lot.records(&db).await.expect("failed to load records");
-                    lots_with_records.push((lot, records));
+                    let index = lot.index(&db).await.expect("failed to load index");
+                    lots_with_index.push((Arc::new(lot), index));
                 }
-                tx.send(lots_with_records).ok();
+                tx.send(lots_with_index).ok();
             });
         }
 
@@ -151,7 +148,7 @@ impl<'a> View for Unlocked<'a> {
                             let can_add =
                                 !state.new_label.is_empty() && !state.new_password.is_empty();
                             if ui.add_enabled(can_add, Button::new("Add Record")).clicked() {
-                                let db_url = self.db_url.clone();
+                                let db = self.db.clone();
                                 let tx = state.store_inbox.sender();
                                 let user = user.clone();
                                 let new_label = state.new_label.clone();
@@ -159,11 +156,11 @@ impl<'a> View for Unlocked<'a> {
                                 state.show_new_record = false;
                                 state.new_label = String::new();
                                 state.new_password = Password::default();
+                                // TODO: Don't clear the store here; it flashes
+                                // "Loading..." on every add. Update just the
+                                // changed lot entry once the async upsert lands.
                                 state.store.write().unwrap().clear();
                                 self.rt.spawn(async move {
-                                    let db = Database::new(&db_url)
-                                        .await
-                                        .expect("error getting database");
                                     if let Some(lot) = Lot::load(&db, DEFAULT_LOT, &user)
                                         .await
                                         .expect("failed to load main lot")
@@ -171,7 +168,7 @@ impl<'a> View for Unlocked<'a> {
                                         match Label::from_str(&new_label) {
                                             Ok(label) => {
                                                 // TODO: Add deleted record to new record's history.
-                                                Record::new(&lot, Data::new(label, new_password))
+                                                Record::new(&lot, label, Data::new(new_password))
                                                     .upsert(&db, &lot)
                                                     .await
                                                     .expect("failed to save record");
@@ -184,13 +181,13 @@ impl<'a> View for Unlocked<'a> {
                                     }
                                     // TODO: We probably just need to query this one record.
                                     let lots = user.lots(&db).await.expect("failed to reload lots");
-                                    let mut lots_with_records = Vec::new();
+                                    let mut lots_with_index = Vec::new();
                                     for lot in lots {
-                                        let records =
-                                            lot.records(&db).await.expect("failed to load records");
-                                        lots_with_records.push((lot, records));
+                                        let index =
+                                            lot.index(&db).await.expect("failed to load index");
+                                        lots_with_index.push((Arc::new(lot), index));
                                     }
-                                    tx.send(lots_with_records).ok();
+                                    tx.send(lots_with_index).ok();
                                 });
                             }
                             if ui.button("Cancel").clicked() {
@@ -213,31 +210,34 @@ impl<'a> View for Unlocked<'a> {
                         })
                         .show(ui, |ui| {
                             let store = state.store.read().unwrap();
-                            let main_lot_records: Option<&(Lot, Vec<Record>)> =
+                            let main_lot_entry: Option<&(Arc<Lot>, RecordIndex)> =
                                 store.iter().find(|(l, _)| l.name() == DEFAULT_LOT);
 
                             let query = state.search.to_lowercase();
-                            match main_lot_records {
+                            match main_lot_entry {
                                 None => {
                                     ui.label("Loading...");
                                 }
-                                Some((_lot, records)) if records.is_empty() => {
+                                Some((_lot, index)) if index.is_empty() => {
                                     ui.label("No records yet.");
                                 }
-                                Some((_lot, records)) => {
+                                Some((lot, index)) => {
                                     let mut any = false;
-                                    for record in records {
-                                        if query.is_empty()
-                                            || record
-                                                .label()
-                                                .to_string()
-                                                .to_lowercase()
-                                                .contains(&query)
+                                    for (label, record_uuid) in index {
+                                        if !query.is_empty()
+                                            && !label.to_string().to_lowercase().contains(&query)
                                         {
-                                            ui.add(RecordRow::new(record));
-                                            ui.separator();
-                                            any = true;
+                                            continue;
                                         }
+                                        ui.add(RecordRow::new(
+                                            label,
+                                            record_uuid,
+                                            lot.clone(),
+                                            self.db,
+                                            self.rt,
+                                        ));
+                                        ui.separator();
+                                        any = true;
                                     }
                                     if !any {
                                         ui.label("No matching records.");

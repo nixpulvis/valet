@@ -9,7 +9,7 @@ use std::io::Write;
 use std::str::FromStr;
 use std::{fmt, io};
 use tokio;
-use valet::{prelude::*, record::Label, user};
+use valet::{prelude::*, record::RecordIndex, user};
 
 #[derive(Parser)]
 #[command(version, about = crate_description!())]
@@ -167,15 +167,21 @@ async fn main() -> Result<(), valet::user::Error> {
                 .with_prompt(Box::new(prompt.clone()))
                 .build();
 
+            let mut store: Vec<(Lot, RecordIndex)> = load_store(&db, &user).await;
+
             rl.repl_async(async |command| match &command {
                 Repl::Lot(LotCommand::Create { name }) => {
-                    Lot::new(&name)
-                        .save(&db, &user)
-                        .await
-                        .expect("failed to save lot");
+                    match Lot::new(&name).save(&db, &user).await {
+                        Ok(_) => {
+                            store = load_store(&db, &user).await;
+                        }
+                        Err(e) => {
+                            println!("Failed to save lot: {e:?}");
+                        }
+                    }
                 }
                 Repl::Lot(LotCommand::List { uuid }) => {
-                    for lot in user.lots(&db).await.expect("failed to load lots").iter() {
+                    for (lot, _) in store.iter() {
                         if *uuid {
                             println!("{} <{}>", lot.name(), lot.uuid());
                         } else {
@@ -189,77 +195,84 @@ async fn main() -> Result<(), valet::user::Error> {
                 }
                 Repl::List { path, uuid } => {
                     let path = Path::parse(&path);
-                    for lot in user.lots(&db).await.expect("failed to load lots").iter() {
-                        if lot.name().starts_with(&path.lot) {
-                            if let Ok(Some(lot)) = Lot::load(&db, &path.lot, &user).await {
-                                for record in lot
-                                    .records(&db)
-                                    .await
-                                    .expect("failed to load records")
-                                    .iter()
-                                {
-                                    let label = record.data().label().to_string();
-                                    if label.starts_with(&path.label) {
-                                        if *uuid {
-                                            println!(
-                                                "{} <{}>",
-                                                Path::new(&path.lot, &label),
-                                                record.uuid()
-                                            );
-                                        } else {
-                                            println!("{}", Path::new(&path.lot, &label));
-                                        }
-                                    }
+                    for (lot, index) in store.iter() {
+                        if !lot.name().starts_with(&path.lot) {
+                            continue;
+                        }
+                        for (entry_label, record_uuid) in index {
+                            let label = entry_label.to_string();
+                            if label.starts_with(&path.label) {
+                                if *uuid {
+                                    println!("{} <{}>", Path::new(lot.name(), &label), record_uuid);
+                                } else {
+                                    println!("{}", Path::new(lot.name(), &label));
                                 }
-                            } else {
-                                println!("Failed to load lot: {}", path.lot);
                             }
                         }
                     }
                 }
                 Repl::Put { path, data } => {
                     let path = Path::parse(&path);
-                    if let Some(lot) = Lot::load(&db, &path.lot, &user)
-                        .await
-                        .expect("failed to load lot")
-                    {
-                        match Label::from_str(&path.label) {
-                            Ok(label) => {
-                                if let Ok(password) = data.as_str().try_into() {
+                    match Label::from_str(&path.label) {
+                        Ok(label) => {
+                            if let Ok(password) = data.as_str().try_into() {
+                                let upserted = if let Some((lot, _)) =
+                                    store.iter().find(|(l, _)| l.name() == path.lot)
+                                {
                                     // TODO: Delete old record if it exists.
                                     // TODO: Add deleted record to new record's history.
                                     // TODO: Put data in a Password itself.
-                                    Record::new(&lot, Data::new(label, password))
-                                        .upsert(&db, &lot)
+                                    match Record::new(lot, label, Data::new(password))
+                                        .upsert(&db, lot)
                                         .await
-                                        .expect("failed to save record");
+                                    {
+                                        Ok(_) => true,
+                                        Err(e) => {
+                                            println!("Failed to save record: {e:?}");
+                                            false
+                                        }
+                                    }
                                 } else {
-                                    println!("Invalid password");
+                                    println!("Unknown lot: {}", path.lot);
+                                    false
+                                };
+                                if upserted {
+                                    store = load_store(&db, &user).await;
                                 }
+                            } else {
+                                println!("Invalid password");
                             }
-                            Err(error) => {
-                                println!("{error:?}: {}", path.label)
-                            }
+                        }
+                        Err(error) => {
+                            println!("{error:?}: {}", path.label)
                         }
                     }
                 }
                 Repl::Get { path, uuid } => {
                     let path = Path::parse(&path);
-                    if let Some(lot) = Lot::load(&db, &path.lot, &user)
-                        .await
-                        .expect("failed to load lot")
-                    {
-                        if let Some(record) = lot
-                            .records(&db)
-                            .await
-                            .expect("failed to load records")
-                            .iter()
-                            .find(|r| r.data().label().to_string() == path.label)
-                        {
-                            if *uuid {
-                                println!("{} <{}>", record.password(), record.uuid());
-                            } else {
-                                println!("{}", record.password());
+                    let Ok(label) = Label::from_str(&path.label) else {
+                        println!("Invalid label: {}", path.label);
+                        return;
+                    };
+                    if let Some((lot, index)) = store.iter().find(|(l, _)| l.name() == path.lot) {
+                        if let Some(record_uuid) = index.find(&label) {
+                            // TODO: The in-memory index can be stale if another
+                            // writer deleted the record. Need a general
+                            // resync/retry strategy for multi-writer setups.
+                            match Record::show(&db, lot, record_uuid).await {
+                                Ok(Some(record)) => {
+                                    if *uuid {
+                                        println!("{} <{}>", record.password(), record.uuid());
+                                    } else {
+                                        println!("{}", record.password());
+                                    }
+                                }
+                                Ok(None) => {
+                                    println!("Record not found: {}", path.label);
+                                }
+                                Err(e) => {
+                                    println!("Failed to load record: {e:?}");
+                                }
                             }
                         }
                     }
@@ -303,6 +316,18 @@ async fn main() -> Result<(), valet::user::Error> {
     }
 
     Ok(())
+}
+
+/// Load every lot for `user`, paired with its record index, so the REPL can
+/// serve `list`/`get` without re-decrypting the user's lot keys on each call.
+async fn load_store(db: &Database, user: &User) -> Vec<(Lot, RecordIndex)> {
+    let lots = user.lots(db).await.expect("failed to load lots");
+    let mut store = Vec::with_capacity(lots.len());
+    for lot in lots {
+        let index = lot.index(db).await.expect("failed to load index");
+        store.push((lot, index));
+    }
+    store
 }
 
 async fn get_default_username(
@@ -465,7 +490,8 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                 {
                     match Record::new(
                         &lot,
-                        Data::new(Label::Simple(label.clone()), password).with_extra(data),
+                        Label::Simple(label.clone()),
+                        Data::new(password).with_extra(data),
                     )
                     .upsert(&db, lot)
                     .await

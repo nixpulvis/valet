@@ -1,24 +1,64 @@
 use crate::util::button_width;
 use eframe::egui;
-use valet::Record;
+use egui_inbox::UiInbox;
+use std::sync::Arc;
+use tokio::runtime::Runtime;
+use valet::{Lot, Record, db::Database, password::Password, record::Label, uuid::Uuid};
+
+enum PasswordEvent {
+    Copy(Password),
+    Show(Password),
+}
 
 pub struct RecordRow<'a> {
-    record: &'a Record,
+    label: &'a Label,
+    record_uuid: &'a Uuid<Record>,
+    lot: Arc<Lot>,
+    db: &'a Arc<Database>,
+    rt: &'a Runtime,
 }
 
 impl<'a> RecordRow<'a> {
-    pub fn new(record: &'a Record) -> Self {
-        Self { record }
+    pub fn new(
+        label: &'a Label,
+        record_uuid: &'a Uuid<Record>,
+        lot: Arc<Lot>,
+        db: &'a Arc<Database>,
+        rt: &'a Runtime,
+    ) -> Self {
+        Self {
+            label,
+            record_uuid,
+            lot,
+            db,
+            rt,
+        }
     }
 }
 
 impl egui::Widget for RecordRow<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let id = ui.make_persistent_id(("record", self.record.uuid().to_string()));
+        let id = ui.make_persistent_id(("record", self.record_uuid.to_string()));
         let expanded_id = id.with("expanded");
-        let show_pw_id = id.with("show_pw");
+        let shown_pw_id = id.with("shown_pw");
+        let pw_inbox_id = id.with("pw_inbox");
+
         let expanded = ui.data(|d| d.get_temp::<bool>(expanded_id).unwrap_or(false));
-        let show_pw = ui.data(|d| d.get_temp::<bool>(show_pw_id).unwrap_or(false));
+
+        let pw_inbox: Arc<UiInbox<PasswordEvent>> =
+            ui.data_mut(|d| d.get_temp(pw_inbox_id).unwrap_or_default());
+
+        for event in pw_inbox.read(ui.ctx()) {
+            match event {
+                PasswordEvent::Copy(pw) => ui.ctx().copy_text(pw.to_string()),
+                // TODO: The revealed Password sits in egui's temp data until
+                // the row collapses or egui evicts it. Zeroizes on drop, but
+                // we should auto-evict after an idle window.
+                PasswordEvent::Show(pw) => ui.data_mut(|d| d.insert_temp(shown_pw_id, pw)),
+            }
+        }
+
+        ui.data_mut(|d| d.insert_temp(pw_inbox_id, pw_inbox.clone()));
 
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
@@ -38,14 +78,14 @@ impl egui::Widget for RecordRow<'_> {
                             .layout(egui::Layout::left_to_right(egui::Align::Center)),
                     )
                     .add(
-                        egui::Label::new(self.record.label().to_string())
+                        egui::Label::new(self.label.to_string())
                             .truncate()
                             .sense(egui::Sense::click()),
                     );
                 if resp.clicked() {
                     ui.data_mut(|d| d.insert_temp(expanded_id, !expanded));
                     if expanded {
-                        ui.data_mut(|d| d.insert_temp(show_pw_id, false));
+                        ui.data_mut(|d| d.remove::<Password>(shown_pw_id));
                     }
                 }
                 if resp.hovered() {
@@ -57,7 +97,14 @@ impl egui::Widget for RecordRow<'_> {
                     .add(egui::Button::new("Copy").min_size(egui::vec2(copy_width, 0.)))
                     .clicked()
                 {
-                    ui.ctx().copy_text(self.record.password().to_string());
+                    spawn_fetch(
+                        self.rt,
+                        self.db.clone(),
+                        self.lot.clone(),
+                        self.record_uuid.clone(),
+                        pw_inbox.sender(),
+                        PasswordEvent::Copy,
+                    );
                 }
             });
 
@@ -78,15 +125,18 @@ impl egui::Widget for RecordRow<'_> {
                             let text_width =
                                 (ui.available_width() - btn_width - spacing * 2.).max(0.);
 
-                            let mut pw = self.record.password().to_string();
+                            let shown_pw = ui.data(|d| d.get_temp::<Password>(shown_pw_id));
+                            let is_shown = shown_pw.is_some();
+                            let mut pw = shown_pw
+                                .unwrap_or_else(|| "xxxxxxxx".try_into().unwrap());
                             ui.add(
                                 egui::TextEdit::singleline(&mut pw)
-                                    .password(!show_pw)
+                                    .password(!is_shown)
                                     .interactive(false)
                                     .desired_width(text_width),
                             );
 
-                            let toggle_label = if show_pw { "Hide" } else { "Show" };
+                            let toggle_label = if is_shown { "Hide" } else { "Show" };
                             if ui
                                 .add(
                                     egui::Button::new(toggle_label)
@@ -94,7 +144,18 @@ impl egui::Widget for RecordRow<'_> {
                                 )
                                 .clicked()
                             {
-                                ui.data_mut(|d| d.insert_temp(show_pw_id, !show_pw));
+                                if is_shown {
+                                    ui.data_mut(|d| d.remove::<Password>(shown_pw_id));
+                                } else {
+                                    spawn_fetch(
+                                        self.rt,
+                                        self.db.clone(),
+                                        self.lot.clone(),
+                                        self.record_uuid.clone(),
+                                        pw_inbox.sender(),
+                                        PasswordEvent::Show,
+                                    );
+                                }
                             }
                         });
                     });
@@ -102,4 +163,29 @@ impl egui::Widget for RecordRow<'_> {
         })
         .response
     }
+}
+
+fn spawn_fetch(
+    rt: &Runtime,
+    db: Arc<Database>,
+    lot: Arc<Lot>,
+    record_uuid: Uuid<Record>,
+    tx: egui_inbox::UiInboxSender<PasswordEvent>,
+    wrap: fn(Password) -> PasswordEvent,
+) {
+    rt.spawn(async move {
+        // TODO: surface these errors in the UI instead of stderr.
+        let record = match Record::show(&db, &lot, &record_uuid).await {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                eprintln!("record {record_uuid} no longer exists");
+                return;
+            }
+            Err(e) => {
+                eprintln!("failed to load record: {e:?}");
+                return;
+            }
+        };
+        tx.send(wrap(record.password().clone())).ok();
+    });
 }
