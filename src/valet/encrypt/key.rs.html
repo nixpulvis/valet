@@ -76,7 +76,7 @@
 <a href=#76 id=76 data-nosnippet>76</a>                    aad,
 <a href=#77 id=77 data-nosnippet>77</a>                },
 <a href=#78 id=78 data-nosnippet>78</a>            )
-<a href=#79 id=79 data-nosnippet>79</a>            .map_err(|e| Error::Encryption(<span class="macro">format!</span>(<span class="string">"{}"</span>, e)))<span class="question-mark">?</span>;
+<a href=#79 id=79 data-nosnippet>79</a>            .map_err(Error::Encryption)<span class="question-mark">?</span>;
 <a href=#80 id=80 data-nosnippet>80</a>        <span class="prelude-val">Ok</span>(Encrypted {
 <a href=#81 id=81 data-nosnippet>81</a>            data: ciphertext,
 <a href=#82 id=82 data-nosnippet>82</a>            nonce: nonce.as_slice().into(),
@@ -98,7 +98,7 @@
 <a href=#98 id=98 data-nosnippet>98</a>                    aad,
 <a href=#99 id=99 data-nosnippet>99</a>                },
 <a href=#100 id=100 data-nosnippet>100</a>            )
-<a href=#101 id=101 data-nosnippet>101</a>            .map_err(|e| Error::Decryption(<span class="macro">format!</span>(<span class="string">"{}"</span>, e)))<span class="question-mark">?</span>;
+<a href=#101 id=101 data-nosnippet>101</a>            .map_err(Error::Decryption)<span class="question-mark">?</span>;
 <a href=#102 id=102 data-nosnippet>102</a>        <span class="prelude-val">Ok</span>(plaintext)
 <a href=#103 id=103 data-nosnippet>103</a>    }
 <a href=#104 id=104 data-nosnippet>104</a>}
