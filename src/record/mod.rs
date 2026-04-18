@@ -165,6 +165,7 @@ impl fmt::Debug for Record {
 #[derive(Debug)]
 pub enum Error {
     MissingLot,
+    InvalidPassword,
     Uuid(crate::uuid::Error),
     #[cfg(feature = "db")]
     Database(db::Error),
@@ -214,12 +215,12 @@ mod tests {
         let lot = Lot::new("test");
         let record = Record::new(
             &lot,
-            Data::new(Label::Simple("foo".into()), "bar".try_into().unwrap()),
+            Data::new(Label::Simple("foo".into()), "barpassword".try_into().unwrap()).unwrap(),
         );
         assert_eq!(lot.uuid(), &record.lot_uuid);
         assert_eq!(36, record.uuid.to_string().len());
         assert_eq!(record.data.label(), &Label::Simple("foo".into()));
-        assert_eq!(record.data.password().to_string(), "bar");
+        assert_eq!(record.data.password().to_string(), "barpassword");
     }
 
     #[test]
@@ -227,7 +228,7 @@ mod tests {
         let lot = Lot::new("test");
         let record = Record::new(
             &lot,
-            Data::new(Label::Simple("foo".into()), "bar".try_into().unwrap()),
+            Data::new(Label::Simple("foo".into()), "barpassword".try_into().unwrap()).unwrap(),
         );
         let encrypted = record.encrypt(&lot.key()).expect("failed to encrypt");
         let decrypted = Record::decrypt(
@@ -255,7 +256,7 @@ mod tests {
         lot.save(&db, &user).await.expect("failed to save lot");
         let inserted_uuid = Record::new(
             &lot,
-            Data::new(Label::Simple("foo".into()), "bar".try_into().unwrap()),
+            Data::new(Label::Simple("foo".into()), "barpassword".try_into().unwrap()).unwrap(),
         )
         .upsert(&db, &lot)
         .await
@@ -280,7 +281,7 @@ mod tests {
         lot.save(&db, &user).await.expect("failed to save lot");
         let record = Record::new(
             &lot,
-            Data::new(Label::Simple("foo".into()), "bar".try_into().unwrap()),
+            Data::new(Label::Simple("foo".into()), "barpassword".try_into().unwrap()).unwrap(),
         );
         let inserted_uuid = record
             .upsert(&db, &lot)
@@ -308,7 +309,7 @@ mod tests {
         lot.save(&db, &user).await.expect("failed to save lot");
         let record = Record::new(
             &lot,
-            Data::new(Label::Simple("foo".into()), "bar".try_into().unwrap()),
+            Data::new(Label::Simple("foo".into()), "barpassword".try_into().unwrap()).unwrap(),
         );
         record
             .upsert(&db, &lot)

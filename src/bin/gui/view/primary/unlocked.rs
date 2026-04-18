@@ -171,10 +171,17 @@ impl<'a> View for Unlocked<'a> {
                                         match Label::from_str(&new_label) {
                                             Ok(label) => {
                                                 // TODO: Add deleted record to new record's history.
-                                                Record::new(&lot, Data::new(label, new_password))
-                                                    .upsert(&db, &lot)
-                                                    .await
-                                                    .expect("failed to save record");
+                                                match Data::new(label, new_password) {
+                                                    Ok(data) => {
+                                                        Record::new(&lot, data)
+                                                            .upsert(&db, &lot)
+                                                            .await
+                                                            .expect("failed to save record");
+                                                    }
+                                                    Err(_) => {
+                                                        // Password validation failed
+                                                    }
+                                                }
                                             }
                                             Err(error) => {
                                                 // TODO: We need error flashes in the UI.
