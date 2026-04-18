@@ -1,5 +1,4 @@
 use eframe::egui;
-use valet::password::Password;
 
 pub fn button_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
     let font_id = egui::TextStyle::Button.resolve(ui.style());
