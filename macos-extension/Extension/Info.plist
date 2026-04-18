@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>ValetAutoFillExt</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.nixpulvis.valet.autofill.extension</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>ValetAutoFillExt</string>
+    <key>CFBundleDisplayName</key>
+    <string>ValetAutoFill</string>
+    <key>CFBundlePackageType</key>
+    <string>XPC!</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.0.1</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.authentication-services-credential-provider-ui</string>
+        <key>NSExtensionPrincipalClass</key>
+        <string>ValetAutoFillExt.CredentialProviderViewController</string>
+        <key>NSExtensionAttributes</key>
+        <dict>
+            <key>ASCredentialProviderViewControllerActivatesAutomatically</key>
+            <false/>
+            <!-- macOS 15+ / 26: System Settings only surfaces password providers
+                 that declare their capabilities here. Without this dict the
+                 extension registers with pkd but never appears in the AutoFill
+                 picker. -->
+            <key>ASCredentialProviderExtensionCapabilities</key>
+            <dict>
+                <key>Passwords</key>
+                <true/>
+            </dict>
+        </dict>
+    </dict>
+</dict>
+</plist>

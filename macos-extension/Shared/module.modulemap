@@ -1,0 +1,4 @@
+module ValetIPC {
+    header "../../crates/valet-ipc/include/valet_ipc.h"
+    export *
+}
