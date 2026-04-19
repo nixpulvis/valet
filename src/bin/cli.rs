@@ -5,11 +5,15 @@ use clap_repl::reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
+use std::io;
 use std::io::Write;
 use std::str::FromStr;
-use std::{fmt, io};
 use tokio;
-use valet::{prelude::*, record::RecordIndex, user};
+use valet::{
+    prelude::*,
+    record::{Query, RecordIndex},
+    user,
+};
 
 #[derive(Parser)]
 #[command(version, about = crate_description!())]
@@ -68,6 +72,10 @@ enum ConfigCommand {
 enum Repl {
     #[command(subcommand)]
     Lot(LotCommand),
+    /// List records matching a query path.
+    ///
+    /// With no path, lists every record in the default lot (`main`) only.
+    /// To search across all lots, pass `~::` (regex-match-all lot spec).
     List {
         #[clap(default_value = "")]
         path: String,
@@ -194,86 +202,134 @@ async fn main() -> Result<(), valet::user::Error> {
                     unimplemented!();
                 }
                 Repl::List { path, uuid } => {
-                    let path = Path::parse(&path);
-                    for (lot, index) in store.iter() {
-                        if !lot.name().starts_with(&path.lot) {
-                            continue;
+                    let query = match Query::from_str(path) {
+                        Ok(q) => q,
+                        Err(e) => {
+                            println!("{e}: {path}");
+                            return;
                         }
-                        for (entry_label, record_uuid) in index {
-                            let label = entry_label.to_string();
-                            if label.starts_with(&path.label) {
-                                if *uuid {
-                                    println!("{} <{}>", Path::new(lot.name(), &label), record_uuid);
-                                } else {
-                                    println!("{}", Path::new(lot.name(), &label));
-                                }
+                    };
+                    let matching_lots: Vec<_> = store
+                        .iter()
+                        .filter(|(lot, _)| query.matches_lot(lot.name()))
+                        .collect();
+                    if matching_lots.is_empty() {
+                        println!("No lots match: {path}");
+                        return;
+                    }
+                    let mut printed = false;
+                    for (lot, index) in &matching_lots {
+                        for (entry_label, record_uuid) in index.search(&query) {
+                            if *uuid {
+                                println!("{}::{entry_label} <{record_uuid}>", lot.name());
+                            } else {
+                                println!("{}::{entry_label}", lot.name());
                             }
+                            printed = true;
                         }
+                    }
+                    if !printed {
+                        println!("No records match: {path}");
                     }
                 }
                 Repl::Put { path, data } => {
-                    let path = Path::parse(&path);
-                    match Label::from_str(&path.label) {
-                        Ok(label) => {
-                            if let Ok(password) = data.as_str().try_into() {
-                                let upserted = if let Some((lot, _)) =
-                                    store.iter().find(|(l, _)| l.name() == path.lot)
-                                {
-                                    // TODO: Delete old record if it exists.
-                                    // TODO: Add deleted record to new record's history.
-                                    // TODO: Put data in a Password itself.
-                                    match Record::new(lot, label, Data::new(password))
-                                        .upsert(&db, lot)
-                                        .await
-                                    {
-                                        Ok(_) => true,
-                                        Err(e) => {
-                                            println!("Failed to save record: {e:?}");
-                                            false
-                                        }
-                                    }
-                                } else {
-                                    println!("Unknown lot: {}", path.lot);
-                                    false
-                                };
-                                if upserted {
-                                    store = load_store(&db, &user).await;
-                                }
-                            } else {
-                                println!("Invalid password");
-                            }
+                    let target = match Query::from_str(&path).and_then(Query::into_path) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            println!("{e}: {path}");
+                            return;
                         }
-                        Err(error) => {
-                            println!("{error:?}: {}", path.label)
+                    };
+                    let Ok(password) = data.as_str().try_into() else {
+                        println!("Invalid password");
+                        return;
+                    };
+                    let Some((lot, _)) = store.iter().find(|(l, _)| l.name() == target.lot) else {
+                        println!("Unknown lot: {}", target.lot);
+                        return;
+                    };
+                    // TODO: Delete old record if it exists.
+                    // TODO: Add deleted record to new record's history.
+                    // TODO: Put data in a Password itself.
+                    match Record::new(lot, target.label, Data::new(password))
+                        .upsert(&db, lot)
+                        .await
+                    {
+                        Ok(_) => {
+                            store = load_store(&db, &user).await;
+                        }
+                        Err(e) => {
+                            println!("Failed to save record: {e:?}");
                         }
                     }
                 }
                 Repl::Get { path, uuid } => {
-                    let path = Path::parse(&path);
-                    let Ok(label) = Label::from_str(&path.label) else {
-                        println!("Invalid label: {}", path.label);
-                        return;
+                    let query = match Query::from_str(&path) {
+                        Ok(q) => q,
+                        Err(e) => {
+                            println!("{e}: {path}");
+                            return;
+                        }
                     };
-                    if let Some((lot, index)) = store.iter().find(|(l, _)| l.name() == path.lot) {
-                        if let Some(record_uuid) = index.find(&label) {
-                            // TODO: The in-memory index can be stale if another
-                            // writer deleted the record. Need a general
-                            // resync/retry strategy for multi-writer setups.
-                            match Record::show(&db, lot, record_uuid).await {
-                                Ok(Some(record)) => {
-                                    if *uuid {
-                                        println!("{} <{}>", record.password(), record.uuid());
-                                    } else {
-                                        println!("{}", record.password());
-                                    }
-                                }
-                                Ok(None) => {
-                                    println!("Record not found: {}", path.label);
-                                }
-                                Err(e) => {
-                                    println!("Failed to load record: {e:?}");
-                                }
+                    let matching_lots: Vec<_> = store
+                        .iter()
+                        .filter(|(lot, _)| query.matches_lot(lot.name()))
+                        .collect();
+                    if matching_lots.is_empty() {
+                        println!("No lots match: {path}");
+                        return;
+                    }
+                    let matches: Vec<_> = matching_lots
+                        .iter()
+                        .flat_map(|(lot, index)| {
+                            index
+                                .search(&query)
+                                .map(move |(label, uuid)| (lot, label, uuid))
+                        })
+                        .collect();
+                    let (picked_lot, record_uuid) = match matches.as_slice() {
+                        [] => {
+                            println!("No records match: {path}");
+                            return;
+                        }
+                        [(lot, _, uuid)] => (*lot, *uuid),
+                        many => {
+                            for (i, (lot, label, _)) in many.iter().enumerate() {
+                                println!("{i}: {}::{label}", lot.name());
                             }
+                            print!("Pick: ");
+                            io::stdout().flush().ok();
+                            let mut buf = String::new();
+                            if io::stdin().read_line(&mut buf).is_err() {
+                                return;
+                            }
+                            let Ok(idx) = buf.trim().parse::<usize>() else {
+                                println!("Not a number");
+                                return;
+                            };
+                            let Some((lot, _, uuid)) = many.get(idx) else {
+                                println!("Out of range");
+                                return;
+                            };
+                            (*lot, *uuid)
+                        }
+                    };
+                    // TODO: The in-memory index can be stale if another
+                    // writer deleted the record. Need a general
+                    // resync/retry strategy for multi-writer setups.
+                    match Record::show(&db, picked_lot, record_uuid).await {
+                        Ok(Some(record)) => {
+                            if *uuid {
+                                println!("{} <{}>", record.password(), record.uuid());
+                            } else {
+                                println!("{}", record.password());
+                            }
+                        }
+                        Ok(None) => {
+                            println!("Record not found: {path} <{record_uuid}>");
+                        }
+                        Err(e) => {
+                            println!("Failed to load record: {e:?}");
                         }
                     }
                 }
@@ -349,94 +405,6 @@ async fn get_default_username(
     }
 }
 
-// TODO: Move into lib.
-#[derive(Debug, PartialEq, Eq)]
-struct Path {
-    lot: String,
-    label: String,
-}
-
-impl Path {
-    fn new(lot: &str, label: &str) -> Self {
-        Path {
-            lot: lot.into(),
-            label: label.into(),
-        }
-    }
-
-    fn parse(path: &str) -> Self {
-        let parts: Vec<&str> = path.rsplitn(2, "::").collect();
-        // NOTE: parts will always have at least 1 element.
-        if parts.len() == 1 || parts.len() == 2 && parts[1] == "" {
-            Path {
-                lot: DEFAULT_LOT.into(),
-                label: parts[0].into(),
-            }
-        } else {
-            Path {
-                lot: parts[1].into(),
-                label: parts[0].into(),
-            }
-        }
-    }
-}
-
-impl fmt::Display for Path {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.label.is_empty() {
-            write!(f, "{}", self.lot)
-        } else {
-            write!(f, "{}::{}", self.lot, self.label)
-        }
-    }
-}
-
-#[test]
-fn test_path_parse() {
-    assert_eq!(
-        Path {
-            lot: "main".into(),
-            label: "".into()
-        },
-        Path::parse("")
-    );
-    assert_eq!(
-        Path {
-            lot: "main".into(),
-            label: "".into()
-        },
-        Path::parse("::")
-    );
-    assert_eq!(
-        Path {
-            lot: "lot".into(),
-            label: "".into(),
-        },
-        Path::parse("lot::")
-    );
-    assert_eq!(
-        Path {
-            lot: "main".into(),
-            label: "label".into()
-        },
-        Path::parse("label")
-    );
-    assert_eq!(
-        Path {
-            lot: "lot".into(),
-            label: "label".into()
-        },
-        Path::parse("lot::label")
-    );
-    assert_eq!(
-        Path {
-            lot: "lot::sublot".into(),
-            label: "label".into()
-        },
-        Path::parse("lot::sublot::label")
-    );
-}
-
 async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
     let file = File::open(path).expect("failed to open file");
     let mut rdr = csv::Reader::from_reader(file);
@@ -481,6 +449,13 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                 if let Some(otp) = csv_record.otp {
                     data.insert("otp".into(), otp);
                 }
+                let parsed_label = match label.parse::<Label>() {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("Invalid label {label:?}: {e}");
+                        continue;
+                    }
+                };
                 // TODO: Put text directly into a Password
                 if let Ok(password) = data
                     .remove("password")
@@ -488,13 +463,9 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                     .as_str()
                     .try_into()
                 {
-                    match Record::new(
-                        &lot,
-                        Label::Simple(label.clone()),
-                        Data::new(password).with_extra(data),
-                    )
-                    .upsert(&db, lot)
-                    .await
+                    match Record::new(&lot, parsed_label, Data::new(password).with_extra(data))
+                        .upsert(&db, lot)
+                        .await
                     {
                         Ok(uuid) => {
                             println!(

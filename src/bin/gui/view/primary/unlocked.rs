@@ -18,7 +18,7 @@ use valet::{
     db::Database,
     lot::DEFAULT_LOT,
     password::Password,
-    record::{Data, Label, RecordIndex},
+    record::{Data, Query, RecordIndex},
 };
 
 type Store = Vec<(Arc<Lot>, RecordIndex)>;
@@ -165,17 +165,22 @@ impl<'a> View for Unlocked<'a> {
                                         .await
                                         .expect("failed to load main lot")
                                     {
-                                        match Label::from_str(&new_label) {
-                                            Ok(label) => {
+                                        match Query::from_str(&new_label).and_then(Query::into_path)
+                                        {
+                                            Ok(path) => {
                                                 // TODO: Add deleted record to new record's history.
-                                                Record::new(&lot, label, Data::new(new_password))
-                                                    .upsert(&db, &lot)
-                                                    .await
-                                                    .expect("failed to save record");
+                                                Record::new(
+                                                    &lot,
+                                                    path.label,
+                                                    Data::new(new_password),
+                                                )
+                                                .upsert(&db, &lot)
+                                                .await
+                                                .expect("failed to save record");
                                             }
                                             Err(error) => {
                                                 // TODO: We need error flashes in the UI.
-                                                eprintln!("{error:?}: {}", new_label)
+                                                eprintln!("{error}: {}", new_label)
                                             }
                                         }
                                     }
@@ -213,19 +218,33 @@ impl<'a> View for Unlocked<'a> {
                             let main_lot_entry: Option<&(Arc<Lot>, RecordIndex)> =
                                 store.iter().find(|(l, _)| l.name() == DEFAULT_LOT);
 
-                            let query = state.search.to_lowercase();
-                            match main_lot_entry {
-                                None => {
+                            // Bare input is a case-insensitive literal prefix
+                            // match on the label name. A leading `~` opts into
+                            // the full Query grammar (regex name, `<k=v>`
+                            // extras filters, etc.), same as CLI `get`.
+                            let search = state.search.trim();
+                            let query = if search.is_empty() {
+                                Ok(None)
+                            } else if search.starts_with('~') {
+                                Query::from_str(search).map(Some)
+                            } else {
+                                Ok(Some(Query::label_prefix(search, true)))
+                            };
+                            match (main_lot_entry, query) {
+                                (None, _) => {
                                     ui.label("Loading...");
                                 }
-                                Some((_lot, index)) if index.is_empty() => {
+                                (Some((_lot, index)), _) if index.is_empty() => {
                                     ui.label("No records yet.");
                                 }
-                                Some((lot, index)) => {
+                                (_, Err(e)) => {
+                                    ui.label(format!("Invalid query: {e}"));
+                                }
+                                (Some((lot, index)), Ok(query)) => {
                                     let mut any = false;
                                     for (label, record_uuid) in index {
-                                        if !query.is_empty()
-                                            && !label.to_string().to_lowercase().contains(&query)
+                                        if let Some(q) = &query
+                                            && !q.matches_label(label)
                                         {
                                             continue;
                                         }

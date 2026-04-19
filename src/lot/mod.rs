@@ -334,7 +334,7 @@ mod tests {
         lot_a.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_a,
-            Label::Simple("a".into()),
+            "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
         .upsert(&db, &lot_a)
@@ -342,7 +342,7 @@ mod tests {
         .expect("failed to upsert record");
         Record::new(
             &lot_a,
-            Label::Simple("b".into()),
+            "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
         .upsert(&db, &lot_a)
@@ -376,7 +376,7 @@ mod tests {
         lot_a.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_a,
-            Label::Simple("a".into()),
+            "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
         .upsert(&db, &lot_a)
@@ -386,7 +386,7 @@ mod tests {
         lot_b.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_b,
-            Label::Simple("b".into()),
+            "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
         .upsert(&db, &lot_b)
@@ -429,7 +429,7 @@ mod tests {
         lot.save(&db, &user).await.expect("failed to save lot");
         let record_uuid = Record::new(
             &lot,
-            Label::Simple("a".into()),
+            "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
         .upsert(&db, &lot)
@@ -448,7 +448,10 @@ mod tests {
             .expect("no lot");
         let index = lot.index(&db).await.expect("failed to load index");
         assert_eq!(1, index.len());
-        assert_eq!(Some(&record_uuid), index.find(&Label::Simple("a".into())),);
+        assert_eq!(
+            Some(&record_uuid),
+            index.find(&"a".parse::<Label>().unwrap()),
+        );
         let record = Record::show(&db, &lot, &record_uuid)
             .await
             .expect("failed to show record")
@@ -470,7 +473,7 @@ mod tests {
         lot.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot,
-            Label::Simple("a".into()),
+            "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
         .upsert(&db, &lot)

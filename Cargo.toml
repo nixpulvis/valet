@@ -30,7 +30,7 @@ orm = []
 ## Enables the SQLite database layer (`db` module, CRUD operations on
 ## `User`/`Lot`/`Record`, and the `prelude` convenience re-exports).
 ## Without this feature the crate is a pure encryption/data library.
-db = ["dep:sqlx", "dep:sea-orm", "dep:url"]
+db = ["dep:sqlx", "dep:sea-orm", "dep:url", "dep:regex"]
 cli = [
     "db",
     "dep:tokio",
@@ -39,7 +39,6 @@ cli = [
     "dep:clap-repl",
     "dep:clap_complete",
     "dep:csv",
-    "dep:regex",
     "dep:serde",
 ]
 gui = ["db", "dep:tokio", "dep:eframe", "dep:egui_inbox"]

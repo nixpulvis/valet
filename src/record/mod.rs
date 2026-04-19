@@ -1,7 +1,7 @@
 #[cfg(feature = "db")]
 use crate::db::{self, Database};
 #[cfg(feature = "db")]
-use crate::encrypt::{Stash, Encrypted};
+use crate::encrypt::{Encrypted, Stash};
 use crate::{encrypt, lot::Lot, password::Password, uuid::Uuid};
 use bitcode::{Decode, Encode};
 #[cfg(feature = "db")]
@@ -254,13 +254,18 @@ impl From<sea_orm::DbErr> for Error {
 mod data;
 pub use self::data::Data;
 
-mod label;
-pub use self::label::Label;
+pub(crate) mod label;
+pub use self::label::{Label, LabelName};
 
 #[cfg(feature = "db")]
 mod index;
 #[cfg(feature = "db")]
 pub use self::index::RecordIndex;
+
+#[cfg(feature = "db")]
+pub mod query;
+#[cfg(feature = "db")]
+pub use self::query::{Path, Query};
 
 #[cfg(all(feature = "db", feature = "orm"))]
 pub mod orm;
@@ -270,21 +275,21 @@ pub(crate) mod orm;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lot::Lot;
     #[cfg(feature = "db")]
     use crate::{db::Database, user::User};
-    use crate::lot::Lot;
 
     #[test]
     fn new() {
         let lot = Lot::new("test");
         let record = Record::new(
             &lot,
-            Label::Simple("foo".into()),
+            "foo".parse::<Label>().unwrap(),
             Data::new("bar".try_into().unwrap()),
         );
         assert_eq!(lot.uuid(), &record.lot_uuid);
         assert_eq!(36, record.uuid.to_string().len());
-        assert_eq!(record.label(), &Label::Simple("foo".into()));
+        assert_eq!(record.label(), &"foo".parse::<Label>().unwrap());
         assert_eq!(record.password().to_string(), "bar");
     }
 
@@ -316,7 +321,7 @@ mod tests {
         lot.save(&db, &user).await.expect("failed to save lot");
         let record = Record::new(
             &lot,
-            Label::Simple("foo".into()),
+            "foo".parse::<Label>().unwrap(),
             Data::new("bar".try_into().unwrap()),
         );
         let uuid = record
@@ -347,7 +352,7 @@ mod tests {
         lot_b.save(&db, &user).await.expect("failed to save lot");
         let uuid = Record::new(
             &lot_a,
-            Label::Simple("foo".into()),
+            "foo".parse::<Label>().unwrap(),
             Data::new("bar".try_into().unwrap()),
         )
         .upsert(&db, &lot_a)
@@ -376,7 +381,7 @@ mod tests {
         lot.save(&db, &user).await.expect("failed to save lot");
         let record = Record::new(
             &lot,
-            Label::Simple("foo".into()),
+            "foo".parse::<Label>().unwrap(),
             Data::new("bar".try_into().unwrap()),
         );
         let uuid = record

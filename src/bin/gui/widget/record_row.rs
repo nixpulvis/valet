@@ -127,8 +127,7 @@ impl egui::Widget for RecordRow<'_> {
 
                             let shown_pw = ui.data(|d| d.get_temp::<Password>(shown_pw_id));
                             let is_shown = shown_pw.is_some();
-                            let mut pw = shown_pw
-                                .unwrap_or_else(|| "xxxxxxxx".try_into().unwrap());
+                            let mut pw = shown_pw.unwrap_or_else(|| "xxxxxxxx".try_into().unwrap());
                             ui.add(
                                 egui::TextEdit::singleline(&mut pw)
                                     .password(!is_shown)

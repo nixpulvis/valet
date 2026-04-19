@@ -2,9 +2,26 @@ use crate::{encrypt::Stash, lot::Lot, password::Password};
 use bitcode::{Decode, Encode};
 use std::collections::HashMap;
 
+/// A record's secret payload: the password plus any attributes that are only
+/// meaningful once the record is opened.
+///
+/// `Data` is encrypted as a unit and is never read by [`RecordIndex`].
+/// Contrast with [`Label::extra`], which holds key/value pairs that need to be
+/// searchable via the index without decrypting `Data`.
+///
+/// Rule of thumb: if a field drives search or disambiguation (e.g. `username`,
+/// `url`), put it on [`Label::extra`]. If it is opaque supplementary content
+/// (e.g. `notes`, recovery codes, TOTP secrets), put it on [`Data::extra`].
+///
+/// [`Label::extra`]: crate::record::Label::extra
+/// [`RecordIndex`]: crate::record::RecordIndex
 #[derive(Encode, Decode, Debug, Eq, PartialEq)]
 pub struct Data {
     password: Password,
+    /// Opaque supplementary attributes. Encrypted as part of the enclosing
+    /// [`Data`] under the lot key (see [`Stash<Lot>`]); not visible to
+    /// [`RecordIndex`](crate::record::RecordIndex). See the [`Data`] type
+    /// docs for when to use this vs. [`Label::extra`](crate::record::Label::extra).
     extra: HashMap<String, String>,
 }
 
