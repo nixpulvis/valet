@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/storgit"]
+
 [package]
 name = "valet"
 version = "0.0.2"

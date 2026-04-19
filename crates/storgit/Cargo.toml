@@ -1,0 +1,21 @@
+[package]
+name = "storgit"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "Named, versioned byte-blob storage where each entry is a git submodule of a parent repo."
+
+[dependencies]
+gix = "0.81"
+tar = "0.4"
+tempfile = "3.10"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+gix = "0.81"
+tar = "0.4"
+tempfile = "3.10"
+
+[[bench]]
+name = "general"
+harness = false
