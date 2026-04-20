@@ -49,7 +49,7 @@ pub struct Lot {
     /// "fresh store"; `storgit::Store::open` treats that as the signal to
     /// initialise a new parent on first snapshot.
     ///
-    /// Kept in memory so `Record::upsert` / `Record::delete` can round-trip
+    /// Kept in memory so `Record::save` / `Record::delete` can round-trip
     /// through `Store::open` / `Store::snapshot` without re-reading and
     /// re-decrypting `lots.store` for every operation. Writes update this
     /// field to reflect the snapshot just persisted.
@@ -218,9 +218,9 @@ impl Lot {
         };
         let records = Record::load_all(db, &old_lot).await?;
         // Wipe the old storgit state: the existing parent tarball and every
-        // module tarball were encrypted under the old key, and upsert has no
+        // module tarball were encrypted under the old key, and save has no
         // cheap way to re-wrap them. Clear the in-memory parent and the
-        // `records` rows so each `upsert` below rebuilds a fresh history
+        // `records` rows so each `save` below rebuilds a fresh history
         // under the new key. This does drop per-record commit history; the
         // plan explicitly trades that for the simpler re-key path.
         self.store = Vec::new();
@@ -240,7 +240,7 @@ impl Lot {
             .await?;
         }
         for record in &records {
-            record.upsert(db, self).await?;
+            record.save(db, self).await?;
         }
         Ok(())
     }
@@ -426,17 +426,17 @@ mod tests {
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot_a)
+        .save(&db, &mut lot_a)
         .await
-        .expect("failed to upsert record");
+        .expect("failed to save record");
         Record::new(
             &lot_a,
             "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot_a)
+        .save(&db, &mut lot_a)
         .await
-        .expect("failed to upsert record");
+        .expect("failed to save record");
 
         let lot_b = Lot::load(&db, lot_a.name(), &user)
             .await
@@ -468,9 +468,9 @@ mod tests {
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot_a)
+        .save(&db, &mut lot_a)
         .await
-        .expect("failed to upsert record");
+        .expect("failed to save record");
         let mut lot_b = Lot::new("lot b");
         lot_b.save(&db, &user).await.expect("failed to save lot");
         Record::new(
@@ -478,9 +478,9 @@ mod tests {
             "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot_b)
+        .save(&db, &mut lot_b)
         .await
-        .expect("failed to upsert record");
+        .expect("failed to save record");
 
         let lots = Lot::load_all(&db, &user)
             .await
@@ -521,9 +521,9 @@ mod tests {
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
-        .expect("failed to upsert record");
+        .expect("failed to save record");
         let lot_key_a = get_user_lot_key(&db, &user, &lot).await;
         lot.key = Key::<Lot>::generate();
         // Update lot key, user_lot, and re-encrypt all records.
@@ -565,9 +565,9 @@ mod tests {
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
-        .expect("failed to upsert record");
+        .expect("failed to save record");
         lot.delete(&db).await.expect("failed to delete lot");
         let lots = Lot::load_all(&db, &user)
             .await

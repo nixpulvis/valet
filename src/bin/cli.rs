@@ -9,6 +9,7 @@ use std::io;
 use std::io::Write;
 use std::str::FromStr;
 use tokio;
+use valet::record::{LabelName, SaveProgress};
 use valet::{
     prelude::*,
     record::{Query, RecordIndex},
@@ -248,8 +249,7 @@ async fn main() -> Result<(), valet::user::Error> {
                         println!("Invalid password");
                         return;
                     };
-                    let Some((lot, index)) =
-                        store.iter_mut().find(|(l, _)| l.name() == target.lot)
+                    let Some((lot, index)) = store.iter_mut().find(|(l, _)| l.name() == target.lot)
                     else {
                         println!("Unknown lot: {}", target.lot);
                         return;
@@ -268,7 +268,7 @@ async fn main() -> Result<(), valet::user::Error> {
                         ),
                         None => Record::new(&*lot, target.label, Data::new(password)),
                     };
-                    match record.upsert(&db, lot).await {
+                    match record.save(&db, lot).await {
                         Ok(_) => {
                             store = load_store(&db, &user).await;
                         }
@@ -461,68 +461,101 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
         otp: Option<String>,
     }
 
+    let title_re = Regex::new(r"(\S+)\s*(?:\((.*)\))?").unwrap();
+    let mut records = Vec::new();
     for result in rdr.deserialize::<CsvRecord>() {
-        match result {
-            Ok(csv_record) => {
-                let re = Regex::new(r"(\S+)\s*(?:\((.*)\))?").unwrap();
-                let label;
-                if let Some(captures) = re.captures(&csv_record.title) {
-                    let domain_or_label = captures[1].to_owned();
-                    if let Some(user) = captures.get(2) {
-                        label = format!("{}@{domain_or_label}", user.as_str());
-                    } else {
-                        label = domain_or_label;
-                    }
-                } else {
-                    eprintln!("Bad title: {}", csv_record.title);
-                    continue;
-                }
-
-                let mut data = HashMap::new();
-                data.insert("url".into(), csv_record.url);
-                data.insert("username".into(), csv_record.username);
-                data.insert("password".into(), csv_record.password);
-                if let Some(notes) = csv_record.notes {
-                    data.insert("notes".into(), notes);
-                }
-                if let Some(otp) = csv_record.otp {
-                    data.insert("otp".into(), otp);
-                }
-                let parsed_label = match label.parse::<Label>() {
-                    Ok(l) => l,
-                    Err(e) => {
-                        eprintln!("Invalid label {label:?}: {e}");
-                        continue;
-                    }
-                };
-                // TODO: Put text directly into a Password
-                if let Ok(password) = data
-                    .remove("password")
-                    .unwrap_or_default()
-                    .as_str()
-                    .try_into()
-                {
-                    match Record::new(&*lot, parsed_label, Data::new(password).with_extra(data))
-                        .upsert(&db, lot)
-                        .await
-                    {
-                        Ok(uuid) => {
-                            println!(
-                                "Inserted {}::{} <{}>",
-                                lot.name(),
-                                label,
-                                uuid.to_uuid().as_hyphenated()
-                            )
-                        }
-                        Err(e) => {
-                            dbg!(e);
-                        }
-                    }
-                }
-            }
+        let csv_record = match result {
+            Ok(r) => r,
             Err(e) => {
                 dbg!(e);
+                continue;
             }
+        };
+        let label = if let Some(captures) = title_re.captures(&csv_record.title) {
+            let domain_or_label = captures[1].to_owned();
+            if let Some(user) = captures.get(2) {
+                format!("{}@{domain_or_label}", user.as_str())
+            } else {
+                domain_or_label
+            }
+        } else {
+            eprintln!("Bad title: {}", csv_record.title);
+            continue;
+        };
+
+        let mut data = HashMap::new();
+        if let Some(notes) = csv_record.notes {
+            data.insert("notes".into(), notes);
         }
+        if let Some(otp) = csv_record.otp {
+            data.insert("otp".into(), otp);
+        }
+        let parsed_label = match label.parse::<Label>() {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Invalid label {label:?}: {e}");
+                continue;
+            }
+        };
+        let parsed_label = match parsed_label
+            .add_extra("url", csv_record.url)
+            .and_then(|l| match l.name() {
+                LabelName::Domain { id, .. } if id == &csv_record.username => Ok(l),
+                _ => l.add_extra("username", csv_record.username),
+            }) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("{e} for {label:?}");
+                // TODO: Instead of this .and_then chain. Just try to add labels
+                // if it works, great, otherwise print warning but still add it.
+                // Maybe .add_extra should take an &mut self.
+                continue;
+            }
+        };
+        // TODO: Put text directly into a Password
+        let Ok(password) = csv_record.password.as_str().try_into() else {
+            continue;
+        };
+        // TODO: We need to load the lot and check for existing records before
+        // minting new UUIDs. In general I don't think we actually want a
+        // Record::new function at all, since we should always have a lot
+        // before creating records, so something like Record::get which either
+        // lazy loads or mints a fresh record is in order. We will also need a
+        // way to batch this or something here, so it's a little more complex...
+        records.push(Record::new(
+            &*lot,
+            parsed_label,
+            Data::new(password).with_extra(data),
+        ));
+    }
+
+    let total = records.len();
+    let lot_name = lot.name().to_owned();
+    println!("Importing {total} records into {lot_name}...");
+    let mut put = 0usize;
+    let result = Record::save_many(db, lot, &records, |ev| match ev {
+        SaveProgress::LoadedRecords => {
+            println!("Loaded existing records");
+        }
+        SaveProgress::OpenedStore => {
+            println!("Opened store");
+        }
+        SaveProgress::PutRecord(record) => {
+            put += 1;
+            println!("Put {put}/{total} {lot_name}::{}", record.label());
+        }
+        SaveProgress::Snapshot(_) => {
+            println!("Snapshot complete");
+        }
+        SaveProgress::SaveRecord => {
+            println!("Saved {total} records");
+        }
+        SaveProgress::SaveLot => {
+            println!("Saved lot {lot_name}");
+        }
+    })
+    .await;
+    if let Err(e) = result {
+        dbg!(e);
     }
 }

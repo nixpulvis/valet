@@ -101,8 +101,7 @@ mod tests {
         let encrypted = data
             .encrypt_with_aad(&key, &aad)
             .expect("failed to encrypt");
-        let decrypted =
-            Data::decrypt_with_aad(&encrypted, &key, &aad).expect("failed to decrypt");
+        let decrypted = Data::decrypt_with_aad(&encrypted, &key, &aad).expect("failed to decrypt");
         assert_eq!(data, decrypted);
     }
 }

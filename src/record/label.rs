@@ -1,9 +1,21 @@
 use crate::{encrypt::Stash, lot::Lot};
 use bitcode::{Decode, Encode};
-use std::{cmp::Ordering, collections::BTreeMap, fmt, str::FromStr};
+use std::{
+    cmp::Ordering,
+    collections::BTreeMap,
+    fmt,
+    hash::{Hash, Hasher},
+    str::FromStr,
+};
 
 /// A record's primary identifier plus optional searchable metadata.
-#[derive(Encode, Decode, Debug, Eq, PartialEq, Hash, Clone)]
+///
+/// Equality and hashing are **name-only**: two labels with the same
+/// [`LabelName`] compare equal and hash equal regardless of their
+/// [`extra`](Label::extra) contents, so a single `(id, domain)` pair
+/// identifies one logical record. [`Ord`] still breaks ties on extras so
+/// [`Label`] remains a well-behaved [`BTreeMap`] key.
+#[derive(Encode, Decode, Debug, Clone)]
 pub struct Label {
     /// The record's primary, exact identifier (e.g. [`LabelName::Simple`] for
     /// `"github"` or [`LabelName::Domain`] for `"nix@example.com"`). Literal
@@ -87,6 +99,20 @@ impl Label {
 
     pub fn extra(&self) -> &BTreeMap<String, String> {
         &self.extra
+    }
+}
+
+impl PartialEq for Label {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for Label {}
+
+impl Hash for Label {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
     }
 }
 
@@ -294,8 +320,7 @@ mod tests {
         let encrypted = label
             .encrypt_with_aad(&key, &aad)
             .expect("failed to encrypt");
-        let decrypted =
-            Label::decrypt_with_aad(&encrypted, &key, &aad).expect("failed to decrypt");
+        let decrypted = Label::decrypt_with_aad(&encrypted, &key, &aad).expect("failed to decrypt");
         assert_eq!(label, decrypted);
     }
 
@@ -315,6 +340,40 @@ mod tests {
                 "alice@zeta.com".parse::<Label>().unwrap(),
             ]
         );
+    }
+
+    #[test]
+    fn eq_and_hash_ignore_extras() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let plain = "nix@example.com".parse::<Label>().unwrap();
+        let with_url = "nix@example.com"
+            .parse::<Label>()
+            .unwrap()
+            .add_extra("url", "github.com")
+            .unwrap();
+        let different_url = "nix@example.com"
+            .parse::<Label>()
+            .unwrap()
+            .add_extra("url", "gitlab.com")
+            .unwrap();
+        let different_name = "other@example.com".parse::<Label>().unwrap();
+
+        // Same name, any extras, is still one logical label.
+        assert_eq!(plain, with_url);
+        assert_eq!(with_url, different_url);
+        // Different name is never equal.
+        assert_ne!(plain, different_name);
+
+        let hash = |l: &Label| {
+            let mut h = DefaultHasher::new();
+            l.hash(&mut h);
+            h.finish()
+        };
+        assert_eq!(hash(&plain), hash(&with_url));
+        assert_eq!(hash(&with_url), hash(&different_url));
+        assert_ne!(hash(&plain), hash(&different_name));
     }
 
     #[test]

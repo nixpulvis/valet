@@ -158,7 +158,7 @@ impl<'a> View for Unlocked<'a> {
                                 state.new_password = Password::default();
                                 // TODO: Don't clear the store here; it flashes
                                 // "Loading..." on every add. Update just the
-                                // changed lot entry once the async upsert lands.
+                                // changed lot entry once the async save lands.
                                 state.store.write().unwrap().clear();
                                 self.rt.spawn(async move {
                                     if let Some(mut lot) = Lot::load(&db, DEFAULT_LOT, &user)
@@ -174,7 +174,7 @@ impl<'a> View for Unlocked<'a> {
                                                     path.label,
                                                     Data::new(new_password),
                                                 )
-                                                .upsert(&db, &mut lot)
+                                                .save(&db, &mut lot)
                                                 .await
                                                 .expect("failed to save record");
                                             }

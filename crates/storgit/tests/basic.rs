@@ -473,7 +473,10 @@ fn put_label_only_is_noop_when_label_matches_prior() {
         .put(&id("alpha"), Some(b"label"), Some(b"payload"))
         .unwrap();
     assert!(
-        store.put(&id("alpha"), Some(b"label"), None).unwrap().is_none(),
+        store
+            .put(&id("alpha"), Some(b"label"), None)
+            .unwrap()
+            .is_none(),
         "label-only put with unchanged label is a no-op (data reused)"
     );
     assert_eq!(store.history(&id("alpha")).unwrap().len(), 1);

@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 ///
 /// The index is not persisted; it's rebuilt from the store on every
 /// [`RecordIndex::load`]. This keeps storage as the single source of truth
-/// and removes any sync burden on `upsert`/`delete`.
+/// and removes any sync burden on `save`/`delete`.
 pub struct RecordIndex {
     entries: BTreeMap<Label, Uuid<Record>>,
 }
@@ -174,7 +174,7 @@ mod tests {
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
         let uuid_b = Record::new(
@@ -182,7 +182,7 @@ mod tests {
             "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
 
@@ -198,7 +198,7 @@ mod tests {
         let (db, _user, mut lot) = setup().await;
         // Two records stored under the same primary name with different
         // extras. Because record identity is the name alone, the second
-        // upsert reuses the first uuid — demonstrated here by constructing
+        // save reuses the first uuid — demonstrated here by constructing
         // the second record with `Record::with_uuid`.
         let uuid = Record::new(
             &lot,
@@ -209,7 +209,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw1".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
 
@@ -225,7 +225,7 @@ mod tests {
             name.clone(),
             Data::new("pw2".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
 
@@ -255,7 +255,7 @@ mod tests {
             "target".parse::<Label>().unwrap(),
             Data::new("s3cret".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
 
@@ -278,7 +278,7 @@ mod tests {
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
         Record::new(
@@ -286,7 +286,7 @@ mod tests {
             "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
 
@@ -317,7 +317,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw1".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
         Record::new(
@@ -329,7 +329,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw2".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
         Record::new(
@@ -341,7 +341,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw3".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
         Record::new(
@@ -353,7 +353,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw4".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
         Record::new(
@@ -367,7 +367,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw5".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot)
+        .save(&db, &mut lot)
         .await
         .unwrap();
         (db, lot)
@@ -486,7 +486,7 @@ mod tests {
             "ephemeral".parse::<Label>().unwrap(),
             Data::new("x".try_into().unwrap()),
         );
-        record.upsert(&db, &mut lot).await.unwrap();
+        record.save(&db, &mut lot).await.unwrap();
         record.delete(&db, &mut lot).await.unwrap();
         let index = RecordIndex::load(&db, &lot).await.unwrap();
         assert!(index.is_empty());

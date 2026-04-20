@@ -26,6 +26,31 @@ pub struct Revision {
     pub data: Data,
 }
 
+/// Progress event emitted by [`Record::save_many`] so callers can report
+/// on long bulk imports without polling.
+///
+/// Events fire in this order:
+/// 1. [`LoadedRecords`](Self::LoadedRecords) after existing `records` rows
+///    for the batch have been fetched from the DB.
+/// 2. [`OpenedStore`](Self::OpenedStore) after the storgit store has been
+///    opened on the lot's current parent + the decrypted existing modules.
+/// 3. [`PutRecord`](Self::PutRecord) per record, as it's staged into the
+///    store.
+/// 4. [`Snapshot`](Self::Snapshot) once, after the single `snapshot()` call.
+/// 5. [`SaveRecord`](Self::SaveRecord) once, after the batched insert of
+///    every record's ciphertext commits.
+/// 6. [`SaveLot`](Self::SaveLot) once, after the lot's parent tarball is
+///    repersisted. Only fires if the snapshot advanced the parent.
+#[cfg(feature = "db")]
+pub enum SaveProgress<'a> {
+    LoadedRecords,
+    OpenedStore,
+    PutRecord(&'a Record),
+    Snapshot(&'a storgit::Snapshot),
+    SaveRecord,
+    SaveLot,
+}
+
 #[derive(Encode, Decode)]
 pub struct Record {
     pub(crate) uuid: Uuid<Self>,
@@ -41,7 +66,7 @@ impl Record {
 
     /// Construct a record with a caller-chosen UUID. Use this when updating
     /// an existing record (e.g. resolved via [`RecordIndex::find`]) so the
-    /// subsequent [`Record::upsert`] appends to the submodule's commit
+    /// subsequent [`Record::save`] appends to the submodule's commit
     /// history rather than starting a new one.
     pub fn with_uuid(uuid: Uuid<Self>, lot: &Lot, label: Label, data: Data) -> Self {
         Record {
@@ -110,7 +135,7 @@ impl Record {
     /// reflect the new snapshot; callers holding an older `Lot` will see the
     /// fresh parent after this call returns.
     #[cfg(feature = "db")]
-    pub async fn upsert(&self, db: &Database, lot: &mut Lot) -> Result<Uuid<Self>, Error> {
+    pub async fn save(&self, db: &Database, lot: &mut Lot) -> Result<Uuid<Self>, Error> {
         // Fetch any existing module bytes for this record so we append to
         // the submodule's history rather than starting a fresh one.
         let existing = self::orm::Entity::find_by_id(self.uuid.to_string())
@@ -166,6 +191,140 @@ impl Record {
         }
 
         Ok(self.uuid.clone())
+    }
+
+    /// Save many records against a single lot with one storgit snapshot and
+    /// one database transaction. Much faster than looping [`Record::save`]
+    /// (which reopens the store and round-trips the DB per record), which
+    /// matters for bulk imports.
+    ///
+    /// All records must belong to `lot`. Returns the uuids in the same order
+    /// as `records`. The in-memory parent tarball on `lot` is refreshed when
+    /// the snapshot advances it.
+    ///
+    /// `on_progress` fires at each [`SaveProgress`] milestone so callers
+    /// can render progress on large imports. Pass `|_| {}` if you don't
+    /// care. Final save events fire after the DB transaction commits.
+    #[cfg(feature = "db")]
+    pub async fn save_many(
+        db: &Database,
+        lot: &mut Lot,
+        records: &[Record],
+        mut on_progress: impl FnMut(SaveProgress<'_>),
+    ) -> Result<Vec<Uuid<Self>>, Error> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        for record in records {
+            if record.lot_uuid != *lot.uuid() {
+                return Err(Error::LotMismatch {
+                    expected: lot.uuid().clone(),
+                    actual: record.lot_uuid.clone(),
+                });
+            }
+        }
+
+        // Fetch existing modules so we append to their history rather than
+        // starting a fresh one.
+        let uuid_strs: Vec<String> = records.iter().map(|r| r.uuid.to_string()).collect();
+        let existing_models = self::orm::Entity::find()
+            .filter(self::orm::Column::Uuid.is_in(uuid_strs))
+            .all(db.connection())
+            .await?;
+        on_progress(SaveProgress::LoadedRecords);
+
+        let mut modules: HashMap<storgit::Id, Vec<u8>> = HashMap::new();
+        for model in existing_models {
+            let uuid = Uuid::<Self>::parse(&model.uuid)?;
+            let model_lot_uuid = Uuid::<Lot>::parse(&model.lot_uuid)?;
+            if &model_lot_uuid != lot.uuid() {
+                return Err(Error::LotMismatch {
+                    expected: lot.uuid().clone(),
+                    actual: model_lot_uuid,
+                });
+            }
+            let bytes = Record::decrypt_module(lot, &uuid, &model.module)?;
+            modules.insert(Record::storgit_id(&uuid), bytes);
+        }
+
+        let mut store = storgit::Store::open(storgit::Parts {
+            parent: lot.store_bytes().to_vec(),
+            modules,
+        })
+        .map_err(Error::Storgit)?;
+        on_progress(SaveProgress::OpenedStore);
+
+        for record in records {
+            let id = Record::storgit_id(&record.uuid);
+            let label_bytes = record.label.encode();
+            let data_cipher = record
+                .data
+                .encrypt_with_aad(lot.key(), &Record::data_aad(&record.uuid, &record.lot_uuid))?;
+            let data_bytes = data_cipher.pack();
+            store
+                .put(&id, Some(&label_bytes), Some(&data_bytes))
+                .map_err(Error::Storgit)?;
+            on_progress(SaveProgress::PutRecord(record));
+        }
+
+        let snap = store.snapshot().map_err(Error::Storgit)?;
+        on_progress(SaveProgress::Snapshot(&snap));
+
+        let mut active_models = Vec::with_capacity(records.len());
+        for record in records {
+            let id = Record::storgit_id(&record.uuid);
+            let module_bytes = match snap.modules.get(&id) {
+                Some(storgit::ModuleChange::Changed(bytes)) => bytes.clone(),
+                _ => {
+                    return Err(Error::Storgit(storgit::Error::Other(
+                        "storgit snapshot missing module for put".into(),
+                    )));
+                }
+            };
+            let aad = Record::module_aad(&record.uuid, lot.uuid());
+            let encrypted = lot.key().encrypt_with_aad(&module_bytes, &aad)?;
+            active_models.push(
+                self::orm::Model {
+                    uuid: record.uuid.to_string(),
+                    lot_uuid: record.lot_uuid.to_string(),
+                    module: encrypted.pack(),
+                }
+                .into_active_model(),
+            );
+        }
+
+        let store_packed = snap
+            .parent
+            .as_ref()
+            .map(|bytes| lot.encrypt_store(bytes))
+            .transpose()?;
+
+        let on_conflict = OnConflict::column(self::orm::Column::Uuid)
+            .update_columns([self::orm::Column::LotUuid, self::orm::Column::Module])
+            .to_owned();
+        let txn = db.connection().begin().await?;
+        self::orm::Entity::insert_many(active_models)
+            .on_conflict(on_conflict)
+            .exec(&txn)
+            .await?;
+        if let Some(store_packed) = store_packed {
+            crate::lot::orm::Entity::update(crate::lot::orm::ActiveModel {
+                uuid: sea_orm::ActiveValue::Unchanged(lot.uuid().to_string()),
+                store: sea_orm::ActiveValue::Set(store_packed),
+            })
+            .exec(&txn)
+            .await?;
+        }
+        txn.commit().await?;
+        on_progress(SaveProgress::SaveRecord);
+
+        if let Some(parent_bytes) = snap.parent {
+            on_progress(SaveProgress::SaveLot); // Was saved by the txn.commit
+            lot.set_store_bytes(parent_bytes);
+        }
+
+        Ok(records.iter().map(|r| r.uuid.clone()).collect())
     }
 
     /// Delete this record from the database.
@@ -455,7 +614,7 @@ impl Record {
     /// tarball bytes. Inverse of the encryption step inside
     /// [`Record::encrypt_module`]. Associated (not `&self`) so that callers
     /// like [`Record::show`] and [`Record::load_all`], which have only a
-    /// record uuid before decryption, can use the same path as `upsert` /
+    /// record uuid before decryption, can use the same path as `save` /
     /// `delete` (which pass `&self.uuid`).
     #[cfg(feature = "db")]
     pub(crate) fn decrypt_module(
@@ -464,7 +623,9 @@ impl Record {
         packed: &[u8],
     ) -> Result<Vec<u8>, Error> {
         let aad = Record::module_aad(record_uuid, lot.uuid());
-        Ok(lot.key().decrypt_with_aad(&Encrypted::unpack(packed), &aad)?)
+        Ok(lot
+            .key()
+            .decrypt_with_aad(&Encrypted::unpack(packed), &aad)?)
     }
 }
 
@@ -611,9 +772,9 @@ mod tests {
             Data::new("bar".try_into().unwrap()),
         );
         let uuid = record
-            .upsert(&db, &mut lot)
+            .save(&db, &mut lot)
             .await
-            .expect("failed to upsert record");
+            .expect("failed to save record");
         let loaded = Record::show(&db, &lot, &uuid)
             .await
             .expect("failed to show record")
@@ -641,9 +802,9 @@ mod tests {
             "foo".parse::<Label>().unwrap(),
             Data::new("bar".try_into().unwrap()),
         )
-        .upsert(&db, &mut lot_a)
+        .save(&db, &mut lot_a)
         .await
-        .expect("failed to upsert record");
+        .expect("failed to save record");
         assert!(
             Record::show(&db, &lot_b, &uuid)
                 .await
@@ -671,9 +832,9 @@ mod tests {
             Data::new("bar".try_into().unwrap()),
         );
         let uuid = record
-            .upsert(&db, &mut lot)
+            .save(&db, &mut lot)
             .await
-            .expect("failed to upsert record");
+            .expect("failed to save record");
         record
             .delete(&db, &mut lot)
             .await
@@ -684,5 +845,140 @@ mod tests {
                 .expect("failed to show record")
                 .is_none()
         );
+    }
+
+    #[cfg(feature = "db")]
+    #[tokio::test]
+    async fn save_many_roundtrip() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let mut lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        let parent_before = lot.store_bytes().to_vec();
+
+        let records = vec![
+            Record::new(
+                &lot,
+                "foo".parse::<Label>().unwrap(),
+                Data::new("p1".try_into().unwrap()),
+            ),
+            Record::new(
+                &lot,
+                "bar".parse::<Label>().unwrap(),
+                Data::new("p2".try_into().unwrap()),
+            ),
+            Record::new(
+                &lot,
+                "baz".parse::<Label>().unwrap(),
+                Data::new("p3".try_into().unwrap()),
+            ),
+        ];
+
+        let mut events: Vec<&'static str> = Vec::new();
+        let uuids = Record::save_many(&db, &mut lot, &records, |ev| {
+            events.push(match ev {
+                SaveProgress::LoadedRecords => "loaded",
+                SaveProgress::OpenedStore => "opened",
+                SaveProgress::PutRecord(_) => "put",
+                SaveProgress::Snapshot(_) => "snap",
+                SaveProgress::SaveRecord => "save_r",
+                SaveProgress::SaveLot => "save_l",
+            });
+        })
+        .await
+        .expect("failed to save_many");
+        assert_eq!(uuids.len(), records.len());
+        assert_eq!(
+            events,
+            vec![
+                "loaded", "opened", "put", "put", "put", "snap", "save_r", "save_l"
+            ]
+        );
+
+        // Lot parent tarball must advance so the new gitlinks are persisted.
+        assert_ne!(lot.store_bytes(), parent_before.as_slice());
+
+        for (record, uuid) in records.iter().zip(uuids.iter()) {
+            assert_eq!(uuid, record.uuid());
+            let loaded = Record::show(&db, &lot, uuid)
+                .await
+                .expect("failed to show record")
+                .expect("record missing");
+            assert_eq!(&loaded, record);
+        }
+
+        // Re-saving extends history rather than erroring on conflict.
+        let updated = vec![Record::with_uuid(
+            records[0].uuid().clone(),
+            &lot,
+            "foo".parse::<Label>().unwrap(),
+            Data::new("p1-new".try_into().unwrap()),
+        )];
+        Record::save_many(&db, &mut lot, &updated, |_| {})
+            .await
+            .expect("failed to re-save");
+        let loaded = Record::show(&db, &lot, records[0].uuid())
+            .await
+            .expect("failed to show record")
+            .expect("record missing");
+        assert_eq!(loaded.password().to_string(), "p1-new");
+        let history = Record::history(&db, &lot, records[0].uuid())
+            .await
+            .expect("failed to read history")
+            .expect("history missing");
+        assert_eq!(history.len(), 2);
+    }
+
+    #[cfg(feature = "db")]
+    #[tokio::test]
+    async fn save_many_empty_is_noop() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let mut lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        let parent_before = lot.store_bytes().to_vec();
+        let uuids = Record::save_many(&db, &mut lot, &[], |_| {})
+            .await
+            .expect("failed to save_many");
+        assert!(uuids.is_empty());
+        assert_eq!(lot.store_bytes(), parent_before.as_slice());
+    }
+
+    #[cfg(feature = "db")]
+    #[tokio::test]
+    async fn save_many_rejects_foreign_lot() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let mut lot_a = Lot::new("lot a");
+        lot_a.save(&db, &user).await.expect("failed to save lot");
+        let mut lot_b = Lot::new("lot b");
+        lot_b.save(&db, &user).await.expect("failed to save lot");
+        let foreign = Record::new(
+            &lot_b,
+            "foo".parse::<Label>().unwrap(),
+            Data::new("p".try_into().unwrap()),
+        );
+        let err = Record::save_many(&db, &mut lot_a, &[foreign], |_| {})
+            .await
+            .expect_err("expected LotMismatch");
+        assert!(matches!(err, Error::LotMismatch { .. }));
     }
 }
