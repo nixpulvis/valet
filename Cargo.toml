@@ -33,7 +33,7 @@ orm = []
 ## Enables the SQLite database layer (`db` module, CRUD operations on
 ## `User`/`Lot`/`Record`, and the `prelude` convenience re-exports).
 ## Without this feature the crate is a pure encryption/data library.
-db = ["dep:sqlx", "dep:sea-orm", "dep:url", "dep:regex"]
+db = ["dep:sqlx", "dep:sea-orm", "dep:url", "dep:regex", "dep:storgit"]
 cli = [
     "db",
     "dep:tokio",
@@ -43,6 +43,7 @@ cli = [
     "dep:clap_complete",
     "dep:csv",
     "dep:serde",
+    "dep:chrono",
 ]
 gui = ["db", "dep:tokio", "dep:eframe", "dep:egui_inbox"]
 
@@ -58,6 +59,7 @@ zeroize = { version = "1.8", features = ["derive"] }
 
 # Storage (db/user/lot/record)
 sea-orm = { version = "2.0.0-rc.37", features = ["sqlx-sqlite", "runtime-tokio-rustls"], optional = true }
+storgit = { path = "crates/storgit", optional = true }
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"], optional = true }
 url = { version = "2.5", optional = true }
 
@@ -70,6 +72,7 @@ clap = { version = "4.5", features = ["derive", "cargo"], optional = true }
 clap-repl = { version = "0.3", features = ["async"], optional = true }
 clap_complete = { version = "4.5", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
 
 # GUI Dependencies
 eframe = { version = "0.32", optional = true }

@@ -1,56 +1,53 @@
 use crate::{
     db::Database,
-    encrypt::{Encrypted, Stash},
+    encrypt::Stash,
     lot::Lot,
     record::{Error, Label, Query, Record},
     uuid::Uuid,
 };
-use sea_orm::{DerivePartialModel, entity::prelude::*};
+use sea_orm::entity::prelude::*;
 use std::collections::BTreeMap;
-
-#[derive(DerivePartialModel)]
-#[sea_orm(entity = "super::orm::Entity")]
-struct LabelRow {
-    uuid: String,
-    label: Vec<u8>,
-    label_nonce: Vec<u8>,
-}
 
 /// An in-memory map from `Label` to `Uuid<Record>` for a single lot.
 ///
-/// Built by decrypting only the `label` column of each row in the lot, which
-/// avoids materializing any passwords. Use [`RecordIndex::find`] to resolve a
-/// label to a UUID, then call [`Record::show`](crate::record::Record::show) to
-/// pull the password for that one record.
+/// Built from the label cache carried in the lot's storgit parent tarball.
+/// Labels are stored plaintext inside storgit (the parent itself is encrypted
+/// at the DB boundary under the lot key), so building the index neither opens
+/// any submodules nor decrypts any record-level ciphertext - a password is
+/// only materialized by [`Record::show`](crate::record::Record::show).
 ///
-/// The index is not persisted; it's rebuilt from the encrypted label column
-/// on every [`RecordIndex::load`]. This keeps the DB as the single source of
-/// truth and removes any sync burden on `upsert`/`delete`.
+/// The index is not persisted; it's rebuilt from the store on every
+/// [`RecordIndex::load`]. This keeps storage as the single source of truth
+/// and removes any sync burden on `upsert`/`delete`.
 pub struct RecordIndex {
     entries: BTreeMap<Label, Uuid<Record>>,
 }
 
 impl RecordIndex {
-    /// Build an index for `lot` by fetching and decrypting every record's
-    /// label column.
+    /// Build an index for `lot` by reading its storgit parent label cache.
     ///
-    /// The password-bearing `data` column isn't loaded.
+    /// Re-reads `lots.store` from the database so the index reflects the
+    /// current persisted state. Returns [`Error::MissingLot`] if the lot
+    /// row is gone (stale `&Lot` after [`Lot::delete`](crate::lot::Lot::delete),
+    /// or a lot that was never saved) so callers can distinguish "empty
+    /// lot" from "lot does not exist".
     pub async fn load(db: &Database, lot: &Lot) -> Result<Self, Error> {
-        let rows = super::orm::Entity::find()
-            .filter(super::orm::Column::LotUuid.eq(lot.uuid().to_string()))
-            .into_partial_model::<LabelRow>()
-            .all(db.connection())
-            .await?;
+        let model = crate::lot::orm::Entity::find_by_id(lot.uuid().to_string())
+            .one(db.connection())
+            .await?
+            .ok_or(Error::MissingLot)?;
+        let parent_bytes = lot.decrypt_store_bytes(&model.store)?;
+
+        let store = storgit::Store::open(storgit::Parts {
+            parent: parent_bytes,
+            modules: std::collections::HashMap::new(),
+        })
+        .map_err(Error::Storgit)?;
 
         let mut entries = BTreeMap::new();
-        for row in rows {
-            let uuid = Uuid::<Record>::parse(&row.uuid)?;
-            let aad = Record::label_aad(&uuid, lot.uuid());
-            let encrypted = Encrypted {
-                data: row.label,
-                nonce: row.label_nonce,
-            };
-            let label = Label::decrypt_with_aad(&encrypted, lot.key(), &aad)?;
+        for (id, label_bytes) in store.list_labels() {
+            let uuid = Uuid::<Record>::parse(id.as_str())?;
+            let label = Label::decode(&label_bytes)?;
             entries.insert(label, uuid);
         }
         Ok(RecordIndex { entries })
@@ -59,6 +56,19 @@ impl RecordIndex {
     /// Look up the UUID of the record with the given label, if one exists.
     pub fn find(&self, label: &Label) -> Option<&Uuid<Record>> {
         self.entries.get(label)
+    }
+
+    /// Look up the UUID of the record with the given primary name, ignoring
+    /// [`Label::extra`]. Record identity within a lot is the [`LabelName`]
+    /// alone; extras are searchable metadata that may change across
+    /// revisions of the same record. Returns the first match in
+    /// [`Label: Ord`] order if the caller has historically stored multiple
+    /// rows with the same name.
+    pub fn find_by_name(&self, name: &super::LabelName) -> Option<&Uuid<Record>> {
+        self.entries
+            .iter()
+            .find(|(label, _)| label.name() == name)
+            .map(|(_, uuid)| uuid)
     }
 
     /// Return an iterator over every label in the index.
@@ -141,7 +151,7 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
         (db, user, lot)
     }
@@ -158,13 +168,13 @@ mod tests {
 
     #[tokio::test]
     async fn index_contains_inserted_labels() {
-        let (db, _user, lot) = setup().await;
+        let (db, _user, mut lot) = setup().await;
         let uuid_a = Record::new(
             &lot,
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .unwrap();
         let uuid_b = Record::new(
@@ -172,7 +182,7 @@ mod tests {
             "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .unwrap();
 
@@ -184,14 +194,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn find_by_name_ignores_extras() {
+        let (db, _user, mut lot) = setup().await;
+        // Two records stored under the same primary name with different
+        // extras. Because record identity is the name alone, the second
+        // upsert reuses the first uuid — demonstrated here by constructing
+        // the second record with `Record::with_uuid`.
+        let uuid = Record::new(
+            &lot,
+            "acct"
+                .parse::<Label>()
+                .unwrap()
+                .add_extra("tag", "foo")
+                .unwrap(),
+            Data::new("pw1".try_into().unwrap()),
+        )
+        .upsert(&db, &mut lot)
+        .await
+        .unwrap();
+
+        let index = RecordIndex::load(&db, &lot).await.unwrap();
+        // `find_by_name` locates the record even though the caller uses a
+        // label that doesn't carry the same extras.
+        let name = "acct".parse::<Label>().unwrap();
+        assert_eq!(Some(&uuid), index.find_by_name(name.name()));
+        // Overwrite with the bare label (no extras), reusing the uuid.
+        Record::with_uuid(
+            uuid.clone(),
+            &lot,
+            name.clone(),
+            Data::new("pw2".try_into().unwrap()),
+        )
+        .upsert(&db, &mut lot)
+        .await
+        .unwrap();
+
+        let index = RecordIndex::load(&db, &lot).await.unwrap();
+        assert_eq!(1, index.len(), "name-identity keeps a single record");
+        assert_eq!(Some(&uuid), index.find_by_name(name.name()));
+
+        // The history walks both revisions under the shared uuid.
+        let revisions = Record::history(&db, &lot, &uuid)
+            .await
+            .unwrap()
+            .expect("history exists");
+        assert_eq!(2, revisions.len());
+        let passwords: Vec<String> = revisions
+            .iter()
+            .map(|r| r.data.password().to_string())
+            .collect();
+        assert!(passwords.contains(&"pw1".to_string()));
+        assert!(passwords.contains(&"pw2".to_string()));
+    }
+
+    #[tokio::test]
     async fn index_then_show_resolves_password() {
-        let (db, _user, lot) = setup().await;
+        let (db, _user, mut lot) = setup().await;
         Record::new(
             &lot,
             "target".parse::<Label>().unwrap(),
             Data::new("s3cret".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .unwrap();
 
@@ -208,13 +272,13 @@ mod tests {
 
     #[tokio::test]
     async fn for_loop_iteration() {
-        let (db, _user, lot) = setup().await;
+        let (db, _user, mut lot) = setup().await;
         Record::new(
             &lot,
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .unwrap();
         Record::new(
@@ -222,7 +286,7 @@ mod tests {
             "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .unwrap();
 
@@ -240,7 +304,7 @@ mod tests {
     }
 
     async fn seed_search_lot() -> (Database, Lot) {
-        let (db, _user, lot) = setup().await;
+        let (db, _user, mut lot) = setup().await;
         // Mix of domains (so the `.com` regex has something to exclude), a
         // simple label, and realistic extras. Two records share a url so
         // extras filtering has ambiguity to resolve.
@@ -253,7 +317,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw1".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .unwrap();
         Record::new(
@@ -265,7 +329,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw2".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .unwrap();
         Record::new(
@@ -277,7 +341,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw3".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .unwrap();
         Record::new(
@@ -289,7 +353,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw4".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .unwrap();
         Record::new(
@@ -303,7 +367,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw5".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .unwrap();
         (db, lot)
@@ -416,14 +480,14 @@ mod tests {
 
     #[tokio::test]
     async fn deleted_record_absent_from_fresh_index() {
-        let (db, _user, lot) = setup().await;
+        let (db, _user, mut lot) = setup().await;
         let record = Record::new(
             &lot,
             "ephemeral".parse::<Label>().unwrap(),
             Data::new("x".try_into().unwrap()),
         );
-        record.upsert(&db, &lot).await.unwrap();
-        record.delete(&db).await.unwrap();
+        record.upsert(&db, &mut lot).await.unwrap();
+        record.delete(&db, &mut lot).await.unwrap();
         let index = RecordIndex::load(&db, &lot).await.unwrap();
         assert!(index.is_empty());
     }

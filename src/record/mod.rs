@@ -5,8 +5,26 @@ use crate::encrypt::{Encrypted, Stash};
 use crate::{encrypt, lot::Lot, password::Password, uuid::Uuid};
 use bitcode::{Decode, Encode};
 #[cfg(feature = "db")]
-use sea_orm::{IntoActiveModel, entity::prelude::*, sea_query::OnConflict};
+use sea_orm::{IntoActiveModel, TransactionTrait, entity::prelude::*, sea_query::OnConflict};
+#[cfg(feature = "db")]
+use std::collections::HashMap;
 use std::fmt;
+
+/// One historical revision of a record, produced by [`Record::history`].
+///
+/// Each live commit in the record's submodule contributes one entry with
+/// the plaintext [`Label`] / [`Data`] recovered from that commit; tombstone
+/// commits (written by [`Record::delete`]) are filtered out upstream.
+#[cfg(feature = "db")]
+#[derive(Debug)]
+pub struct Revision {
+    /// Commit timestamp as recorded by storgit.
+    pub time: std::time::SystemTime,
+    /// Git commit id for this revision.
+    pub commit: storgit::CommitId,
+    pub label: Label,
+    pub data: Data,
+}
 
 #[derive(Encode, Decode)]
 pub struct Record {
@@ -18,8 +36,16 @@ pub struct Record {
 
 impl Record {
     pub fn new(lot: &Lot, label: Label, data: Data) -> Self {
+        Self::with_uuid(Uuid::now(), lot, label, data)
+    }
+
+    /// Construct a record with a caller-chosen UUID. Use this when updating
+    /// an existing record (e.g. resolved via [`RecordIndex::find`]) so the
+    /// subsequent [`Record::upsert`] appends to the submodule's commit
+    /// history rather than starting a new one.
+    pub fn with_uuid(uuid: Uuid<Self>, lot: &Lot, label: Label, data: Data) -> Self {
         Record {
-            uuid: Uuid::now(),
+            uuid,
             lot_uuid: lot.uuid().clone(),
             label,
             data,
@@ -47,16 +73,6 @@ impl Record {
     }
 
     #[cfg(feature = "db")]
-    pub(crate) fn label_aad(record_uuid: &Uuid<Self>, lot_uuid: &Uuid<Lot>) -> Vec<u8> {
-        [
-            b"l".as_slice(),
-            record_uuid.to_uuid().as_bytes(),
-            lot_uuid.to_uuid().as_bytes(),
-        ]
-        .concat()
-    }
-
-    #[cfg(feature = "db")]
     pub(crate) fn data_aad(record_uuid: &Uuid<Self>, lot_uuid: &Uuid<Lot>) -> Vec<u8> {
         [
             b"d".as_slice(),
@@ -66,46 +82,151 @@ impl Record {
         .concat()
     }
 
-    /// Save this record to the database and return its uuid.
+    /// AAD for the outer encryption wrapping the storgit submodule tarball.
+    /// The `b"m"` prefix domain-separates this from [`Record::data_aad`] so a
+    /// module ciphertext cannot authenticate as a data ciphertext under the
+    /// same lot key.
     #[cfg(feature = "db")]
-    pub async fn upsert(&self, db: &Database, lot: &Lot) -> Result<Uuid<Self>, Error> {
-        let uuid = self.uuid.clone();
-        let data_aad = Record::data_aad(&self.uuid, &self.lot_uuid);
-        let data_encrypted = self.data.encrypt_with_aad(lot.key(), &data_aad)?;
-        let label_aad = Record::label_aad(&self.uuid, &self.lot_uuid);
-        let label_encrypted = self.label.encrypt_with_aad(lot.key(), &label_aad)?;
+    pub(crate) fn module_aad(record_uuid: &Uuid<Self>, lot_uuid: &Uuid<Lot>) -> Vec<u8> {
+        [
+            b"m".as_slice(),
+            record_uuid.to_uuid().as_bytes(),
+            lot_uuid.to_uuid().as_bytes(),
+        ]
+        .concat()
+    }
+
+    /// Convert a record UUID to the opaque `storgit::Id` used as the entry key
+    /// inside a [`storgit::Store`]. The UUID string form is a valid id: no
+    /// forbidden characters, no leading `.`, no `.git` suffix.
+    #[cfg(feature = "db")]
+    pub(crate) fn storgit_id(uuid: &Uuid<Self>) -> storgit::Id {
+        storgit::Id::new(uuid.to_string()).expect("uuid string is a valid storgit id")
+    }
+
+    /// Save this record to the database and return its uuid.
+    ///
+    /// Updates the lot's in-memory parent tarball (`lot.store_bytes`) to
+    /// reflect the new snapshot; callers holding an older `Lot` will see the
+    /// fresh parent after this call returns.
+    #[cfg(feature = "db")]
+    pub async fn upsert(&self, db: &Database, lot: &mut Lot) -> Result<Uuid<Self>, Error> {
+        // Fetch any existing module bytes for this record so we append to
+        // the submodule's history rather than starting a fresh one.
+        let existing = self::orm::Entity::find_by_id(self.uuid.to_string())
+            .one(db.connection())
+            .await?;
+        let existing_module = if let Some(model) = existing {
+            if model.lot_uuid != self.lot_uuid.to_string() {
+                return Err(Error::LotMismatch {
+                    expected: self.lot_uuid.clone(),
+                    actual: Uuid::<Lot>::parse(&model.lot_uuid)?,
+                });
+            }
+            Some(Record::decrypt_module(lot, &self.uuid, &model.module)?)
+        } else {
+            None
+        };
+
+        let (module_packed, new_parent) = self.encrypt_module(lot, existing_module)?;
         let model = self::orm::Model {
             uuid: self.uuid.to_string(),
             lot_uuid: self.lot_uuid.to_string(),
-            label: label_encrypted.data,
-            label_nonce: label_encrypted.nonce,
-            data: data_encrypted.data,
-            data_nonce: data_encrypted.nonce,
+            module: module_packed,
         };
         let active = model.into_active_model();
         let on_conflict = OnConflict::column(self::orm::Column::Uuid)
-            .update_columns([
-                self::orm::Column::LotUuid,
-                self::orm::Column::Label,
-                self::orm::Column::LabelNonce,
-                self::orm::Column::Data,
-                self::orm::Column::DataNonce,
-            ])
+            .update_columns([self::orm::Column::LotUuid, self::orm::Column::Module])
             .to_owned();
+
+        // Atomic: records.module and lots.store must advance together, or the
+        // parent's gitlinks drift from the submodule tarball and `show` / the
+        // label cache read stale state on next load.
+        let store_packed = new_parent
+            .as_ref()
+            .map(|bytes| lot.encrypt_store(bytes))
+            .transpose()?;
+        let txn = db.connection().begin().await?;
         self::orm::Entity::insert(active)
             .on_conflict(on_conflict)
-            .exec_with_returning(db.connection())
+            .exec_with_returning(&txn)
             .await?;
+        if let Some(store_packed) = store_packed {
+            crate::lot::orm::Entity::update(crate::lot::orm::ActiveModel {
+                uuid: sea_orm::ActiveValue::Unchanged(self.lot_uuid.to_string()),
+                store: sea_orm::ActiveValue::Set(store_packed),
+            })
+            .exec(&txn)
+            .await?;
+        }
+        txn.commit().await?;
 
-        Ok(uuid)
+        if let Some(parent_bytes) = new_parent {
+            lot.set_store_bytes(parent_bytes);
+        }
+
+        Ok(self.uuid.clone())
     }
 
     /// Delete this record from the database.
+    ///
+    /// The storgit submodule is archived (tombstone commit) inside the lot's
+    /// store; the `records` row is then removed and the lot's in-memory
+    /// parent is refreshed.
     #[cfg(feature = "db")]
-    pub async fn delete(&self, db: &Database) -> Result<(), Error> {
+    pub async fn delete(&self, db: &Database, lot: &mut Lot) -> Result<(), Error> {
+        let id = Record::storgit_id(&self.uuid);
+
+        let Some(model) = self::orm::Entity::find_by_id(self.uuid.to_string())
+            .one(db.connection())
+            .await?
+        else {
+            return Ok(());
+        };
+        if model.lot_uuid != self.lot_uuid.to_string() {
+            return Err(Error::LotMismatch {
+                expected: self.lot_uuid.clone(),
+                actual: Uuid::<Lot>::parse(&model.lot_uuid)?,
+            });
+        }
+        let module_bytes = Record::decrypt_module(lot, &self.uuid, &model.module)?;
+        let mut modules = HashMap::new();
+        modules.insert(id.clone(), module_bytes);
+
+        let mut store = storgit::Store::open(storgit::Parts {
+            parent: lot.store_bytes().to_vec(),
+            modules,
+        })
+        .map_err(Error::Storgit)?;
+        store.archive(&id).map_err(Error::Storgit)?;
+        let snap = store.snapshot().map_err(Error::Storgit)?;
+
+        // Atomic: dropping the records row and advancing lots.store must
+        // land together, or on next load the parent's gitlink set disagrees
+        // with the live rows.
+        let store_packed = snap
+            .parent
+            .as_ref()
+            .map(|bytes| lot.encrypt_store(bytes))
+            .transpose()?;
+        let txn = db.connection().begin().await?;
         self::orm::Entity::delete_by_id(self.uuid.to_string())
-            .exec(db.connection())
+            .exec(&txn)
             .await?;
+        if let Some(store_packed) = store_packed {
+            crate::lot::orm::Entity::update(crate::lot::orm::ActiveModel {
+                uuid: sea_orm::ActiveValue::Unchanged(self.lot_uuid.to_string()),
+                store: sea_orm::ActiveValue::Set(store_packed),
+            })
+            .exec(&txn)
+            .await?;
+        }
+        txn.commit().await?;
+
+        if let Some(parent_bytes) = snap.parent {
+            lot.set_store_bytes(parent_bytes);
+        }
+
         Ok(())
     }
 
@@ -124,11 +245,96 @@ impl Record {
         else {
             return Ok(None);
         };
-        match Self::from_model(model, lot) {
-            Ok(record) => Ok(Some(record)),
-            Err(Error::LotMismatch { .. }) => Ok(None),
-            Err(e) => Err(e),
+        let lot_uuid = Uuid::<Lot>::parse(&model.lot_uuid)?;
+        if &lot_uuid != lot.uuid() {
+            return Ok(None);
         }
+
+        let module_bytes = Record::decrypt_module(lot, uuid, &model.module)?;
+
+        let mut store = storgit::Store::open(storgit::Parts {
+            parent: lot.store_bytes().to_vec(),
+            modules: HashMap::new(),
+        })
+        .map_err(Error::Storgit)?;
+        let id = Record::storgit_id(uuid);
+        store.load_module(id.clone(), module_bytes);
+        let entry = store
+            .get(&id)
+            .map_err(Error::Storgit)?
+            .ok_or_else(|| Error::Storgit(storgit::Error::Other("entry missing".into())))?;
+
+        let label_bytes = entry
+            .label
+            .ok_or_else(|| Error::Storgit(storgit::Error::Other("entry has no label".into())))?;
+        let data_bytes = entry
+            .data
+            .ok_or_else(|| Error::Storgit(storgit::Error::Other("entry has no data".into())))?;
+
+        let label = Label::decode(&label_bytes)?;
+        let data_cipher = Encrypted::unpack(&data_bytes);
+        let data =
+            Data::decrypt_with_aad(&data_cipher, lot.key(), &Record::data_aad(uuid, &lot_uuid))?;
+
+        Ok(Some(Record {
+            uuid: uuid.clone(),
+            lot_uuid,
+            label,
+            data,
+        }))
+    }
+
+    /// Walk every historical revision of the record identified by `uuid`,
+    /// newest commit first. Each live commit is decrypted into a
+    /// [`Revision`]; tombstone commits (written by [`Record::delete`]) are
+    /// skipped. Returns `None` if the `records.module` row is gone or
+    /// belongs to a different lot.
+    #[cfg(feature = "db")]
+    pub async fn history(
+        db: &Database,
+        lot: &Lot,
+        uuid: &Uuid<Self>,
+    ) -> Result<Option<Vec<Revision>>, Error> {
+        let Some(model) = self::orm::Entity::find_by_id(uuid.to_string())
+            .one(db.connection())
+            .await?
+        else {
+            return Ok(None);
+        };
+        let lot_uuid = Uuid::<Lot>::parse(&model.lot_uuid)?;
+        if &lot_uuid != lot.uuid() {
+            return Ok(None);
+        }
+
+        let module_bytes = Record::decrypt_module(lot, uuid, &model.module)?;
+
+        let mut store = storgit::Store::open(storgit::Parts {
+            parent: lot.store_bytes().to_vec(),
+            modules: HashMap::new(),
+        })
+        .map_err(Error::Storgit)?;
+        let id = Record::storgit_id(uuid);
+        store.load_module(id.clone(), module_bytes);
+
+        let entries = store.history(&id).map_err(Error::Storgit)?;
+        let data_aad = Record::data_aad(uuid, &lot_uuid);
+        let mut revisions = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let (Some(label_bytes), Some(data_bytes)) = (entry.label, entry.data) else {
+                // Tombstone commit (from `Record::delete` / `Store::archive`).
+                continue;
+            };
+            let label = Label::decode(&label_bytes)?;
+            let data =
+                Data::decrypt_with_aad(&Encrypted::unpack(&data_bytes), lot.key(), &data_aad)?;
+            revisions.push(Revision {
+                time: entry.time,
+                commit: entry.commit,
+                label,
+                data,
+            });
+        }
+        Ok(Some(revisions))
     }
 
     /// Load every record in a lot with full decryption. Used internally for
@@ -140,47 +346,125 @@ impl Record {
             .filter(self::orm::Column::LotUuid.eq(lot.uuid().to_string()))
             .all(db.connection())
             .await?;
-        models
-            .into_iter()
-            .map(|model| Self::from_model(model, lot))
-            .collect()
-    }
 
-    /// Decrypt a stored row into a [`Record`], verifying that `model` belongs
-    /// to `lot`. Returns [`Error::LotMismatch`] if the row's `lot_uuid` is not
-    /// the lot passed in.
-    #[cfg(feature = "db")]
-    fn from_model(model: self::orm::Model, lot: &Lot) -> Result<Self, Error> {
-        let uuid = Uuid::<Self>::parse(&model.uuid)?;
-        let lot_uuid = Uuid::<Lot>::parse(&model.lot_uuid)?;
-        if &lot_uuid != lot.uuid() {
-            return Err(Error::LotMismatch {
-                expected: lot.uuid().clone(),
-                actual: lot_uuid,
+        let mut modules: HashMap<storgit::Id, Vec<u8>> = HashMap::new();
+        let mut uuids: Vec<Uuid<Self>> = Vec::with_capacity(models.len());
+        for model in &models {
+            let uuid = Uuid::<Self>::parse(&model.uuid)?;
+            let module_bytes = Record::decrypt_module(lot, &uuid, &model.module)?;
+            modules.insert(Record::storgit_id(&uuid), module_bytes);
+            uuids.push(uuid);
+        }
+
+        let store = storgit::Store::open(storgit::Parts {
+            parent: lot.store_bytes().to_vec(),
+            modules,
+        })
+        .map_err(Error::Storgit)?;
+
+        let mut records = Vec::with_capacity(uuids.len());
+        for uuid in uuids {
+            let id = Record::storgit_id(&uuid);
+            let entry = store
+                .get(&id)
+                .map_err(Error::Storgit)?
+                .ok_or_else(|| Error::Storgit(storgit::Error::Other("entry missing".into())))?;
+            let label_bytes = entry.label.ok_or_else(|| {
+                Error::Storgit(storgit::Error::Other("entry has no label".into()))
+            })?;
+            let data_bytes = entry
+                .data
+                .ok_or_else(|| Error::Storgit(storgit::Error::Other("entry has no data".into())))?;
+            let label = Label::decode(&label_bytes)?;
+            let data_cipher = Encrypted::unpack(&data_bytes);
+            let data = Data::decrypt_with_aad(
+                &data_cipher,
+                lot.key(),
+                &Record::data_aad(&uuid, lot.uuid()),
+            )?;
+            records.push(Record {
+                uuid,
+                lot_uuid: lot.uuid().clone(),
+                label,
+                data,
             });
         }
-        let label = Label::decrypt_with_aad(
-            &Encrypted {
-                data: model.label,
-                nonce: model.label_nonce,
-            },
-            lot.key(),
-            &Record::label_aad(&uuid, &lot_uuid),
-        )?;
-        let data = Data::decrypt_with_aad(
-            &Encrypted {
-                data: model.data,
-                nonce: model.data_nonce,
-            },
-            lot.key(),
-            &Record::data_aad(&uuid, &lot_uuid),
-        )?;
-        Ok(Record {
-            uuid,
-            lot_uuid,
-            label,
-            data,
+        Ok(records)
+    }
+
+    /// Fold this record's current `label` + `data` into `lot`'s storgit
+    /// store, encrypt the resulting submodule tarball under the lot key
+    /// with the module-scoped AAD, and return the packed
+    /// `nonce || ciphertext` ready for the `records.module` column.
+    ///
+    /// Pass `existing_module` as the decrypted module tarball from the
+    /// prior `records.module` row if one exists, so history is extended
+    /// rather than replaced. Returns the new parent tarball alongside the
+    /// encrypted module when the snapshot updated the parent; the caller
+    /// is responsible for encrypting that with [`Lot::encrypt_store`] and
+    /// writing `lots.store`.
+    #[cfg(feature = "db")]
+    pub(crate) fn encrypt_module(
+        &self,
+        lot: &Lot,
+        existing_module: Option<Vec<u8>>,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
+        let id = Record::storgit_id(&self.uuid);
+
+        let mut modules: HashMap<storgit::Id, Vec<u8>> = HashMap::new();
+        if let Some(bytes) = existing_module {
+            modules.insert(id.clone(), bytes);
+        }
+
+        let mut store = storgit::Store::open(storgit::Parts {
+            parent: lot.store_bytes().to_vec(),
+            modules,
         })
+        .map_err(Error::Storgit)?;
+
+        let label_bytes = self.label.encode();
+        let data_cipher = self
+            .data
+            .encrypt_with_aad(lot.key(), &Record::data_aad(&self.uuid, &self.lot_uuid))?;
+        let data_bytes = data_cipher.pack();
+        store
+            .put(&id, Some(&label_bytes), Some(&data_bytes))
+            .map_err(Error::Storgit)?;
+
+        let snap = store.snapshot().map_err(Error::Storgit)?;
+        // We just called `put`, which marks the module dirty; storgit must
+        // return `Changed(bytes)` for `id` on the next snapshot. Anything
+        // else is a storgit invariant violation, not a caller-visible
+        // error. TODO: switch to `unreachable!` or a dedicated Error
+        // variant instead of smuggling this through `Error::Storgit(Other)`.
+        let module_bytes = match snap.modules.get(&id) {
+            Some(storgit::ModuleChange::Changed(bytes)) => bytes.clone(),
+            _ => {
+                return Err(Error::Storgit(storgit::Error::Other(
+                    "storgit snapshot missing module for put".into(),
+                )));
+            }
+        };
+
+        let aad = Record::module_aad(&self.uuid, lot.uuid());
+        let encrypted = lot.key().encrypt_with_aad(&module_bytes, &aad)?;
+        Ok((encrypted.pack(), snap.parent))
+    }
+
+    /// Decrypt a packed `records.module` blob back to the storgit submodule
+    /// tarball bytes. Inverse of the encryption step inside
+    /// [`Record::encrypt_module`]. Associated (not `&self`) so that callers
+    /// like [`Record::show`] and [`Record::load_all`], which have only a
+    /// record uuid before decryption, can use the same path as `upsert` /
+    /// `delete` (which pass `&self.uuid`).
+    #[cfg(feature = "db")]
+    pub(crate) fn decrypt_module(
+        lot: &Lot,
+        record_uuid: &Uuid<Record>,
+        packed: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let aad = Record::module_aad(record_uuid, lot.uuid());
+        Ok(lot.key().decrypt_with_aad(&Encrypted::unpack(packed), &aad)?)
     }
 }
 
@@ -223,6 +507,8 @@ pub enum Error {
     #[cfg(feature = "db")]
     Database(db::Error),
     Encryption(encrypt::Error),
+    #[cfg(feature = "db")]
+    Storgit(storgit::Error),
 }
 
 impl From<encrypt::Error> for Error {
@@ -295,13 +581,13 @@ mod tests {
 
     #[cfg(feature = "db")]
     #[test]
-    fn label_and_data_aad_differ() {
-        // Same record identity, different AAD prefix. A label blob must not
-        // authenticate as a data blob even under the same key.
+    fn module_and_data_aad_differ() {
+        // Different domain-separation prefixes so a module ciphertext cannot
+        // authenticate as a data ciphertext under the same key.
         let uuid = Uuid::<Record>::parse("00000000-0000-0000-0000-000000000001").unwrap();
         let lot_uuid = Uuid::<Lot>::parse("00000000-0000-0000-0000-000000000002").unwrap();
         assert_ne!(
-            Record::label_aad(&uuid, &lot_uuid),
+            Record::module_aad(&uuid, &lot_uuid),
             Record::data_aad(&uuid, &lot_uuid),
         );
     }
@@ -317,7 +603,7 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
         let record = Record::new(
             &lot,
@@ -325,7 +611,7 @@ mod tests {
             Data::new("bar".try_into().unwrap()),
         );
         let uuid = record
-            .upsert(&db, &lot)
+            .upsert(&db, &mut lot)
             .await
             .expect("failed to upsert record");
         let loaded = Record::show(&db, &lot, &uuid)
@@ -346,16 +632,16 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let lot_a = Lot::new("lot a");
+        let mut lot_a = Lot::new("lot a");
         lot_a.save(&db, &user).await.expect("failed to save lot");
-        let lot_b = Lot::new("lot b");
+        let mut lot_b = Lot::new("lot b");
         lot_b.save(&db, &user).await.expect("failed to save lot");
         let uuid = Record::new(
             &lot_a,
             "foo".parse::<Label>().unwrap(),
             Data::new("bar".try_into().unwrap()),
         )
-        .upsert(&db, &lot_a)
+        .upsert(&db, &mut lot_a)
         .await
         .expect("failed to upsert record");
         assert!(
@@ -377,7 +663,7 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
         let record = Record::new(
             &lot,
@@ -385,10 +671,13 @@ mod tests {
             Data::new("bar".try_into().unwrap()),
         );
         let uuid = record
-            .upsert(&db, &lot)
+            .upsert(&db, &mut lot)
             .await
             .expect("failed to upsert record");
-        record.delete(&db).await.expect("failed to delete record");
+        record
+            .delete(&db, &mut lot)
+            .await
+            .expect("failed to delete record");
         assert!(
             Record::show(&db, &lot, &uuid)
                 .await

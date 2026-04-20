@@ -57,7 +57,7 @@ impl Data {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lot::Lot;
+    use crate::{encrypt::Key, lot::Lot};
 
     #[test]
     fn extra() {
@@ -86,23 +86,23 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt() {
-        let lot = Lot::new("test");
+        let key = Key::<Lot>::generate();
         let data = Data::new("secret".try_into().unwrap());
-        let encrypted = data.encrypt(lot.key()).expect("failed to encrypt");
-        let decrypted = Data::decrypt(&encrypted, lot.key()).expect("failed to decrypt");
+        let encrypted = data.encrypt(&key).expect("failed to encrypt");
+        let decrypted = Data::decrypt(&encrypted, &key).expect("failed to decrypt");
         assert_eq!(data, decrypted);
     }
 
     #[test]
     fn encrypt_decrypt_with_aad() {
-        let lot = Lot::new("test");
+        let key = Key::<Lot>::generate();
         let data = Data::new("secret".try_into().unwrap());
         let aad = [1, 2, 3];
         let encrypted = data
-            .encrypt_with_aad(lot.key(), &aad)
+            .encrypt_with_aad(&key, &aad)
             .expect("failed to encrypt");
         let decrypted =
-            Data::decrypt_with_aad(&encrypted, lot.key(), &aad).expect("failed to decrypt");
+            Data::decrypt_with_aad(&encrypted, &key, &aad).expect("failed to decrypt");
         assert_eq!(data, decrypted);
     }
 }

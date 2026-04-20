@@ -1,0 +1,5 @@
+ALTER TABLE records DROP COLUMN label;
+ALTER TABLE records DROP COLUMN label_nonce;
+ALTER TABLE records DROP COLUMN data_nonce;
+ALTER TABLE records RENAME COLUMN data TO module;
+ALTER TABLE lots ADD COLUMN store BLOB NOT NULL;

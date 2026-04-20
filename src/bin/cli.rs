@@ -90,6 +90,10 @@ enum Repl {
         path: String,
         #[arg(long = "uuid")]
         uuid: bool,
+        /// Print every historical revision of the matched record (newest
+        /// first) instead of only the current password.
+        #[arg(short = 'H', long = "history")]
+        history: bool,
     },
     Clear,
     Lock,
@@ -244,17 +248,27 @@ async fn main() -> Result<(), valet::user::Error> {
                         println!("Invalid password");
                         return;
                     };
-                    let Some((lot, _)) = store.iter().find(|(l, _)| l.name() == target.lot) else {
+                    let Some((lot, index)) =
+                        store.iter_mut().find(|(l, _)| l.name() == target.lot)
+                    else {
                         println!("Unknown lot: {}", target.lot);
                         return;
                     };
-                    // TODO: Delete old record if it exists.
-                    // TODO: Add deleted record to new record's history.
+                    // Record identity is the label name; extras are metadata
+                    // that may change across revisions. Reuse the existing
+                    // uuid (if any) for this name so storgit extends the
+                    // submodule's history instead of starting a fresh one.
                     // TODO: Put data in a Password itself.
-                    match Record::new(lot, target.label, Data::new(password))
-                        .upsert(&db, lot)
-                        .await
-                    {
+                    let record = match index.find_by_name(target.label.name()).cloned() {
+                        Some(existing_uuid) => Record::with_uuid(
+                            existing_uuid,
+                            &*lot,
+                            target.label,
+                            Data::new(password),
+                        ),
+                        None => Record::new(&*lot, target.label, Data::new(password)),
+                    };
+                    match record.upsert(&db, lot).await {
                         Ok(_) => {
                             store = load_store(&db, &user).await;
                         }
@@ -263,7 +277,11 @@ async fn main() -> Result<(), valet::user::Error> {
                         }
                     }
                 }
-                Repl::Get { path, uuid } => {
+                Repl::Get {
+                    path,
+                    uuid,
+                    history,
+                } => {
                     let query = match Query::from_str(&path) {
                         Ok(q) => q,
                         Err(e) => {
@@ -317,19 +335,40 @@ async fn main() -> Result<(), valet::user::Error> {
                     // TODO: The in-memory index can be stale if another
                     // writer deleted the record. Need a general
                     // resync/retry strategy for multi-writer setups.
-                    match Record::show(&db, picked_lot, record_uuid).await {
-                        Ok(Some(record)) => {
-                            if *uuid {
-                                println!("{} <{}>", record.password(), record.uuid());
-                            } else {
-                                println!("{}", record.password());
+                    if *history {
+                        match Record::history(&db, picked_lot, record_uuid).await {
+                            Ok(Some(revisions)) if revisions.is_empty() => {
+                                println!("No revisions: {path} <{record_uuid}>");
+                            }
+                            Ok(Some(revisions)) => {
+                                for rev in revisions {
+                                    let ts = chrono::DateTime::<chrono::Utc>::from(rev.time)
+                                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                                    println!("{ts} {}: {}", rev.label, rev.data.password());
+                                }
+                            }
+                            Ok(None) => {
+                                println!("Record not found: {path} <{record_uuid}>");
+                            }
+                            Err(e) => {
+                                println!("Failed to load history: {e:?}");
                             }
                         }
-                        Ok(None) => {
-                            println!("Record not found: {path} <{record_uuid}>");
-                        }
-                        Err(e) => {
-                            println!("Failed to load record: {e:?}");
+                    } else {
+                        match Record::show(&db, picked_lot, record_uuid).await {
+                            Ok(Some(record)) => {
+                                if *uuid {
+                                    println!("{} <{}>", record.password(), record.uuid());
+                                } else {
+                                    println!("{}", record.password());
+                                }
+                            }
+                            Ok(None) => {
+                                println!("Record not found: {path} <{record_uuid}>");
+                            }
+                            Err(e) => {
+                                println!("Failed to load record: {e:?}");
+                            }
                         }
                     }
                 }
@@ -463,7 +502,7 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
                     .as_str()
                     .try_into()
                 {
-                    match Record::new(&lot, parsed_label, Data::new(password).with_extra(data))
+                    match Record::new(&*lot, parsed_label, Data::new(password).with_extra(data))
                         .upsert(&db, lot)
                         .await
                     {

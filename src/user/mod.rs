@@ -261,9 +261,9 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let lot_a = Lot::new("lot a");
+        let mut lot_a = Lot::new("lot a");
         lot_a.save(&db, &user).await.expect("failed to save lot");
-        let lot_b = Lot::new("lot b");
+        let mut lot_b = Lot::new("lot b");
         lot_b.save(&db, &user).await.expect("failed to save lot");
 
         let lots = user.lots(&db).await.expect("failed to load lots");

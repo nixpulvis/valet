@@ -161,7 +161,7 @@ impl<'a> View for Unlocked<'a> {
                                 // changed lot entry once the async upsert lands.
                                 state.store.write().unwrap().clear();
                                 self.rt.spawn(async move {
-                                    if let Some(lot) = Lot::load(&db, DEFAULT_LOT, &user)
+                                    if let Some(mut lot) = Lot::load(&db, DEFAULT_LOT, &user)
                                         .await
                                         .expect("failed to load main lot")
                                     {
@@ -174,7 +174,7 @@ impl<'a> View for Unlocked<'a> {
                                                     path.label,
                                                     Data::new(new_password),
                                                 )
-                                                .upsert(&db, &lot)
+                                                .upsert(&db, &mut lot)
                                                 .await
                                                 .expect("failed to save record");
                                             }

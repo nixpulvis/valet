@@ -20,6 +20,35 @@ pub struct Encrypted {
     pub(crate) nonce: Vec<u8>,
 }
 
+/// AES-GCM-SIV nonce size in bytes. Fixed at 96 bits; used to split packed
+/// `nonce || ciphertext` blobs.
+#[cfg(feature = "db")]
+pub(crate) const NONCE_SIZE: usize = 12;
+
+#[cfg(feature = "db")]
+impl Encrypted {
+    /// Pack `nonce || ciphertext` into a single blob for storage where a
+    /// separate nonce column is not desired.
+    pub(crate) fn pack(&self) -> Vec<u8> {
+        debug_assert_eq!(self.nonce.len(), NONCE_SIZE);
+        let mut out = Vec::with_capacity(self.nonce.len() + self.data.len());
+        out.extend_from_slice(&self.nonce);
+        out.extend_from_slice(&self.data);
+        out
+    }
+
+    /// Split a packed blob back into nonce + ciphertext. Panics in debug
+    /// builds if `bytes` is shorter than [`NONCE_SIZE`].
+    pub(crate) fn unpack(bytes: &[u8]) -> Self {
+        debug_assert!(bytes.len() >= NONCE_SIZE);
+        let (nonce, data) = bytes.split_at(NONCE_SIZE);
+        Encrypted {
+            data: data.to_vec(),
+            nonce: nonce.to_vec(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Error {
     KeyDerivation(String),

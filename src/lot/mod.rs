@@ -42,10 +42,18 @@ pub const DEFAULT_LOT: &'static str = "main";
 /// | `Kb`   | `= Decrypt_A(LyZJM8GA, SCW2EWjc)` | N/A                               |
 #[derive(PartialEq, Eq)]
 pub struct Lot {
-    // user: &'a User, TODO name and key are meaningless without a user.
     uuid: Uuid<Self>,
     name: String,
     key: Key<Self>,
+    /// Decrypted storgit parent tarball bytes for this lot. An empty vec means
+    /// "fresh store"; `storgit::Store::open` treats that as the signal to
+    /// initialise a new parent on first snapshot.
+    ///
+    /// Kept in memory so `Record::upsert` / `Record::delete` can round-trip
+    /// through `Store::open` / `Store::snapshot` without re-reading and
+    /// re-decrypting `lots.store` for every operation. Writes update this
+    /// field to reflect the snapshot just persisted.
+    store: Vec<u8>,
 }
 
 impl Lot {
@@ -54,6 +62,7 @@ impl Lot {
             uuid: Uuid::now(),
             name: name.into(),
             key: Key::generate(),
+            store: Vec::new(),
         }
     }
 
@@ -69,6 +78,41 @@ impl Lot {
         &self.key
     }
 
+    /// AAD for the `user_lots.data` ciphertext (the lot key wrapped under
+    /// the user key). Username is part of the AAD because `user_lots` is
+    /// per-user: each grant is scoped to a specific owner.
+    #[cfg(feature = "db")]
+    fn user_lot_aad(username: &str, uuid: &Uuid<Lot>) -> Vec<u8> {
+        [
+            b"l".as_slice(),
+            username.as_bytes(),
+            uuid.to_uuid().as_bytes(),
+        ]
+        .concat()
+    }
+
+    /// AAD for the outer encryption wrapping the storgit parent tarball.
+    /// Lot-scoped only: `lots.store` is one row per lot, shared by every
+    /// user granted access, so no username belongs here.
+    #[cfg(feature = "db")]
+    pub(crate) fn store_aad(uuid: &Uuid<Lot>) -> Vec<u8> {
+        [b"s".as_slice(), uuid.to_uuid().as_bytes()].concat()
+    }
+
+    /// The decrypted storgit parent tarball bytes for this lot. Empty for a
+    /// fresh lot that has never had a record written.
+    #[cfg(feature = "db")]
+    pub(crate) fn store_bytes(&self) -> &[u8] {
+        &self.store
+    }
+
+    /// Replace the in-memory parent tarball after a storgit snapshot has been
+    /// persisted to `lots.store`.
+    #[cfg(feature = "db")]
+    pub(crate) fn set_store_bytes(&mut self, bytes: Vec<u8>) {
+        self.store = bytes;
+    }
+
     /// Load the label-to-uuid index for this lot.
     ///
     /// The index decrypts only labels, leaving the password-bearing data
@@ -81,13 +125,17 @@ impl Lot {
 
     /// Save this lot to the database, detecting and handling key rotation.
     ///
-    /// If the lot key has changed since the last save, all records are
-    /// re-encrypted with the new key before the updated key is stored.
+    /// Writes the `lots` row (uuid + encrypted parent tarball), then the
+    /// per-user `user_lots` row binding `user` to this lot. If the lot key
+    /// has changed since the last save, all records are re-encrypted with
+    /// the new key before the updated key is stored.
     #[cfg(feature = "db")]
-    pub async fn save(&self, db: &Database, user: &User) -> Result<Uuid<Self>, Error> {
+    pub async fn save(&mut self, db: &Database, user: &User) -> Result<Uuid<Self>, Error> {
         let uuid = self.uuid.to_string();
+        let initial_store = self.encrypt_store(&self.store)?;
         let active = self::orm::ActiveModel {
             uuid: Unchanged(uuid.clone()),
+            store: Set(initial_store),
         };
         self::orm::Entity::insert(active)
             .on_conflict_do_nothing()
@@ -100,7 +148,7 @@ impl Lot {
                 .one(db.connection())
                 .await?;
 
-        let aad = Lot::aad(user.username(), &uuid);
+        let aad = Lot::user_lot_aad(user.username(), &self.uuid);
         match existing_ul {
             None => {
                 let encrypted = user.key().encrypt_with_aad(self.key.as_bytes(), &aad)?;
@@ -157,7 +205,7 @@ impl Lot {
 
     #[cfg(feature = "db")]
     async fn reencrypt_records(
-        &self,
+        &mut self,
         db: &Database,
         existing_key_bytes: &[u8],
     ) -> Result<(), Error> {
@@ -166,8 +214,31 @@ impl Lot {
             uuid: self.uuid.clone(),
             name: self.name.clone(),
             key: old_key,
+            store: self.store.clone(),
         };
         let records = Record::load_all(db, &old_lot).await?;
+        // Wipe the old storgit state: the existing parent tarball and every
+        // module tarball were encrypted under the old key, and upsert has no
+        // cheap way to re-wrap them. Clear the in-memory parent and the
+        // `records` rows so each `upsert` below rebuilds a fresh history
+        // under the new key. This does drop per-record commit history; the
+        // plan explicitly trades that for the simpler re-key path.
+        self.store = Vec::new();
+        record::orm::Entity::delete_many()
+            .filter(record::orm::Column::LotUuid.eq(self.uuid.to_string()))
+            .exec(db.connection())
+            .await?;
+        // No records left to drive a snapshot, so rewrite `lots.store` here
+        // under the new key (empty parent).
+        if records.is_empty() {
+            let store_packed = self.encrypt_store(&self.store)?;
+            self::orm::Entity::update(self::orm::ActiveModel {
+                uuid: Unchanged(self.uuid.to_string()),
+                store: Set(store_packed),
+            })
+            .exec(db.connection())
+            .await?;
+        }
         for record in &records {
             record.upsert(db, self).await?;
         }
@@ -229,22 +300,40 @@ impl Lot {
         model: self::orm::Model,
         ul: self::orm::user_lots::Model,
     ) -> Result<Lot, Error> {
+        let uuid = Uuid::<Lot>::parse(&model.uuid)?;
         let encrypted = Encrypted {
             data: ul.data,
             nonce: ul.nonce,
         };
-        let aad = Lot::aad(user.username(), &ul.lot_uuid);
+        let aad = Lot::user_lot_aad(user.username(), &uuid);
         let key_bytes = user.key().decrypt_with_aad(&encrypted, &aad)?;
-        Ok(Lot {
-            uuid: Uuid::parse(&model.uuid)?,
+        let key = Key::<Lot>::from_bytes(&key_bytes);
+        let mut lot = Lot {
+            uuid,
             name: ul.name,
-            key: Key::from_bytes(&key_bytes),
-        })
+            key,
+            store: Vec::new(),
+        };
+        lot.store = lot.decrypt_store_bytes(&model.store)?;
+        Ok(lot)
     }
 
+    /// Encrypt the storgit parent tarball under this lot's key with the
+    /// lot-scoped store AAD. Packed for the `lots.store` column.
     #[cfg(feature = "db")]
-    fn aad(username: &str, lot_uuid: &str) -> Vec<u8> {
-        [username.as_bytes(), lot_uuid.as_bytes()].concat()
+    pub(crate) fn encrypt_store(&self, parent_bytes: &[u8]) -> Result<Vec<u8>, encrypt::Error> {
+        let aad = Lot::store_aad(&self.uuid);
+        let encrypted = self.key.encrypt_with_aad(parent_bytes, &aad)?;
+        Ok(encrypted.pack())
+    }
+
+    /// Inverse of [`Lot::encrypt_store`]. Round-trips an empty parent through
+    /// an encrypt/decrypt pair.
+    #[cfg(feature = "db")]
+    pub(crate) fn decrypt_store_bytes(&self, packed: &[u8]) -> Result<Vec<u8>, encrypt::Error> {
+        let aad = Lot::store_aad(&self.uuid);
+        let encrypted = Encrypted::unpack(packed);
+        self.key.decrypt_with_aad(&encrypted, &aad)
     }
 }
 
@@ -330,14 +419,14 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let lot_a = Lot::new("lot a");
+        let mut lot_a = Lot::new("lot a");
         lot_a.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_a,
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &lot_a)
+        .upsert(&db, &mut lot_a)
         .await
         .expect("failed to upsert record");
         Record::new(
@@ -345,7 +434,7 @@ mod tests {
             "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
-        .upsert(&db, &lot_a)
+        .upsert(&db, &mut lot_a)
         .await
         .expect("failed to upsert record");
 
@@ -372,24 +461,24 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let lot_a = Lot::new("lot a");
+        let mut lot_a = Lot::new("lot a");
         lot_a.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_a,
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &lot_a)
+        .upsert(&db, &mut lot_a)
         .await
         .expect("failed to upsert record");
-        let lot_b = Lot::new("lot b");
+        let mut lot_b = Lot::new("lot b");
         lot_b.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot_b,
             "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
-        .upsert(&db, &lot_b)
+        .upsert(&db, &mut lot_b)
         .await
         .expect("failed to upsert record");
 
@@ -409,7 +498,7 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
         let lot_key = get_user_lot_key(&db, &user, &lot).await;
         assert_eq!(lot.key().as_bytes(), lot_key.as_bytes());
@@ -432,7 +521,7 @@ mod tests {
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .expect("failed to upsert record");
         let lot_key_a = get_user_lot_key(&db, &user, &lot).await;
@@ -469,14 +558,14 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot,
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .upsert(&db, &lot)
+        .upsert(&db, &mut lot)
         .await
         .expect("failed to upsert record");
         lot.delete(&db).await.expect("failed to delete lot");
@@ -484,12 +573,12 @@ mod tests {
             .await
             .expect("failed to load lots");
         assert!(lots.is_empty());
-        assert!(
-            lot.index(&db)
-                .await
-                .expect("failed to load index")
-                .is_empty()
-        );
+        // Stale lot handle: the row is gone, so the index load must error out
+        // rather than silently return an empty index.
+        assert!(matches!(
+            lot.index(&db).await,
+            Err(Error::Record(record::Error::MissingLot)),
+        ));
         let user_lot = self::orm::user_lots::Entity::find_by_id((
             user.username().to_owned(),
             lot.uuid().to_string(),
@@ -515,7 +604,7 @@ mod tests {
             data: ul.data,
             nonce: ul.nonce,
         };
-        let aad = Lot::aad(user.username(), &lot.uuid().to_string());
+        let aad = Lot::user_lot_aad(user.username(), lot.uuid());
         Key::<Lot>::from_bytes(
             &user
                 .key()

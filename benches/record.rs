@@ -1,5 +1,9 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use valet::{encrypt::Stash, prelude::*, uuid::Uuid};
+use valet::{
+    encrypt::{Key, Stash},
+    prelude::*,
+    uuid::Uuid,
+};
 
 fn small_data(c: &mut Criterion) {
     let data = Data::new("secret".try_into().unwrap());
@@ -16,20 +20,20 @@ fn small_data(c: &mut Criterion) {
         b.iter(|| Data::decompress(&compressed).expect("failed to decompress"))
     });
 
-    let lot = Lot::new("test");
-    let encrypt = || data.encrypt(lot.key());
+    let key = Key::<Lot>::generate();
+    let encrypt = || data.encrypt(&key);
     c.bench_function("Record::encrypt", |b| b.iter(encrypt));
     let encrypted = encrypt().expect("failed to encrypt");
     c.bench_function("Record::decrypt", |b| {
-        b.iter(|| Data::decrypt(&encrypted, lot.key()))
+        b.iter(|| Data::decrypt(&encrypted, &key))
     });
 
     let aad = Uuid::<Record>::now().to_string() + &Uuid::<Record>::now().to_string();
-    let encrypt_aad = || data.encrypt_with_aad(lot.key(), aad.as_bytes());
+    let encrypt_aad = || data.encrypt_with_aad(&key, aad.as_bytes());
     c.bench_function("Record::encrypt_with_aad", |b| b.iter(encrypt_aad));
     let encrypted_aad = encrypt_aad().expect("failed to encrypt");
     c.bench_function("Record::decrypt_with_aad", |b| {
-        b.iter(|| Data::decrypt_with_aad(&encrypted_aad, lot.key(), aad.as_bytes()))
+        b.iter(|| Data::decrypt_with_aad(&encrypted_aad, &key, aad.as_bytes()))
     });
 }
 

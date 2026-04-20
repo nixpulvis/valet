@@ -267,7 +267,7 @@ impl std::error::Error for Error {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lot::Lot;
+    use crate::{encrypt::Key, lot::Lot};
 
     #[test]
     fn encode_decode() {
@@ -279,23 +279,23 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt() {
-        let lot = Lot::new("test");
+        let key = Key::<Lot>::generate();
         let label = "foo".parse::<Label>().unwrap();
-        let encrypted = label.encrypt(lot.key()).expect("failed to encrypt");
-        let decrypted = Label::decrypt(&encrypted, lot.key()).expect("failed to decrypt");
+        let encrypted = label.encrypt(&key).expect("failed to encrypt");
+        let decrypted = Label::decrypt(&encrypted, &key).expect("failed to decrypt");
         assert_eq!(label, decrypted);
     }
 
     #[test]
     fn encrypt_decrypt_with_aad() {
-        let lot = Lot::new("test");
+        let key = Key::<Lot>::generate();
         let label = "foo".parse::<Label>().unwrap();
         let aad = [1, 2, 3];
         let encrypted = label
-            .encrypt_with_aad(lot.key(), &aad)
+            .encrypt_with_aad(&key, &aad)
             .expect("failed to encrypt");
         let decrypted =
-            Label::decrypt_with_aad(&encrypted, lot.key(), &aad).expect("failed to decrypt");
+            Label::decrypt_with_aad(&encrypted, &key, &aad).expect("failed to decrypt");
         assert_eq!(label, decrypted);
     }
 
