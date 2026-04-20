@@ -267,7 +267,7 @@
 <a href=#267 id=267 data-nosnippet>267</a><span class="attr">#[cfg(test)]
 <a href=#268 id=268 data-nosnippet>268</a></span><span class="kw">mod </span>tests {
 <a href=#269 id=269 data-nosnippet>269</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#270 id=270 data-nosnippet>270</a>    <span class="kw">use </span><span class="kw">crate</span>::lot::Lot;
+<a href=#270 id=270 data-nosnippet>270</a>    <span class="kw">use </span>crate::{encrypt::Key, lot::Lot};
 <a href=#271 id=271 data-nosnippet>271</a>
 <a href=#272 id=272 data-nosnippet>272</a>    <span class="attr">#[test]
 <a href=#273 id=273 data-nosnippet>273</a>    </span><span class="kw">fn </span>encode_decode() {
@@ -279,23 +279,23 @@
 <a href=#279 id=279 data-nosnippet>279</a>
 <a href=#280 id=280 data-nosnippet>280</a>    <span class="attr">#[test]
 <a href=#281 id=281 data-nosnippet>281</a>    </span><span class="kw">fn </span>encrypt_decrypt() {
-<a href=#282 id=282 data-nosnippet>282</a>        <span class="kw">let </span>lot = Lot::new(<span class="string">"test"</span>);
+<a href=#282 id=282 data-nosnippet>282</a>        <span class="kw">let </span>key = Key::&lt;Lot&gt;::generate();
 <a href=#283 id=283 data-nosnippet>283</a>        <span class="kw">let </span>label = <span class="string">"foo"</span>.parse::&lt;Label&gt;().unwrap();
-<a href=#284 id=284 data-nosnippet>284</a>        <span class="kw">let </span>encrypted = label.encrypt(lot.key()).expect(<span class="string">"failed to encrypt"</span>);
-<a href=#285 id=285 data-nosnippet>285</a>        <span class="kw">let </span>decrypted = Label::decrypt(<span class="kw-2">&amp;</span>encrypted, lot.key()).expect(<span class="string">"failed to decrypt"</span>);
+<a href=#284 id=284 data-nosnippet>284</a>        <span class="kw">let </span>encrypted = label.encrypt(<span class="kw-2">&amp;</span>key).expect(<span class="string">"failed to encrypt"</span>);
+<a href=#285 id=285 data-nosnippet>285</a>        <span class="kw">let </span>decrypted = Label::decrypt(<span class="kw-2">&amp;</span>encrypted, <span class="kw-2">&amp;</span>key).expect(<span class="string">"failed to decrypt"</span>);
 <a href=#286 id=286 data-nosnippet>286</a>        <span class="macro">assert_eq!</span>(label, decrypted);
 <a href=#287 id=287 data-nosnippet>287</a>    }
 <a href=#288 id=288 data-nosnippet>288</a>
 <a href=#289 id=289 data-nosnippet>289</a>    <span class="attr">#[test]
 <a href=#290 id=290 data-nosnippet>290</a>    </span><span class="kw">fn </span>encrypt_decrypt_with_aad() {
-<a href=#291 id=291 data-nosnippet>291</a>        <span class="kw">let </span>lot = Lot::new(<span class="string">"test"</span>);
+<a href=#291 id=291 data-nosnippet>291</a>        <span class="kw">let </span>key = Key::&lt;Lot&gt;::generate();
 <a href=#292 id=292 data-nosnippet>292</a>        <span class="kw">let </span>label = <span class="string">"foo"</span>.parse::&lt;Label&gt;().unwrap();
 <a href=#293 id=293 data-nosnippet>293</a>        <span class="kw">let </span>aad = [<span class="number">1</span>, <span class="number">2</span>, <span class="number">3</span>];
 <a href=#294 id=294 data-nosnippet>294</a>        <span class="kw">let </span>encrypted = label
-<a href=#295 id=295 data-nosnippet>295</a>            .encrypt_with_aad(lot.key(), <span class="kw-2">&amp;</span>aad)
+<a href=#295 id=295 data-nosnippet>295</a>            .encrypt_with_aad(<span class="kw-2">&amp;</span>key, <span class="kw-2">&amp;</span>aad)
 <a href=#296 id=296 data-nosnippet>296</a>            .expect(<span class="string">"failed to encrypt"</span>);
 <a href=#297 id=297 data-nosnippet>297</a>        <span class="kw">let </span>decrypted =
-<a href=#298 id=298 data-nosnippet>298</a>            Label::decrypt_with_aad(<span class="kw-2">&amp;</span>encrypted, lot.key(), <span class="kw-2">&amp;</span>aad).expect(<span class="string">"failed to decrypt"</span>);
+<a href=#298 id=298 data-nosnippet>298</a>            Label::decrypt_with_aad(<span class="kw-2">&amp;</span>encrypted, <span class="kw-2">&amp;</span>key, <span class="kw-2">&amp;</span>aad).expect(<span class="string">"failed to decrypt"</span>);
 <a href=#299 id=299 data-nosnippet>299</a>        <span class="macro">assert_eq!</span>(label, decrypted);
 <a href=#300 id=300 data-nosnippet>300</a>    }
 <a href=#301 id=301 data-nosnippet>301</a>

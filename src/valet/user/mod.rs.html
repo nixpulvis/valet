@@ -261,9 +261,9 @@
 <a href=#261 id=261 data-nosnippet>261</a>            .register(<span class="kw-2">&amp;</span>db)
 <a href=#262 id=262 data-nosnippet>262</a>            .<span class="kw">await
 <a href=#263 id=263 data-nosnippet>263</a>            </span>.expect(<span class="string">"failed to register user"</span>);
-<a href=#264 id=264 data-nosnippet>264</a>        <span class="kw">let </span>lot_a = Lot::new(<span class="string">"lot a"</span>);
+<a href=#264 id=264 data-nosnippet>264</a>        <span class="kw">let </span><span class="kw-2">mut </span>lot_a = Lot::new(<span class="string">"lot a"</span>);
 <a href=#265 id=265 data-nosnippet>265</a>        lot_a.save(<span class="kw-2">&amp;</span>db, <span class="kw-2">&amp;</span>user).<span class="kw">await</span>.expect(<span class="string">"failed to save lot"</span>);
-<a href=#266 id=266 data-nosnippet>266</a>        <span class="kw">let </span>lot_b = Lot::new(<span class="string">"lot b"</span>);
+<a href=#266 id=266 data-nosnippet>266</a>        <span class="kw">let </span><span class="kw-2">mut </span>lot_b = Lot::new(<span class="string">"lot b"</span>);
 <a href=#267 id=267 data-nosnippet>267</a>        lot_b.save(<span class="kw-2">&amp;</span>db, <span class="kw-2">&amp;</span>user).<span class="kw">await</span>.expect(<span class="string">"failed to save lot"</span>);
 <a href=#268 id=268 data-nosnippet>268</a>
 <a href=#269 id=269 data-nosnippet>269</a>        <span class="kw">let </span>lots = user.lots(<span class="kw-2">&amp;</span>db).<span class="kw">await</span>.expect(<span class="string">"failed to load lots"</span>);
