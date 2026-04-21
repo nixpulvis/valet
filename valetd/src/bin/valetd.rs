@@ -15,7 +15,6 @@
 //! [`User`]: valet::user::User
 //! [`Lot`]: valet::Lot
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
@@ -30,9 +29,7 @@ const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    let socket_path: PathBuf = std::env::var_os("VALET_SOCKET")
-        .map(PathBuf::from)
-        .unwrap_or_else(socket::default_path);
+    let socket_path = socket::path();
 
     let handler = match DaemonHandler::from_env().await {
         Ok(h) => h,

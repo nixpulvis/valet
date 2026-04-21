@@ -166,17 +166,24 @@ fn install_native_host(flags: &[String]) -> ExitCode {
     eprintln!("Pointing at:");
     eprintln!("  {}", bin_path.display());
     eprintln!();
-    eprintln!("The shim auto-spawns a sibling valetd binary from:");
+    eprintln!("At startup the shim probes the daemon socket. If a valetd is");
+    eprintln!("already listening it uses that; otherwise it serves requests");
+    eprintln!("in-process (embedded mode). Run a separate daemon with:");
     eprintln!("  {}", daemon_path.display());
     eprintln!();
-    eprintln!("If you want to use a non-default DB or socket path, set VALET_DB or");
-    eprintln!("VALET_SOCKET in your shell env before launching the browser (the");
-    eprintln!("native host inherits the browser's environment).");
+    eprintln!("Environment variables (set in your shell before launching the");
+    eprintln!("browser; the shim inherits its env):");
+    eprintln!("  VALET_DB        non-default SQLite path");
+    eprintln!("  VALET_SOCKET    non-default daemon socket path");
+    eprintln!("  VALET_BACKEND   force 'socket' or 'embedded' (default 'auto')");
 
     // The shim reuses an existing daemon if the socket is live, so a stale
     // `valetd` from before this rebuild would otherwise keep serving the
-    // old wire schema. Kill it so the next shim connection spawns the
-    // freshly-built binary. Ignore errors (none running is fine).
+    // old wire schema. Kill it so backend selection starts fresh.
+    //
+    // TODO: a shim already running against the socket won't notice; it
+    // holds the old connection and only sees the failure on the next
+    // request. Reload the extension after rebuilding.
     let killed = Command::new("pkill")
         .args(["-x", "valetd"])
         .status()
@@ -184,7 +191,8 @@ fn install_native_host(flags: &[String]) -> ExitCode {
         .unwrap_or(false);
     if killed {
         eprintln!();
-        eprintln!("Stopped running valetd; the shim will spawn the new build on demand.");
+        eprintln!("Stopped running valetd. Reload the extension so the shim picks");
+        eprintln!("the rebuilt daemon (or falls back to embedded mode).");
     }
 
     ExitCode::SUCCESS
