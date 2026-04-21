@@ -163,8 +163,11 @@ fn read_frame<R: Read>(r: &mut R) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Write one length-prefixed frame of already-encoded bytes to `w`. The
+/// payload is anything up to [`MAX_FRAME_LEN`] bytes; callers that want
+/// the typed encode-then-send should use [`Frame::send_async`] instead.
 #[cfg(feature = "native")]
-async fn write_frame_async<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> io::Result<()> {
+pub async fn send_frame_async<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> io::Result<()> {
     check_len(payload.len())?;
     let len = u32::try_from(payload.len()).expect("checked above");
     w.write_all(&len.to_be_bytes()).await?;
@@ -172,8 +175,9 @@ async fn write_frame_async<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> 
     w.flush().await
 }
 
+/// Read one length-prefixed frame from `r`. Inverse of [`send_frame_async`].
 #[cfg(feature = "native")]
-async fn read_frame_async<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Vec<u8>> {
+pub async fn recv_frame_async<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Vec<u8>> {
     let mut len_bytes = [0u8; 4];
     r.read_exact(&mut len_bytes).await?;
     let len = u32::from_be_bytes(len_bytes) as usize;
@@ -231,7 +235,7 @@ pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
     where
         Self: Sync,
     {
-        async move { write_frame_async(w, &self.encode()).await }
+        async move { send_frame_async(w, &self.encode()).await }
     }
 
     /// Async [`recv`](Self::recv) over a tokio reader.
@@ -239,7 +243,7 @@ pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
     fn recv_async<R: AsyncRead + Unpin + Send>(
         r: &mut R,
     ) -> impl std::future::Future<Output = io::Result<Self>> + Send {
-        async move { Self::decode(&read_frame_async(r).await?) }
+        async move { Self::decode(&recv_frame_async(r).await?) }
     }
 
     /// Bitcode-encode `self` and base64 it, for embedding in the browser

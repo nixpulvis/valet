@@ -20,14 +20,13 @@
 //! application-level errors travel inside the bitcode payload as
 //! `Response::Error`.
 //!
-//! Two backends, selected at compile time:
-//!
-//! * [`SocketBackend`] (default) — forwards the raw bitcode bytes to a
-//!   running `valetd` over its Unix socket, auto-spawning a sibling
-//!   daemon if the socket is missing. The shim never decodes the payload.
-//! * [`EmbeddedBackend`] (`--features embedded`) — owns a
-//!   [`valetd::DaemonHandler`] in-process, so the shim is the whole
-//!   server. Pulls in SQLite and crypto; no socket is involved.
+//! Two backends are always compiled in. At startup the shim probes
+//! `valetd`'s Unix socket: if something is listening it uses
+//! [`SocketBackend`] (pure byte relay), otherwise it falls back to
+//! [`EmbeddedBackend`], which owns a [`valetd::DaemonHandler`] directly
+//! and is the whole server. `VALET_BACKEND=socket|embedded|auto` forces
+//! a specific choice; see [`backend`] for the selection rule and the
+//! caveat around the user starting `valetd` after the shim.
 //!
 //! Adding a new RPC variant touches neither backend — only the browser
 //! extension and `valetd` itself.
