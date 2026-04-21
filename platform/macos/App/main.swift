@@ -14,22 +14,24 @@ private let log = Logger(subsystem: "com.nixpulvis.valet.autofill", category: "h
 private let enableWaitTimeout: TimeInterval = 120
 private let pollInterval: TimeInterval = 1
 
-private func syncNow() async throws -> Int {
-    let entries = try await ValetClient.default().list(queries: [])
-    let identities = entries.compactMap { entry -> ASPasswordCredentialIdentity? in
-        guard
-            let urlString = entry.extras["url"],
-            let host = URL(string: urlString)?.host
-        else { return nil }
-        return ASPasswordCredentialIdentity(
-            serviceIdentifier: ASCredentialServiceIdentifier(identifier: host, type: .domain),
-            user: entry.extras["username"] ?? "",
-            recordIdentifier: entry.id
-        )
+/// Rebuild `ASCredentialIdentityStore` on app launch. Aggressive: any
+/// failure (daemon unreachable, daemon locked, list error) clears the
+/// store rather than leaving stale entries from a previous install
+/// behind.
+private func syncNow() async -> Int {
+    do {
+        let client = try ValetClient.default()
+        guard let username = try await client.status().first else {
+            log.notice("daemon locked; clearing identity store")
+            try await ASCredentialIdentityStore.shared.replaceCredentialIdentities([])
+            return 0
+        }
+        return try await syncIdentities(client: client, username: username)
+    } catch {
+        log.error("sync failed, clearing identity store: \(String(describing: error), privacy: .public)")
+        try? await ASCredentialIdentityStore.shared.replaceCredentialIdentities([])
+        return 0
     }
-    try await ASCredentialIdentityStore.shared.replaceCredentialIdentities(identities)
-    log.notice("replaced \(identities.count) identities")
-    return identities.count
 }
 
 /// Resolves true as soon as the user enables Valet as their AutoFill provider,
@@ -58,8 +60,7 @@ Task.detached {
     let enabled = await ASCredentialIdentityStore.shared.state().isEnabled
     fastPathEnabled.value = enabled
     if enabled {
-        do { _ = try await syncNow() }
-        catch { log.error("sync failed: \(String(describing: error), privacy: .public)") }
+        _ = await syncNow()
     }
     fastPath.signal()
 }
@@ -79,8 +80,7 @@ alert.addButton(withTitle: "Cancel")
 Task.detached {
     let enabled = await waitForEnabled(timeout: enableWaitTimeout)
     if enabled {
-        do { _ = try await syncNow() }
-        catch { log.error("sync failed: \(String(describing: error), privacy: .public)") }
+        _ = await syncNow()
     } else {
         log.notice("timed out waiting for provider to be enabled")
     }

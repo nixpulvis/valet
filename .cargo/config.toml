@@ -1,0 +1,2 @@
+[alias]
+browser-xtask = "run --package xtask --"

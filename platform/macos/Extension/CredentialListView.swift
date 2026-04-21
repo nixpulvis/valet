@@ -2,9 +2,14 @@ import SwiftUI
 
 struct CredentialListView: View {
     let client: ValetClient
-    let queries: [String]
+    let username: String
+    let domains: [String]
     let onSelect: (RecordIndexEntry) -> Void
     let onCancel: () -> Void
+    /// Fires once, after `load()` finishes (success or failure). Lets the
+    /// caller schedule work that shouldn't compete with the list's
+    /// findRecords RPCs for the client mutex.
+    var onLoaded: (() -> Void)? = nil
 
     @State private var records: [RecordIndexEntry] = []
     @State private var loading = true
@@ -38,7 +43,7 @@ struct CredentialListView: View {
             List(records) { record in
                 VStack(alignment: .leading, spacing: 2) {
                     Text(record.label).font(.body)
-                    if let username = record.extras["username"], !username.isEmpty {
+                    if let username = record.username, !username.isEmpty {
                         Text(username)
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -52,9 +57,29 @@ struct CredentialListView: View {
     }
 
     private func load() async {
-        defer { loading = false }
+        defer {
+            loading = false
+            onLoaded?()
+        }
         do {
-            records = try await client.list(queries: queries)
+            // findRecords is per-lot, so we loop over each domain Safari
+            // handed us, hit DEFAULT_LOT once per domain, and dedupe by
+            // uuid. Mirrors the browser extension's shape.
+            //
+            // TODO: when the daemon grows a cross-lot suffix query (see
+            // the TODO on Request::FindRecords), drop this loop and pass
+            // domains directly to a single RPC.
+            var seen = Set<String>()
+            var merged: [RecordIndexEntry] = []
+            for domain in domains {
+                let batch = try await client.findRecords(
+                    username: username, lot: "main", domain: domain
+                )
+                for entry in batch where seen.insert(entry.id).inserted {
+                    merged.append(entry)
+                }
+            }
+            records = merged
         } catch {
             self.error = "\(error)"
         }

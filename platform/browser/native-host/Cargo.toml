@@ -1,0 +1,23 @@
+[package]
+name = "valet-native-host"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "valet-native-host"
+path = "src/main.rs"
+
+[dependencies]
+valet = { path = "../../..", default-features = false }
+valetd = { path = "../../../valetd", features = ["native"] }
+serde_json = "1.0"
+tokio = { version = "1.46", features = [
+    "macros",
+    "rt",
+    "io-std",
+    "io-util",
+    "net",
+    "process",
+    "sync",
+    "time",
+] }

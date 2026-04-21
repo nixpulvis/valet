@@ -8,6 +8,10 @@ it:
   lots, and storing/retrieving secrets from the terminal.
 - **GUI** (`src/bin/gui/`) — Native desktop app built with egui/eframe (behind
   the `gui` feature flag).
+- **Browser extension** (`platform/browser/`): browser popup that matches
+  credentials to the active tab's domain, with a native messaging host for
+  database access. See the [browser extension README](platform/browser/README.md)
+  for build and development instructions.
 
 ## CLI
 

@@ -3,5 +3,5 @@
 valet.sqlite
 .zed
 .DS_Store
-macos-extension/build/
-macos-extension/compile_commands.json
+platform/macos/build/
+platform/macos/compile_commands.json

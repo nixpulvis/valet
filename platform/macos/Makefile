@@ -12,10 +12,20 @@ MACOS_VERSION   ?= 14.0
 SIGN            ?= -
 DEVELOPMENT_TEAM ?=
 
-# Toggle between stub mode (default) and real daemon mode.
-# `make BUILD_MODE=connected` strips the stub entry point and the VALETD_FFI_STUB
-# define from Swift, so the extension calls ValetClient.connect(socketPath:).
-BUILD_MODE      ?= stub
+# Toggle between real daemon mode (default) and in-process stub mode.
+# `make BUILD_MODE=stub` links the stub entry point and defines VALETD_FFI_STUB
+# for the Swift sources so ValetClient.default() uses valetd_ffi_client_new_stub.
+BUILD_MODE      ?= connected
+
+# Default to debug builds. Set RELEASE=1 to build release.
+RELEASE         ?=
+ifeq ($(RELEASE),1)
+RELEASE_FLAG    := --release
+PROFILE_DIR     := release
+else
+RELEASE_FLAG    :=
+PROFILE_DIR     := debug
+endif
 
 ifeq ($(BUILD_MODE),stub)
 CARGO_FEATURES  := --features stub
@@ -23,18 +33,18 @@ CARGO_FEATURES  := --features stub
 # preprocessor so the gated prototype in valetd.h is visible to the importer.
 SWIFT_DEFINES   := -D VALETD_FFI_STUB -Xcc -DVALETD_FFI_STUB
 else
-CARGO_FEATURES  := --no-default-features
+CARGO_FEATURES  := --no-default-features --features native
 SWIFT_DEFINES   :=
 endif
 
 SDK             := $(shell xcrun --sdk macosx --show-sdk-path)
 SWIFT_TARGET    := $(ARCH)-apple-macos$(MACOS_VERSION)
 
-VALETD_CRATE_DIR := ../valetd
-VALETD_LIB_DIR  := ../target/$(TARGET_TRIPLE)/release
+VALETD_CRATE_DIR := ../../valetd
+VALETD_LIB_DIR  := ../../target/$(TARGET_TRIPLE)/$(PROFILE_DIR)
 # Profile-agnostic include dir written by build.rs (see build_support/cbindgen.rs).
 # Holds both valet.h and valetd.h; modulemap exposes them as one Swift module.
-VALETD_INCLUDE_DIR := ../target/$(TARGET_TRIPLE)/include
+VALETD_INCLUDE_DIR := ../../target/$(TARGET_TRIPLE)/include
 VALETD_STATICLIB := $(VALETD_LIB_DIR)/libvaletd.a
 VALETD_MODMAP   := $(VALETD_INCLUDE_DIR)/module.modulemap
 
@@ -44,8 +54,8 @@ APP_BIN         := $(BUILD)/ValetAutoFill
 EXT_BUNDLE      := $(BUILD)/ValetAutoFillExt.appex
 EXT_BIN         := $(BUILD)/ValetAutoFillExt
 
-SHARED_SWIFT    := Shared/ValetClient.swift
-EXT_SWIFT       := Extension/main.swift Extension/CredentialProviderViewController.swift Extension/CredentialListView.swift
+SHARED_SWIFT    := Shared/ValetClient.swift Shared/IdentitySync.swift
+EXT_SWIFT       := Extension/main.swift Extension/CredentialProviderViewController.swift Extension/CredentialListView.swift Extension/UnlockView.swift
 APP_SWIFT       := App/main.swift
 
 SWIFTC          := xcrun -sdk macosx swiftc
@@ -64,7 +74,8 @@ CC_JSON         := compile_commands.json
 all: bundles $(CC_JSON)
 
 rust:
-	cargo build --release -p valetd $(CARGO_FEATURES) --target $(TARGET_TRIPLE)
+	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) \
+	    cargo build $(RELEASE_FLAG) -p valetd $(CARGO_FEATURES) --target $(TARGET_TRIPLE)
 
 $(VALETD_STATICLIB): rust
 
@@ -133,11 +144,11 @@ verify: bundles
 universal:
 	$(MAKE) ARCH=arm64 rust
 	$(MAKE) ARCH=x86_64 rust
-	@mkdir -p ../target/universal-apple-darwin/release
+	@mkdir -p ../../target/universal-apple-darwin/$(PROFILE_DIR)
 	lipo -create \
-	    ../target/aarch64-apple-darwin/release/libvaletd.a \
-	    ../target/x86_64-apple-darwin/release/libvaletd.a \
-	    -output ../target/universal-apple-darwin/release/libvaletd.a
+	    ../../target/aarch64-apple-darwin/$(PROFILE_DIR)/libvaletd.a \
+	    ../../target/x86_64-apple-darwin/$(PROFILE_DIR)/libvaletd.a \
+	    -output ../../target/universal-apple-darwin/$(PROFILE_DIR)/libvaletd.a
 	$(MAKE) TARGET_TRIPLE=universal-apple-darwin SWIFT_TARGET="arm64-apple-macos$(MACOS_VERSION)" $(APP_BUNDLE)
 
 compile_commands: $(CC_JSON)

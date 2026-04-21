@@ -11,14 +11,24 @@ crate-type = ["staticlib", "rlib"]
 [[bin]]
 name = "valetd"
 path = "src/bin/valetd.rs"
+required-features = ["native"]
 
 [features]
-default = ["stub"]
-stub = []
+default = ["native", "stub"]
+# Everything beyond the wire-types library: the daemon binary, async IO,
+# the sync client, and the FFI layer. Turn off with
+# `default-features = false` for a wasm-friendly wire-types-only build
+# (used by the browser extension).
+native = ["dep:tokio", "valet/db", "valet/ffi"]
+# In-process fake client that answers without a socket. Used by the macOS
+# extension and FFI tests.
+stub = ["native"]
 
 [dependencies]
-valet = { path = "..", default-features = false, features = ["ffi"] }
+valet = { path = "..", default-features = false }
 bitcode = { git = "https://github.com/nixpulvis/bitcode", branch = "pin-support" }
+base64 = "0.22"
+tokio = { version = "1.46", features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time", "io-util"], optional = true }
 
 [build-dependencies]
 valet-build = { path = "../valet-build" }
