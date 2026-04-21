@@ -3,7 +3,13 @@ use eframe::egui;
 use egui_inbox::UiInbox;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use valet::{Lot, Record, db::Database, password::Password, record::Label, uuid::Uuid};
+use valet::{
+    Lot, Record,
+    db::Database,
+    password::Password,
+    record::{Label, LabelName},
+    uuid::Uuid,
+};
 
 enum PasswordEvent {
     Copy(Password),
@@ -60,28 +66,65 @@ impl egui::Widget for RecordRow<'_> {
 
         ui.data_mut(|d| d.insert_temp(pw_inbox_id, pw_inbox.clone()));
 
+        let (primary, secondary) = match self.label.name() {
+            LabelName::Domain { id, domain } => (
+                domain.as_str().to_string(),
+                self.label
+                    .extra()
+                    .get("username")
+                    .map(String::as_str)
+                    .unwrap_or(id.as_str())
+                    .to_string(),
+            ),
+            LabelName::Simple(s) => (
+                s.clone(),
+                self.label
+                    .extra()
+                    .get("username")
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        };
+
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 let copy_width = button_width(ui, &["Copy"]);
                 let spacing = ui.spacing().item_spacing.x;
                 let label_width = (ui.available_width() - copy_width - spacing).max(0.);
+                let row_height =
+                    ui.spacing().interact_size.y + ui.text_style_height(&egui::TextStyle::Small);
 
                 // allocate_space advances the cursor by exactly label_width.
-                // new_child renders into that rect with an explicit left-to-right layout
-                // without touching the cursor again, keeping the label left-aligned.
-                let (_, label_rect) =
-                    ui.allocate_space(egui::vec2(label_width, ui.spacing().interact_size.y));
-                let resp = ui
+                // new_child renders into that rect with an explicit top-down layout
+                // so the primary and secondary lines stack without touching the
+                // cursor again.
+                let (_, label_rect) = ui.allocate_space(egui::vec2(label_width, row_height));
+                let inner = ui
                     .new_child(
                         egui::UiBuilder::new()
                             .max_rect(label_rect)
-                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                            .layout(egui::Layout::top_down(egui::Align::LEFT)),
                     )
-                    .add(
-                        egui::Label::new(self.label.to_string())
+                    .scope(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.;
+                        let p = ui.add(
+                            egui::Label::new(primary)
+                                .truncate()
+                                .sense(egui::Sense::click()),
+                        );
+                        let s = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(secondary)
+                                    .small()
+                                    .color(ui.visuals().weak_text_color()),
+                            )
                             .truncate()
                             .sense(egui::Sense::click()),
-                    );
+                        );
+                        (p, s)
+                    })
+                    .inner;
+                let resp = inner.0.union(inner.1);
                 if resp.clicked() {
                     ui.data_mut(|d| d.insert_temp(expanded_id, !expanded));
                     if expanded {
@@ -157,6 +200,16 @@ impl egui::Widget for RecordRow<'_> {
                                 }
                             }
                         });
+
+                        for (k, v) in self.label.extra() {
+                            if k == "username" {
+                                continue;
+                            }
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(format!("{k}:")).strong());
+                                ui.add(egui::Label::new(v.as_str()).truncate());
+                            });
+                        }
                     });
             }
         })
