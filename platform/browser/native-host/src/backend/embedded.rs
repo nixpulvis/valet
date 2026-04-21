@@ -8,6 +8,7 @@
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::info;
 use valetd::{DaemonHandler, Handler, Request, Response, request::Frame};
 
 use super::Backend;
@@ -40,7 +41,7 @@ fn spawn_reaper(handler: Arc<DaemonHandler>) {
         loop {
             tokio::time::sleep(IDLE_CHECK_INTERVAL).await;
             if handler.reap_if_idle(IDLE_TIMEOUT).await {
-                eprintln!("valet-native-host: idle timeout, locked all users");
+                info!("idle timeout, locked all users");
             }
         }
     });

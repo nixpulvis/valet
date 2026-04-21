@@ -25,7 +25,8 @@ pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 /// A message sent from a client to the daemon. Each variant is answered by
 /// exactly one [`Response`] (possibly [`Response::Error`]).
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Decode, Debug, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum Request {
     /// List currently unlocked usernames. Answered with [`Response::Users`].
     Status,
@@ -96,7 +97,8 @@ pub enum Request {
 /// be returned in place of any success variant.
 ///
 /// [`Error`]: Response::Error
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Decode, Debug, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum Response {
     /// Generic success with no payload (Unlock, Lock, LockAll).
     Ok,

@@ -36,12 +36,13 @@
 //! [`EmbeddedBackend`]: backend::EmbeddedBackend
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::{debug, error, warn};
+use valet_browser_bridge::{NativePayload, NativeReply, NativeRequest};
 use valetd::request::MAX_FRAME_LEN;
 
 mod backend;
-use backend::Backend;
+use backend::{Active, Backend};
 
 /// Maximum native messaging frame size (1 MiB). The browser enforces a
 /// similar limit on the addon side.
@@ -49,10 +50,11 @@ const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    valet::logging::init();
     let backend = match backend::build().await {
         Ok(b) => b,
         Err(err) => {
-            eprintln!("valet-native-host: {err}");
+            error!("{err}");
             std::process::exit(1);
         }
     };
@@ -62,69 +64,106 @@ async fn main() {
 
     loop {
         let mut len_buf = [0u8; 4];
-        if stdin.read_exact(&mut len_buf).await.is_err() {
-            break;
+        match stdin.read_exact(&mut len_buf).await {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                debug!("stdin closed, exiting");
+                break;
+            }
+            Err(e) => {
+                // stdin is in a bad state, won't recover.
+                warn!("stdin read failed, exiting: {e}");
+                break;
+            }
         }
         let len = u32::from_le_bytes(len_buf) as usize;
         if len == 0 || len > MAX_FRAME_SIZE {
-            eprintln!("valet-native-host: invalid frame length {len}");
+            // TODO: framing has no resync marker, so a bad length forces
+            // us to drop the stream. Chunked frames with a sync token
+            // would let us skip to the next valid boundary instead.
+            warn!(len, "invalid frame length, exiting");
             break;
         }
         let mut buf = vec![0u8; len];
-        if stdin.read_exact(&mut buf).await.is_err() {
+        if let Err(e) = stdin.read_exact(&mut buf).await {
+            // TODO: same as above.
+            warn!(len, "truncated frame body, exiting: {e}");
             break;
         }
 
-        let response = match serde_json::from_slice::<Value>(&buf) {
+        let response = match serde_json::from_slice::<NativeRequest>(&buf) {
             Ok(req) => handle(&backend, req).await,
-            Err(e) => json!({ "id": Value::Null, "error": format!("invalid json: {e}") }),
+            Err(e) => {
+                let backend_name: &'static str = (&backend).into();
+                warn!(backend = backend_name, "invalid json from browser: {e}");
+                NativeReply {
+                    backend: backend_name.to_owned(),
+                    payload: Err(format!("invalid json: {e}")),
+                }
+            }
         };
 
         let bytes = match serde_json::to_vec(&response) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("valet-native-host: failed to serialize response: {e}");
+                warn!("failed to serialize response: {e}");
                 continue;
             }
         };
         if bytes.len() > MAX_FRAME_SIZE {
-            eprintln!(
-                "valet-native-host: response too large ({} bytes)",
-                bytes.len()
-            );
+            warn!(bytes = bytes.len(), "response too large");
             continue;
         }
+        // TODO: same as above.
         let header = (bytes.len() as u32).to_le_bytes();
-        if stdout.write_all(&header).await.is_err() || stdout.write_all(&bytes).await.is_err() {
+        if let Err(e) = stdout.write_all(&header).await {
+            warn!("stdout write failed (header), exiting: {e}");
             break;
         }
-        if stdout.flush().await.is_err() {
+        if let Err(e) = stdout.write_all(&bytes).await {
+            warn!("stdout write failed (body), exiting: {e}");
+            break;
+        }
+        if let Err(e) = stdout.flush().await {
+            warn!("stdout flush failed, exiting: {e}");
             break;
         }
     }
 }
 
-/// Pull `id` and base64 `request` from the envelope, hand the request
-/// bytes to the backend, and wrap the reply bytes back up. This function
-/// never decodes the bitcode — that's the backend's job (and only the
-/// embedded backend does it).
-async fn handle<B: Backend>(backend: &B, req: Value) -> Value {
-    let id = req.get("id").cloned().unwrap_or(Value::Null);
+/// Forward the bitcode request to the backend and build the reply
+/// envelope. This function never decodes the bitcode — that's the
+/// backend's job (and only the embedded backend does it).
+async fn handle(backend: &Active, req: NativeRequest) -> NativeReply {
+    let backend_name: &'static str = backend.into();
 
-    let request_b64 = match req.get("request").and_then(Value::as_str) {
-        Some(s) => s,
-        None => return json!({ "id": id, "error": "missing 'request' field" }),
-    };
-    let request_bytes = match STANDARD.decode(request_b64) {
+    let request_bytes = match STANDARD.decode(&req.request) {
         Ok(b) => b,
-        Err(e) => return json!({ "id": id, "error": format!("invalid base64: {e}") }),
+        Err(e) => return error(backend, format!("invalid base64: {e}")),
     };
     if request_bytes.len() > MAX_FRAME_LEN {
-        return json!({ "id": id, "error": "request exceeds MAX_FRAME_LEN" });
+        return error(backend, "request exceeds MAX_FRAME_LEN".into());
     }
 
     match backend.round_trip(&request_bytes).await {
-        Ok(reply_bytes) => json!({ "id": id, "result": STANDARD.encode(&reply_bytes) }),
-        Err(e) => json!({ "id": id, "error": format!("backend: {e}") }),
+        Ok(reply_bytes) => NativeReply {
+            backend: backend_name.to_owned(),
+            payload: Ok(NativePayload {
+                id: req.id,
+                data: STANDARD.encode(&reply_bytes),
+            }),
+        },
+        Err(e) => error(backend, format!("backend: {e}")),
+    }
+}
+
+/// Log the error and wrap it as a failed [`NativeReply`]. One source
+/// of truth for the message.
+fn error(backend: &Active, msg: String) -> NativeReply {
+    let backend_name: &'static str = backend.into();
+    tracing::error!(backend = backend_name, "{msg}");
+    NativeReply {
+        backend: backend_name.to_owned(),
+        payload: Err(msg),
     }
 }

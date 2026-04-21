@@ -36,13 +36,18 @@ pub(crate) async fn autofill_status() -> Result<Option<String>, String> {
     .await
     .map_err(js_err)?;
     let obj: StatusResponse = serde_wasm_bindgen::from_value(resp).map_err(|e| e.to_string())?;
-    tracing::trace!(unlocked = obj.username.is_some(), "rpc ← autofill_status");
+    tracing::trace!(
+        unlocked = obj.username.is_some(),
+        "({}) rpc ← autofill_status",
+        obj.backend,
+    );
     Ok(obj.username)
 }
 
 #[derive(Deserialize)]
 struct StatusResponse {
     username: Option<String>,
+    backend: String,
 }
 
 /// Request matching credentials for the given domain.
@@ -61,10 +66,20 @@ pub(crate) async fn autofill_request(domain: &str) -> Result<Vec<Credential>, St
     .map_err(js_err)?;
     let obj: RequestResponse = serde_wasm_bindgen::from_value(resp).map_err(|e| e.to_string())?;
     if let Some(err) = obj.error {
-        tracing::trace!(domain = %domain, error = %err, "rpc ← autofill_request error");
+        tracing::trace!(
+            domain = %domain,
+            error = %err,
+            "({}) rpc ← autofill_request error",
+            obj.backend,
+        );
         return Err(err);
     }
-    tracing::trace!(domain = %domain, count = obj.credentials.len(), "rpc ← autofill_request");
+    tracing::trace!(
+        domain = %domain,
+        count = obj.credentials.len(),
+        "({}) rpc ← autofill_request",
+        obj.backend,
+    );
     Ok(obj.credentials)
 }
 
@@ -73,6 +88,7 @@ struct RequestResponse {
     #[serde(default)]
     credentials: Vec<Credential>,
     error: Option<String>,
+    backend: String,
 }
 
 /// Fetch the decrypted credential (username parsed from label + password)
@@ -92,10 +108,19 @@ pub(crate) async fn autofill_fill(record_uuid: &str) -> Result<FillData, String>
     .map_err(js_err)?;
     let obj: FillData = serde_wasm_bindgen::from_value(resp).map_err(|e| e.to_string())?;
     if let Some(ref err) = obj.error {
-        tracing::trace!(record_uuid = %record_uuid, error = %err, "rpc ← autofill_fill error");
+        tracing::trace!(
+            record_uuid = %record_uuid,
+            error = %err,
+            "({}) rpc ← autofill_fill error",
+            obj.backend,
+        );
         return Err(err.clone());
     }
-    tracing::trace!(record_uuid = %record_uuid, "rpc ← autofill_fill ok");
+    tracing::trace!(
+        record_uuid = %record_uuid,
+        "({}) rpc ← autofill_fill ok",
+        obj.backend,
+    );
     Ok(obj)
 }
 
@@ -105,6 +130,7 @@ pub(crate) struct FillData {
     pub username: Option<String>,
     pub password: String,
     pub error: Option<String>,
+    pub backend: String,
 }
 
 /// Generate a password, save it as a record with the given label, and
@@ -124,10 +150,19 @@ pub(crate) async fn autofill_generate(label: &str) -> Result<FillData, String> {
     .map_err(js_err)?;
     let obj: FillData = serde_wasm_bindgen::from_value(resp).map_err(|e| e.to_string())?;
     if let Some(ref err) = obj.error {
-        tracing::trace!(label = %label, error = %err, "rpc ← autofill_generate error");
+        tracing::trace!(
+            label = %label,
+            error = %err,
+            "({}) rpc ← autofill_generate error",
+            obj.backend,
+        );
         return Err(err.clone());
     }
-    tracing::trace!(label = %label, "rpc ← autofill_generate ok");
+    tracing::trace!(
+        label = %label,
+        "({}) rpc ← autofill_generate ok",
+        obj.backend,
+    );
     Ok(obj)
 }
 

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
+use tracing::{info, warn};
 use valet::{
     Lot, Record,
     db::Database,
@@ -132,12 +133,18 @@ impl DaemonHandler {
 
 impl Handler for DaemonHandler {
     async fn handle(&self, req: Request) -> io::Result<Response> {
+        let kind: &'static str = (&req).into();
         let response = match dispatch(&self.state, req).await {
             Ok(r) => {
                 self.state.lock().await.touch();
+                let resp_kind: &'static str = (&r).into();
+                info!(request = kind, response = resp_kind, "ok");
                 r
             }
-            Err(msg) => Response::Error(msg),
+            Err(msg) => {
+                warn!(request = kind, "error: {msg}");
+                Response::Error(msg)
+            }
         };
         Ok(response)
     }
@@ -160,21 +167,25 @@ async fn dispatch(state: &Arc<Mutex<State>>, req: Request) -> Result<Response, S
             let mut st = state.lock().await;
             match User::load(&st.db, &username, password).await {
                 Ok(user) => {
+                    info!(user = %username, "unlocked");
                     st.users.insert(username, user);
                     Ok(Response::Ok)
                 }
                 Err(e) => {
                     drop(st);
                     tokio::time::sleep(Duration::from_millis(FAILED_UNLOCK_DELAY_MS)).await;
+                    warn!(user = %username, "unlock failed");
                     Err(err(e))
                 }
             }
         }
         Request::Lock { username } => {
+            info!(user = %username, "locked");
             state.lock().await.drop_user(&username);
             Ok(Response::Ok)
         }
         Request::LockAll => {
+            info!("locked all users");
             state.lock().await.drop_all();
             Ok(Response::Ok)
         }
@@ -314,10 +325,11 @@ async fn create_record(
     }
     let State { db, lots, .. } = &mut *st;
     let l = lots
-        .get_mut(&(username, lot))
+        .get_mut(&(username.clone(), lot.clone()))
         .expect("ensure_lot inserted it");
     let record = Record::new(l, label, data);
     record.save(db, l).await.map_err(err)?;
+    info!(user = %username, lot = %lot, uuid = %record.uuid(), "record saved");
     Ok(Response::Record(record))
 }
 

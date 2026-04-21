@@ -18,6 +18,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
+use tracing::{error, info, warn};
 use valetd::{
     DaemonHandler, Handler, Request, Response,
     request::Frame,
@@ -29,21 +30,22 @@ const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
+    valet::logging::init();
     let socket_path = socket::path();
 
     let handler = match DaemonHandler::from_env().await {
         Ok(h) => h,
         Err(err) => {
-            eprintln!("valetd: {err}");
+            error!("{err}");
             std::process::exit(1);
         }
     };
 
     if let Some(parent) = socket_path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
-            eprintln!(
-                "valetd: failed to create socket directory {}: {err}",
-                parent.display()
+            error!(
+                path = %parent.display(),
+                "failed to create socket directory: {err}"
             );
             std::process::exit(1);
         }
@@ -57,11 +59,11 @@ async fn main() {
     let listener = match UnixListener::bind(&socket_path) {
         Ok(l) => l,
         Err(err) => {
-            eprintln!("valetd: failed to bind {}: {err}", socket_path.display());
+            error!(path = %socket_path.display(), "failed to bind: {err}");
             std::process::exit(1);
         }
     };
-    eprintln!("valetd: listening on {}", socket_path.display());
+    info!(path = %socket_path.display(), "listening");
 
     let handler = Arc::new(handler);
 
@@ -72,7 +74,7 @@ async fn main() {
             loop {
                 tokio::time::sleep(IDLE_CHECK_INTERVAL).await;
                 if handler.reap_if_idle(IDLE_TIMEOUT).await {
-                    eprintln!("valetd: idle timeout, locked all users");
+                    info!("idle timeout, locked all users");
                 }
             }
         });
@@ -82,14 +84,14 @@ async fn main() {
         let (conn, _) = match listener.accept().await {
             Ok(x) => x,
             Err(err) => {
-                eprintln!("valetd: accept failed: {err}");
+                warn!("accept failed: {err}");
                 continue;
             }
         };
         let handler = handler.clone();
         tokio::spawn(async move {
             if let Err(err) = serve(conn, handler).await {
-                eprintln!("valetd: connection ended: {err}");
+                warn!("connection ended: {err}");
             }
         });
     }

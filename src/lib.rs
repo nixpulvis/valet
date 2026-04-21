@@ -7,6 +7,8 @@ pub mod db;
 pub mod encrypt;
 #[cfg(feature = "ffi")]
 pub mod ffi;
+#[cfg(feature = "logging")]
+pub mod logging;
 pub mod lot;
 pub mod password;
 pub mod prelude;

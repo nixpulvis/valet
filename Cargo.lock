@@ -4565,6 +4565,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
+
+[[package]]
 name = "maybe-async"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5830,7 +5839,7 @@ dependencies = [
  "serde",
  "strip-ansi-escapes",
  "strum 0.26.3",
- "strum_macros",
+ "strum_macros 0.26.4",
  "thiserror 1.0.69",
  "unicode-segmentation",
  "unicode-width 0.1.14",
@@ -6887,7 +6896,16 @@ version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
 dependencies = [
- "strum_macros",
+ "strum_macros 0.26.4",
+]
+
+[[package]]
+name = "strum"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
+dependencies = [
+ "strum_macros 0.27.2",
 ]
 
 [[package]]
@@ -6906,6 +6924,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
  "syn 2.0.117",
 ]
 
@@ -7351,8 +7381,12 @@ version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
+ "matchers",
+ "once_cell",
+ "regex-automata",
  "sharded-slab",
  "thread_local",
+ "tracing",
  "tracing-core",
 ]
 
@@ -7543,6 +7577,8 @@ dependencies = [
  "sqlx",
  "storgit",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
  "valet-build",
@@ -7567,11 +7603,19 @@ dependencies = [
  "tracing-web",
  "uuid",
  "valet",
+ "valet-browser-bridge",
  "valetd",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "yew",
+]
+
+[[package]]
+name = "valet-browser-bridge"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -7587,7 +7631,11 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "serde_json",
+ "strum 0.27.2",
  "tokio",
+ "tracing",
+ "valet",
+ "valet-browser-bridge",
  "valetd",
 ]
 
@@ -7597,7 +7645,9 @@ version = "0.0.1"
 dependencies = [
  "base64",
  "bitcode",
+ "strum 0.27.2",
  "tokio",
+ "tracing",
  "valet",
  "valet-build",
 ]

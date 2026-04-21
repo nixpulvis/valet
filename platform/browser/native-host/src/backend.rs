@@ -28,6 +28,7 @@
 
 use std::future::Future;
 use std::io;
+use tracing::info;
 use valetd::socket;
 
 mod embedded;
@@ -45,6 +46,8 @@ pub(crate) trait Backend: Send + Sync {
 
 /// Both backends live behind a single enum so the main loop can hold one
 /// concrete type and stay free of the `async fn in dyn trait` ceremony.
+#[derive(strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub(crate) enum Active {
     Socket(SocketBackend),
     Embedded(EmbeddedBackend),
@@ -80,6 +83,7 @@ fn mode_from_env() -> Result<Mode, String> {
 pub(crate) async fn build() -> Result<Active, String> {
     let mode = mode_from_env()?;
     if matches!(mode, Mode::Embedded) {
+        info!(backend = "embedded", "selected");
         return EmbeddedBackend::build().await.map(Active::Embedded);
     }
 
@@ -89,12 +93,18 @@ pub(crate) async fn build() -> Result<Active, String> {
         .map_err(|e| format!("socket error at {}: {e}", socket_path.display()))?;
 
     match (mode, probe) {
-        (_, Some(b)) => Ok(Active::Socket(b)),
+        (_, Some(b)) => {
+            info!(backend = "socket", path = %socket_path.display(), "selected");
+            Ok(Active::Socket(b))
+        }
         (Mode::Socket, None) => Err(format!(
             "VALET_BACKEND=socket but no daemon is listening at {}",
             socket_path.display()
         )),
-        (Mode::Auto, None) => EmbeddedBackend::build().await.map(Active::Embedded),
+        (Mode::Auto, None) => {
+            info!(backend = "embedded", "selected (no daemon at socket)");
+            EmbeddedBackend::build().await.map(Active::Embedded)
+        }
         (Mode::Embedded, None) => unreachable!("handled above"),
     }
 }

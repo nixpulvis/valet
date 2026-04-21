@@ -10,7 +10,7 @@
 //! Adding an RPC is one new `valetd::Request` variant plus one wrapper
 //! here — the background and native host don't need to learn about it.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
 use valet::{Record, password::Password, record::Label, uuid::Uuid};
@@ -18,6 +18,14 @@ use valetd::{Request, Response, request::Frame};
 use wasm_bindgen::JsValue;
 
 use super::browser;
+
+/// Shape of the background's reply to a `kind: "rpc"` message:
+/// base64-encoded [`Response`] plus the backend tag that served it.
+#[derive(Deserialize)]
+struct RpcReply {
+    result: String,
+    backend: String,
+}
 
 /// Wrapper sent to the background script. `kind` is always `"rpc"` here;
 /// other kinds (autofill) are handled by dedicated message handlers in the
@@ -29,18 +37,21 @@ pub(crate) struct BrowserEnvelope<'a> {
 }
 
 /// Send a [`Request`] to the background and decode the base64 reply into
-/// a [`Response`].
+/// a [`Response`]. The backend tag on the reply (`"socket"` or
+/// `"embedded"`) is logged at trace so it's visible alongside each RPC
+/// without threading through every call site.
 async fn call(request: Request) -> Result<Response, String> {
+    let kind: &'static str = (&request).into();
     let request_b64 = request.encode_base64();
     let envelope = BrowserEnvelope {
         kind: "rpc",
         request: &request_b64,
     };
     let js_result = browser::send_message(&envelope).await.map_err(js_err)?;
-    let b64 = js_result
-        .as_string()
-        .ok_or_else(|| "expected base64 string from background".to_string())?;
-    Response::decode_base64(&b64).map_err(|e| e.to_string())
+    let reply: RpcReply =
+        serde_wasm_bindgen::from_value(js_result).map_err(|e| e.to_string())?;
+    tracing::trace!(request = kind, "({}) rpc reply", reply.backend);
+    Response::decode_base64(&reply.result).map_err(|e| e.to_string())
 }
 
 fn js_err(v: JsValue) -> String {
