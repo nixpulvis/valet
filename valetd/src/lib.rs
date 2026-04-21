@@ -28,6 +28,9 @@ pub mod socket;
 #[cfg(feature = "native")]
 pub mod client;
 
+#[cfg(feature = "native")]
+pub mod server;
+
 #[cfg(feature = "stub")]
 pub mod stub;
 
@@ -35,3 +38,6 @@ pub mod stub;
 pub mod ffi;
 
 pub use request::{Request, Response};
+
+#[cfg(feature = "native")]
+pub use server::{DaemonHandler, Handler};
