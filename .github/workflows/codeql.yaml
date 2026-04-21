@@ -42,7 +42,7 @@ jobs:
 
       - name: Build Swift extension
         if: matrix.language == 'swift'
-        run: make -C platform/macos bundles
+        run: make -C platform/macos bundles SWIFT_OPT=
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3

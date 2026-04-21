@@ -59,7 +59,8 @@ EXT_SWIFT       := Extension/main.swift Extension/CredentialProviderViewControll
 APP_SWIFT       := App/main.swift
 
 SWIFTC          := xcrun -sdk macosx swiftc
-SWIFTC_COMMON   := $(SWIFTC) -sdk $(SDK) -target $(SWIFT_TARGET) -O \
+SWIFT_OPT       ?= -O
+SWIFTC_COMMON   := $(SWIFTC) -sdk $(SDK) -target $(SWIFT_TARGET) $(SWIFT_OPT) \
                   -Xcc -fmodule-map-file=$(VALETD_MODMAP) \
                   -I $(VALETD_INCLUDE_DIR) \
                   -L $(VALETD_LIB_DIR) \
