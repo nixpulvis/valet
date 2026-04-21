@@ -3,9 +3,9 @@ members = [
     "crates/storgit",
     "valet-build",
     "valetd",
-    "platform/firefox",
-    "platform/firefox/native-host",
-    "platform/firefox/xtask",
+    "platform/browser",
+    "platform/browser/native-host",
+    "platform/browser/xtask",
 ]
 
 [package]

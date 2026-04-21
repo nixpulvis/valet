@@ -1,13 +1,22 @@
-//! IPC message types plus the I/O that serves them.
+//! IPC message types and their framing.
 //!
-//! The wire format is a 4-byte big-endian length prefix followed by a
-//! `bitcode`-encoded body. There is no separate framing module — framing is
-//! how a [`Request`] or [`Response`] gets onto and off of a socket, so it
-//! lives alongside the type definition.
+//! Wire format: 4-byte big-endian length prefix followed by a `bitcode`-encoded
+//! [`Request`] or [`Response`] body. The sync `write`/`read` helpers compile
+//! everywhere; the `*_async` tokio variants are gated behind the `native`
+//! feature so a wasm-friendly consumer (the browser extension) can depend
+//! on the wire types without pulling in tokio.
 
 use bitcode::{Decode, Encode};
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use valet::{Record, password::Password, record::Label, uuid::Uuid};
+#[cfg(feature = "native")]
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use valet::{
+    Record,
+    password::Password,
+    record::{Label, LabelName},
+    uuid::Uuid,
+};
 
 /// Maximum allowed frame payload, 16 MiB. The daemon never returns anywhere
 /// near this much data; the cap exists to bound client-side allocations if
@@ -15,23 +24,71 @@ use valet::{Record, password::Password, record::Label, uuid::Uuid};
 pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 /// A message sent from a client to the daemon. Each variant is answered by
-/// exactly one [`Response`].
-#[derive(Encode, Decode)]
+/// exactly one [`Response`] (possibly [`Response::Error`]).
+#[derive(Encode, Decode, Debug)]
 pub enum Request {
-    /// Derive the user's key from `password` and unlock the session. On
-    /// success the daemon replies with [`Response::Session`].
+    /// List currently unlocked usernames. Answered with [`Response::Users`].
+    Status,
+    /// List every registered username. Answered with [`Response::Users`].
+    ListUsers,
+    /// Derive the user's key and cache the unlocked [`valet::user::User`] on the
+    /// daemon. Answered with [`Response::Ok`] or [`Response::Error`].
     Unlock {
         username: String,
         password: Password,
     },
-    /// Ask the daemon for records matching any of the given service
-    /// identifiers (typically hostnames supplied by an autofill extension).
-    /// An empty vector asks for every record in the active lot. The daemon
-    /// replies with [`Response::Index`].
-    List { queries: Vec<String> },
-    /// Fetch the full decrypted [`Record`] by uuid, including password
-    /// material. The daemon replies with [`Response::Record`].
-    Fetch { uuid: Uuid<Record> },
+    /// Drop the cached keys for one user. Answered with [`Response::Ok`].
+    Lock { username: String },
+    /// Drop every cached user. Answered with [`Response::Ok`].
+    LockAll,
+    /// Cross-lot query-language search. `queries` are parsed as
+    /// [`valet::record::Query`]; empty means every record in every lot this
+    /// user has access to. Answered with [`Response::Index`].
+    List {
+        username: String,
+        queries: Vec<String>,
+    },
+    /// Fetch one decrypted [`Record`] by uuid. The daemon searches the user's
+    /// lots until it finds a match. Answered with [`Response::Record`].
+    Fetch {
+        username: String,
+        uuid: Uuid<Record>,
+    },
+    // TODO: fold this into `List` by adding a `Query::Domain` variant to
+    // `valet::record::Query` that carries the symmetric-suffix match
+    // semantics. Then `FindRecords`, `domain_matches`, and
+    // `label_matches_domain` can all go away.
+    /// Per-lot domain match. `query` is a host string; the daemon returns the
+    /// label-and-uuid pairs of every matching record, without decrypting
+    /// passwords. Answered with [`Response::Index`].
+    FindRecords {
+        username: String,
+        lot: String,
+        query: String,
+    },
+    /// Fetch one decrypted [`Record`] by uuid in a specific lot. Answered
+    /// with [`Response::Record`].
+    GetRecord {
+        username: String,
+        lot: String,
+        uuid: Uuid<Record>,
+    },
+    /// Create a new record with a caller-supplied password. Answered with
+    /// [`Response::Record`] carrying the stored record.
+    CreateRecord {
+        username: String,
+        lot: String,
+        label: Label,
+        password: Password,
+        extra: HashMap<String, String>,
+    },
+    /// Create a new record with a daemon-generated password. Answered with
+    /// [`Response::Record`] carrying the stored record.
+    GenerateRecord {
+        username: String,
+        lot: String,
+        label: Label,
+    },
 }
 
 /// A message sent from the daemon back to the client in reply to a
@@ -39,31 +96,57 @@ pub enum Request {
 /// be returned in place of any success variant.
 ///
 /// [`Error`]: Response::Error
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Debug)]
 pub enum Response {
-    /// Label-and-uuid pairs for every matching record, mirroring
-    /// [`RecordIndex`](::valet::record::RecordIndex). No password material
-    /// crosses the wire here; fetch by uuid when fill is requested.
+    /// Generic success with no payload (Unlock, Lock, LockAll).
+    Ok,
+    /// Username list (Status, ListUsers).
+    Users(Vec<String>),
+    /// Label-and-uuid pairs for every matching record. No password material
+    /// crosses the wire. Answered by [`Request::List`] and
+    /// [`Request::FindRecords`].
     Index(Vec<(Uuid<Record>, Label)>),
-    /// A single decrypted record returned in response to [`Request::Fetch`].
+    /// A single decrypted record (Fetch, GetRecord, CreateRecord,
+    /// GenerateRecord).
     Record(Record),
-    /// Opaque session token returned after a successful [`Request::Unlock`].
-    /// The client presents this on subsequent requests to prove it is
-    /// attached to an unlocked session.
-    Session { token: String },
-    /// Human-readable error message. Returned in place of any success
-    /// variant when the daemon cannot satisfy the request (locked session,
-    /// unknown uuid, bad password, I/O failure, ...).
+    /// Human-readable error message, returned in place of any success variant
+    /// when the daemon cannot satisfy the request.
     Error(String),
 }
 
-fn write_frame<W: Write>(w: &mut W, payload: &[u8]) -> io::Result<()> {
-    if payload.len() > MAX_FRAME_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "payload exceeds MAX_FRAME_LEN",
-        ));
+/// Return `true` if a domain label matches a query host, using the loose
+/// suffix rule that powers the [`Request::FindRecords`] RPC. The match is
+/// symmetric across the dot boundary: `"sub.example.com"` matches
+/// `"example.com"` and vice-versa; `"example.com"` does not match
+/// `"other.com"`.
+pub fn domain_matches(record_domain: &str, query: &str) -> bool {
+    let r = record_domain.to_lowercase();
+    let q = query.to_lowercase();
+    r == q || q.ends_with(&format!(".{r}")) || r.ends_with(&format!(".{q}"))
+}
+
+/// Return `true` if `label` is a domain label matching `query` under
+/// [`domain_matches`].
+pub fn label_matches_domain(label: &Label, query: &str) -> bool {
+    match label.name() {
+        LabelName::Domain { domain, .. } => domain_matches(domain, query),
+        _ => false,
     }
+}
+
+fn check_len(len: usize) -> io::Result<()> {
+    if len > MAX_FRAME_LEN {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame exceeds MAX_FRAME_LEN",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn write_frame<W: Write>(w: &mut W, payload: &[u8]) -> io::Result<()> {
+    check_len(payload.len())?;
     let len = u32::try_from(payload.len()).expect("checked above");
     w.write_all(&len.to_be_bytes())?;
     w.write_all(payload)?;
@@ -74,14 +157,29 @@ fn read_frame<R: Read>(r: &mut R) -> io::Result<Vec<u8>> {
     let mut len_bytes = [0u8; 4];
     r.read_exact(&mut len_bytes)?;
     let len = u32::from_be_bytes(len_bytes) as usize;
-    if len > MAX_FRAME_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "frame exceeds MAX_FRAME_LEN",
-        ));
-    }
+    check_len(len)?;
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
+    Ok(buf)
+}
+
+#[cfg(feature = "native")]
+async fn write_frame_async<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> io::Result<()> {
+    check_len(payload.len())?;
+    let len = u32::try_from(payload.len()).expect("checked above");
+    w.write_all(&len.to_be_bytes()).await?;
+    w.write_all(payload).await?;
+    w.flush().await
+}
+
+#[cfg(feature = "native")]
+async fn read_frame_async<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Vec<u8>> {
+    let mut len_bytes = [0u8; 4];
+    r.read_exact(&mut len_bytes).await?;
+    let len = u32::from_be_bytes(len_bytes) as usize;
+    check_len(len)?;
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf).await?;
     Ok(buf)
 }
 
@@ -89,27 +187,90 @@ fn decode_err<E: std::fmt::Display>(e: E) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("bitcode decode: {e}"))
 }
 
-impl Request {
-    pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
+/// Shared framing for wire messages. The length-prefixed `send`/`recv`
+/// helpers speak the Unix-socket wire format used between [`Client`] and
+/// the daemon. The `encode_base64`/`decode_base64` helpers speak the
+/// envelope the browser native-messaging shim stuffs inside its JSON
+/// frames; same bitcode payload, different outer wrapper.
+///
+/// TODO: before a proper release, add a version discriminator (one magic
+/// byte or a leading u16) to both the length-prefixed and base64 forms.
+/// Bitcode enum tags are positional, so adding or removing a `Request` /
+/// `Response` variant silently misdecodes across mismatched peers today.
+///
+/// [`Client`]: crate::client::Client
+pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
+    /// Bitcode-encode `self` and write it as one length-prefixed frame.
+    fn send<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_frame(w, &bitcode::encode(self))
     }
 
-    pub fn read<R: Read>(r: &mut R) -> io::Result<Self> {
+    /// Read one length-prefixed frame and bitcode-decode it.
+    fn recv<R: Read>(r: &mut R) -> io::Result<Self> {
         let buf = read_frame(r)?;
         bitcode::decode(&buf).map_err(decode_err)
     }
-}
 
-impl Response {
-    pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_frame(w, &bitcode::encode(self))
+    /// Async [`send`](Self::send) over a tokio writer.
+    #[cfg(feature = "native")]
+    fn send_async<W: AsyncWrite + Unpin + Send>(
+        &self,
+        w: &mut W,
+    ) -> impl std::future::Future<Output = io::Result<()>> + Send
+    where
+        Self: Sync,
+    {
+        async move { write_frame_async(w, &bitcode::encode(self)).await }
     }
 
-    pub fn read<R: Read>(r: &mut R) -> io::Result<Self> {
-        let buf = read_frame(r)?;
-        bitcode::decode(&buf).map_err(decode_err)
+    /// Async [`recv`](Self::recv) over a tokio reader.
+    #[cfg(feature = "native")]
+    fn recv_async<R: AsyncRead + Unpin + Send>(
+        r: &mut R,
+    ) -> impl std::future::Future<Output = io::Result<Self>> + Send {
+        async move {
+            let buf = read_frame_async(r).await?;
+            bitcode::decode(&buf).map_err(decode_err)
+        }
+    }
+
+    /// Bitcode-encode `self` and base64 it, for embedding in the browser
+    /// native-messaging JSON envelope.
+    fn encode_base64(&self) -> String {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        STANDARD.encode(bitcode::encode(self))
+    }
+
+    /// Inverse of [`encode_base64`](Self::encode_base64).
+    fn decode_base64(b64: &str) -> Result<Self, DecodeError> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let bytes = STANDARD.decode(b64).map_err(DecodeError::Base64)?;
+        bitcode::decode(&bytes).map_err(DecodeError::Bitcode)
     }
 }
+
+impl Frame for Request {}
+impl Frame for Response {}
+
+/// Errors from [`Frame::decode_base64`].
+#[derive(Debug)]
+pub enum DecodeError {
+    /// The base64 envelope was malformed.
+    Base64(base64::DecodeError),
+    /// The bitcode payload could not be decoded.
+    Bitcode(bitcode::Error),
+}
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DecodeError::Base64(e) => write!(f, "base64: {e}"),
+            DecodeError::Bitcode(e) => write!(f, "bitcode: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {}
 
 #[cfg(test)]
 mod tests {
@@ -139,12 +300,16 @@ mod tests {
     fn request_round_trip_list() {
         let (mut a, mut b) = UnixStream::pair().unwrap();
         let sent = Request::List {
+            username: "alice".into(),
             queries: vec!["github.com".into(), "example.com".into()],
         };
-        sent.write(&mut a).unwrap();
-        let got = Request::read(&mut b).unwrap();
+        sent.send(&mut a).unwrap();
+        let got = Request::recv(&mut b).unwrap();
         match got {
-            Request::List { queries } => assert_eq!(queries, vec!["github.com", "example.com"]),
+            Request::List { username, queries } => {
+                assert_eq!(username, "alice");
+                assert_eq!(queries, vec!["github.com", "example.com"]);
+            }
             _ => panic!("wrong variant"),
         }
     }
@@ -156,8 +321,8 @@ mod tests {
             username: "alice".into(),
             password: "s3cret!!".try_into().unwrap(),
         };
-        sent.write(&mut a).unwrap();
-        let got = Request::read(&mut b).unwrap();
+        sent.send(&mut a).unwrap();
+        let got = Request::recv(&mut b).unwrap();
         match got {
             Request::Unlock { username, password } => {
                 assert_eq!(username, "alice");
@@ -174,8 +339,8 @@ mod tests {
         let uuid = rec.uuid().clone();
         let label = rec.label().clone();
         let sent = Response::Index(vec![(uuid.clone(), label)]);
-        sent.write(&mut a).unwrap();
-        let got = Response::read(&mut b).unwrap();
+        sent.send(&mut a).unwrap();
+        let got = Response::recv(&mut b).unwrap();
         match got {
             Response::Index(entries) => {
                 assert_eq!(entries.len(), 1);
@@ -195,8 +360,8 @@ mod tests {
         let (mut a, mut b) = UnixStream::pair().unwrap();
         let rec = sample_record();
         let uuid = rec.uuid().clone();
-        Response::Record(rec).write(&mut a).unwrap();
-        let got = Response::read(&mut b).unwrap();
+        Response::Record(rec).send(&mut a).unwrap();
+        let got = Response::recv(&mut b).unwrap();
         match got {
             Response::Record(record) => {
                 assert_eq!(record.uuid().to_uuid(), uuid.to_uuid());
@@ -209,8 +374,8 @@ mod tests {
     #[test]
     fn response_round_trip_error() {
         let (mut a, mut b) = UnixStream::pair().unwrap();
-        Response::Error("locked".into()).write(&mut a).unwrap();
-        let got = Response::read(&mut b).unwrap();
+        Response::Error("locked".into()).send(&mut a).unwrap();
+        let got = Response::recv(&mut b).unwrap();
         match got {
             Response::Error(msg) => assert_eq!(msg, "locked"),
             _ => panic!("wrong variant"),
@@ -220,12 +385,19 @@ mod tests {
     #[test]
     fn oversize_frame_rejected() {
         let (mut a, mut b) = UnixStream::pair().unwrap();
-        // Write a bogus length header that exceeds MAX_FRAME_LEN.
         a.write_all(&(MAX_FRAME_LEN as u32 + 1).to_be_bytes())
             .unwrap();
-        match Response::read(&mut b) {
+        match Response::recv(&mut b) {
             Err(e) => assert_eq!(e.kind(), io::ErrorKind::InvalidData),
             Ok(_) => panic!("expected InvalidData error"),
         }
+    }
+
+    #[test]
+    fn domain_matches_symmetric() {
+        assert!(domain_matches("example.com", "example.com"));
+        assert!(domain_matches("example.com", "sub.example.com"));
+        assert!(domain_matches("sub.example.com", "example.com"));
+        assert!(!domain_matches("example.com", "other.com"));
     }
 }

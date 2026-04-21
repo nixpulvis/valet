@@ -40,6 +40,14 @@ pub struct ValetStr {
 }
 
 impl ValetStr {
+    /// The null/empty sentinel used for "absent" string fields.
+    pub const fn null() -> Self {
+        ValetStr {
+            ptr: ptr::null_mut(),
+            len: 0,
+        }
+    }
+
     fn from_string(s: String) -> Self {
         Self::from_bytes(s.into_bytes())
     }
@@ -48,10 +56,7 @@ impl ValetStr {
         bytes.shrink_to_fit();
         let len = bytes.len();
         if len == 0 {
-            return ValetStr {
-                ptr: ptr::null_mut(),
-                len: 0,
-            };
+            return ValetStr::null();
         }
         let ptr = bytes.as_mut_ptr() as *mut c_char;
         std::mem::forget(bytes);
@@ -122,11 +127,16 @@ fn flatten_label(label: &Label) -> String {
 
 /// Mirror of a [`RecordIndex`](crate::record::RecordIndex) entry: a label
 /// plus the uuid of the record it identifies. `extras` is the flat
-/// projection of [`Label::extra`](crate::record::Label::extra).
+/// projection of [`Label::extra`](crate::record::Label::extra). `username`
+/// is [`Label::username`] promoted to its own field so callers don't have
+/// to re-derive it; a null `ValetStr` means "no username for this label"
+/// (either `Label::username` returned `None`, or the underlying string
+/// was empty, since [`ValetStr::from_bytes`] collapses both to null).
 #[repr(C)]
 pub struct ValetRecordIndexEntry {
     pub uuid: ValetStr,
     pub label: ValetStr,
+    pub username: ValetStr,
     pub extras: *mut ValetKv,
     pub extras_count: usize,
 }
@@ -137,6 +147,10 @@ impl ValetRecordIndexEntry {
         ValetRecordIndexEntry {
             uuid: ValetStr::from_string(uuid.to_string()),
             label: ValetStr::from_string(flatten_label(label)),
+            username: label
+                .username()
+                .map(|s| ValetStr::from_string(s.to_owned()))
+                .unwrap_or_else(ValetStr::null),
             extras,
             extras_count,
         }
@@ -146,6 +160,7 @@ impl ValetRecordIndexEntry {
         unsafe {
             self.uuid.free();
             self.label.free();
+            self.username.free();
             free_extras(self.extras, self.extras_count);
         }
     }
@@ -179,12 +194,50 @@ impl ValetRecordIndex {
     }
 }
 
+/// Flat list of UTF-8 strings, owned by Rust. Used by FFI entry points that
+/// return a set of usernames (unlocked users, registered users, etc.).
+#[repr(C)]
+pub struct ValetStrList {
+    pub items: *mut ValetStr,
+    pub count: usize,
+}
+
+impl ValetStrList {
+    pub fn from_strings<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        let mut items: Vec<ValetStr> = iter.into_iter().map(ValetStr::from_string).collect();
+        items.shrink_to_fit();
+        let count = items.len();
+        if count == 0 {
+            return ValetStrList {
+                items: ptr::null_mut(),
+                count: 0,
+            };
+        }
+        let ptr = items.as_mut_ptr();
+        std::mem::forget(items);
+        ValetStrList { items: ptr, count }
+    }
+}
+
+/// Frees a [`ValetStrList`] previously returned by any Valet FFI entry point.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn valet_ffi_str_list_free(list: ValetStrList) {
+    if list.items.is_null() || list.count == 0 {
+        return;
+    }
+    let items = unsafe { Vec::from_raw_parts(list.items, list.count, list.count) };
+    for s in items {
+        unsafe { s.free() };
+    }
+}
+
 /// Mirror of Rust [`Record`] for the fetch path: same label-side fields as
 /// [`ValetRecordIndexEntry`] plus the materialized password.
 #[repr(C)]
 pub struct ValetRecord {
     pub uuid: ValetStr,
     pub label: ValetStr,
+    pub username: ValetStr,
     pub extras: *mut ValetKv,
     pub extras_count: usize,
     pub password: ValetStr,
@@ -196,6 +249,11 @@ impl ValetRecord {
         ValetRecord {
             uuid: ValetStr::from_string(r.uuid().to_string()),
             label: ValetStr::from_string(flatten_label(r.label())),
+            username: r
+                .label()
+                .username()
+                .map(|s| ValetStr::from_string(s.to_owned()))
+                .unwrap_or_else(ValetStr::null),
             extras,
             extras_count,
             password: ValetStr::from_bytes(r.password().as_bytes().to_vec()),
@@ -206,6 +264,7 @@ impl ValetRecord {
         unsafe {
             self.uuid.free();
             self.label.free();
+            self.username.free();
             free_extras(self.extras, self.extras_count);
             self.password.free();
         }

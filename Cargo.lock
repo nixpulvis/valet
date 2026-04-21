@@ -7550,14 +7550,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "valet-build"
-version = "0.0.1"
-dependencies = [
- "cbindgen",
-]
-
-[[package]]
-name = "valet-firefox"
+name = "valet-browser"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
@@ -7574,7 +7567,7 @@ dependencies = [
  "tracing-web",
  "uuid",
  "valet",
- "valet-native-host",
+ "valetd",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -7582,21 +7575,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "valet-build"
+version = "0.0.1"
+dependencies = [
+ "cbindgen",
+]
+
+[[package]]
 name = "valet-native-host"
 version = "0.1.0"
 dependencies = [
- "base64",
- "bitcode",
  "serde_json",
  "tokio",
  "valet",
+ "valetd",
 ]
 
 [[package]]
 name = "valetd"
 version = "0.0.1"
 dependencies = [
+ "base64",
  "bitcode",
+ "tokio",
  "valet",
  "valet-build",
 ]

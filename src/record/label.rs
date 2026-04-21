@@ -100,6 +100,21 @@ impl Label {
     pub fn extra(&self) -> &BTreeMap<String, String> {
         &self.extra
     }
+
+    /// The username a credential consumer (AutoFill, browser extension)
+    /// should surface for this label. Prefers an explicit `extra["username"]`
+    /// entry; otherwise falls back to the `id` of a [`LabelName::Domain`].
+    /// Returns `None` for [`LabelName::Simple`] labels without an explicit
+    /// username extra, since there is no principled way to derive one.
+    pub fn username(&self) -> Option<&str> {
+        if let Some(v) = self.extra.get("username") {
+            return Some(v.as_str());
+        }
+        match &self.name {
+            LabelName::Domain { id, .. } => Some(id.as_str()),
+            LabelName::Simple(_) => None,
+        }
+    }
 }
 
 impl PartialEq for Label {
@@ -294,6 +309,28 @@ impl std::error::Error for Error {}
 mod tests {
     use super::*;
     use crate::{encrypt::Key, lot::Lot};
+
+    #[test]
+    fn username_prefers_extras() {
+        let label = "nix@example.com"
+            .parse::<Label>()
+            .unwrap()
+            .add_extra("username", "override")
+            .unwrap();
+        assert_eq!(label.username(), Some("override"));
+    }
+
+    #[test]
+    fn username_falls_back_to_domain_id() {
+        let label = "nix@example.com".parse::<Label>().unwrap();
+        assert_eq!(label.username(), Some("nix"));
+    }
+
+    #[test]
+    fn username_none_for_simple_without_extra() {
+        let label = "foo".parse::<Label>().unwrap();
+        assert_eq!(label.username(), None);
+    }
 
     #[test]
     fn encode_decode() {

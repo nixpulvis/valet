@@ -22,6 +22,7 @@ use valet::{
     ffi::{
         self, FfiError, VALET_FFI_ERR_INVALID_UTF8, VALET_FFI_ERR_IO, VALET_FFI_ERR_NULL_ARG,
         VALET_FFI_ERR_PASSWORD_TOO_LONG, VALET_FFI_ERR_PROTOCOL, ValetRecord, ValetRecordIndex,
+        ValetStrList,
     },
     password::Password,
     uuid::Uuid,
@@ -36,8 +37,27 @@ type Inner = StubClient;
 type Inner = Client;
 
 /// Opaque client handle. The C side only ever sees `*mut ValetdClient`.
+///
+/// The inner client is wrapped in a [`std::sync::Mutex`] so concurrent
+/// callers (the macOS extension runs AutoFill RPCs on background tasks
+/// that can overlap) serialize at the FFI boundary. Without this, two
+/// [`Client::round_trip`] calls on the same socket would interleave
+/// their send+recv pairs and the length-prefixed frame parser would
+/// trip `MAX_FRAME_LEN` on the misaligned read.
 pub struct ValetdClient {
-    inner: Inner,
+    inner: std::sync::Mutex<Inner>,
+}
+
+/// Borrow-and-lock helper: dereferences the raw client pointer and
+/// acquires the inner mutex. Poisoned-lock recovery is intentional — a
+/// prior panic while holding the guard already produced whatever error
+/// the caller would see; there's nothing useful to do with the poison
+/// flag in an FFI context.
+unsafe fn lock_inner<'a>(
+    client: *mut ValetdClient,
+) -> Result<std::sync::MutexGuard<'a, Inner>, FfiCallError> {
+    let handle = unsafe { client.as_ref() }.ok_or(FfiCallError::Null("client"))?;
+    Ok(handle.inner.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// Error variants produced inside a `valetd_ffi_*` wrapper. The
@@ -131,7 +151,7 @@ pub unsafe extern "C" fn valetd_ffi_client_new_stub(out: *mut *mut ValetdClient)
     ffi::report((|| -> Result<(), FfiCallError> {
         not_null(out, "out")?;
         let boxed = Box::new(ValetdClient {
-            inner: StubClient::new(),
+            inner: std::sync::Mutex::new(StubClient::new()),
         });
         unsafe { *out = Box::into_raw(boxed) };
         Ok(())
@@ -149,7 +169,9 @@ pub unsafe extern "C" fn valetd_ffi_client_connect(
         not_null(out, "out")?;
         let path = unsafe { cstr_to_string(socket_path, "socket_path") }?;
         let c = Client::connect(Path::new(&path))?;
-        let boxed = Box::new(ValetdClient { inner: c });
+        let boxed = Box::new(ValetdClient {
+            inner: std::sync::Mutex::new(c),
+        });
         unsafe { *out = Box::into_raw(boxed) };
         Ok(())
     })())
@@ -163,9 +185,8 @@ pub unsafe extern "C" fn valetd_ffi_client_unlock(
     password_len: usize,
 ) -> i32 {
     ffi::report((|| -> Result<(), FfiCallError> {
-        let inner = &mut unsafe { client.as_mut() }
-            .ok_or(FfiCallError::Null("client"))?
-            .inner;
+        let mut guard = unsafe { lock_inner(client) }?;
+        let inner = &mut *guard;
         not_null(username, "username")?;
         if password.is_null() && password_len > 0 {
             return Err(FfiCallError::Null("password"));
@@ -182,20 +203,52 @@ pub unsafe extern "C" fn valetd_ffi_client_unlock(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn valetd_ffi_client_status(
+    client: *mut ValetdClient,
+    out: *mut ValetStrList,
+) -> i32 {
+    ffi::report((|| -> Result<(), FfiCallError> {
+        let mut guard = unsafe { lock_inner(client) }?;
+        let inner = &mut *guard;
+        not_null(out, "out")?;
+        let users = inner.status()?;
+        unsafe { ptr::write(out, ValetStrList::from_strings(users)) };
+        Ok(())
+    })())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn valetd_ffi_client_list_users(
+    client: *mut ValetdClient,
+    out: *mut ValetStrList,
+) -> i32 {
+    ffi::report((|| -> Result<(), FfiCallError> {
+        let mut guard = unsafe { lock_inner(client) }?;
+        let inner = &mut *guard;
+        not_null(out, "out")?;
+        let users = inner.list_users()?;
+        unsafe { ptr::write(out, ValetStrList::from_strings(users)) };
+        Ok(())
+    })())
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn valetd_ffi_client_list(
     client: *mut ValetdClient,
+    username: *const c_char,
     queries: *const *const c_char,
     query_lens: *const usize,
     queries_count: usize,
     out: *mut ValetRecordIndex,
 ) -> i32 {
     ffi::report((|| -> Result<(), FfiCallError> {
-        let inner = &mut unsafe { client.as_mut() }
-            .ok_or(FfiCallError::Null("client"))?
-            .inner;
+        let mut guard = unsafe { lock_inner(client) }?;
+        let inner = &mut *guard;
+        not_null(username, "username")?;
         not_null(out, "out")?;
+        let user = unsafe { cstr_to_string(username, "username") }?;
         let ids = unsafe { collect_queries(queries, query_lens, queries_count) }?;
-        let entries = inner.list(&ids)?;
+        let entries = inner.list(&user, &ids)?;
         unsafe { ptr::write(out, ValetRecordIndex::from_entries(&entries)) };
         Ok(())
     })())
@@ -226,23 +279,58 @@ unsafe fn collect_queries(
     Ok(out)
 }
 
+/// Domain-suffix search within a single lot. Mirrors
+/// [`crate::request::Request::FindRecords`]: symmetric suffix matching
+/// against the record's domain label, no regex. Used by platform code
+/// (macOS AutoFill, browser extension) that receives a host string from
+/// the OS and wants the same match behavior on both sides.
+///
+/// TODO: replace with a `Query::Domain` variant on [`Request::List`]
+/// that carries suffix semantics across lots; see the TODO on
+/// `Request::FindRecords` in `request.rs`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn valetd_ffi_client_find_records(
+    client: *mut ValetdClient,
+    username: *const c_char,
+    lot: *const c_char,
+    domain: *const c_char,
+    domain_len: usize,
+    out: *mut ValetRecordIndex,
+) -> i32 {
+    ffi::report((|| -> Result<(), FfiCallError> {
+        let mut guard = unsafe { lock_inner(client) }?;
+        let inner = &mut *guard;
+        not_null(username, "username")?;
+        not_null(lot, "lot")?;
+        not_null(out, "out")?;
+        let user = unsafe { cstr_to_string(username, "username") }?;
+        let lot_name = unsafe { cstr_to_string(lot, "lot") }?;
+        let domain_s = unsafe { bytes_to_string(domain, domain_len, "domain") }?;
+        let entries = inner.find_records(&user, &lot_name, &domain_s)?;
+        unsafe { ptr::write(out, ValetRecordIndex::from_entries(&entries)) };
+        Ok(())
+    })())
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn valetd_ffi_client_fetch(
     client: *mut ValetdClient,
+    username: *const c_char,
     uuid: *const c_char,
     uuid_len: usize,
     out: *mut ValetRecord,
 ) -> i32 {
     ffi::report((|| -> Result<(), FfiCallError> {
-        let inner = &mut unsafe { client.as_mut() }
-            .ok_or(FfiCallError::Null("client"))?
-            .inner;
+        let mut guard = unsafe { lock_inner(client) }?;
+        let inner = &mut *guard;
+        not_null(username, "username")?;
         not_null(uuid, "uuid")?;
         not_null(out, "out")?;
+        let user = unsafe { cstr_to_string(username, "username") }?;
         let uuid_str = unsafe { bytes_to_string(uuid, uuid_len, "uuid") }?;
         let parsed: Uuid<Record> =
             Uuid::parse(&uuid_str).map_err(|_| FfiCallError::InvalidUtf8("uuid"))?;
-        let record = inner.fetch(&parsed)?;
+        let record = inner.fetch(&user, &parsed)?;
         unsafe { ptr::write(out, ValetRecord::from_record(&record)) };
         Ok(())
     })())
@@ -267,12 +355,21 @@ mod tests {
             assert_eq!(valetd_ffi_client_new_stub(&mut handle), VALET_FFI_OK);
             assert!(!handle.is_null());
 
+            let username = std::ffi::CString::new("stub-user").unwrap();
+
             let mut index = ValetRecordIndex {
                 entries: ptr::null_mut(),
                 count: 0,
             };
             assert_eq!(
-                valetd_ffi_client_list(handle, ptr::null(), ptr::null(), 0, &mut index),
+                valetd_ffi_client_list(
+                    handle,
+                    username.as_ptr(),
+                    ptr::null(),
+                    ptr::null(),
+                    0,
+                    &mut index
+                ),
                 VALET_FFI_OK
             );
             assert_eq!(index.count, 2);
@@ -293,6 +390,10 @@ mod tests {
                     ptr: ptr::null_mut(),
                     len: 0,
                 },
+                username: valet::ffi::ValetStr {
+                    ptr: ptr::null_mut(),
+                    len: 0,
+                },
                 extras: ptr::null_mut(),
                 extras_count: 0,
                 password: valet::ffi::ValetStr {
@@ -301,7 +402,7 @@ mod tests {
                 },
             };
             assert_eq!(
-                valetd_ffi_client_fetch(handle, uuid_ptr, uuid_len, &mut record),
+                valetd_ffi_client_fetch(handle, username.as_ptr(), uuid_ptr, uuid_len, &mut record),
                 VALET_FFI_OK
             );
             assert!(record.password.len > 0);
