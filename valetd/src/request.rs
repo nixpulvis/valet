@@ -113,6 +113,7 @@ pub enum Response {
     Record(Record),
     /// Human-readable error message, returned in place of any success variant
     /// when the daemon cannot satisfy the request.
+    // TODO: Make a proper Error enum for this too
     Error(String),
 }
 
@@ -266,6 +267,106 @@ pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
 impl Frame for Request {}
 impl Frame for Response {}
 
+/// RPC-layer error for valetd clients. `T` is the transport-specific
+/// failure type: [`io::Error`] for the socket client and FFI, a richer
+/// enum for the browser extension's native-messaging path.
+///
+/// [`Rpc`](Self::Rpc) means no application-level reply arrived
+/// (transport failure, decode failure, disconnect).
+/// [`Response`](Self::Response) carries a reply-inspection failure
+/// ([`ResponseError`]): either a peer-reported error or an unexpected
+/// response variant.
+#[derive(Debug)]
+pub enum Error<T> {
+    /// The RPC round-trip itself failed.
+    Rpc(T),
+    /// A valid reply arrived but could not be interpreted as the
+    /// expected [`Response`] variant.
+    Response(ResponseError),
+}
+
+impl<T: std::fmt::Display> std::fmt::Display for Error<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Rpc(e) => write!(f, "rpc: {e}"),
+            Error::Response(r) => write!(f, "{r}"),
+        }
+    }
+}
+
+impl<T: std::fmt::Debug + std::fmt::Display> std::error::Error for Error<T> {}
+
+/// Failure variants produced when extracting an expected [`Response`]
+/// variant via the `Response::expect_*` methods. Converts into
+/// [`Error`] for any `T` via `?`.
+#[derive(Debug)]
+pub enum ResponseError {
+    /// The peer's server-side handler returned a failure; the string is
+    /// the message it put inside [`Response::Error`].
+    Remote(String),
+    /// The peer returned a valid [`Response`] of the wrong variant.
+    UnexpectedResponse,
+}
+
+impl<T> From<ResponseError> for Error<T> {
+    fn from(e: ResponseError) -> Self {
+        Error::Response(e)
+    }
+}
+
+impl std::fmt::Display for ResponseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResponseError::Remote(msg) => write!(f, "remote: {msg}"),
+            ResponseError::UnexpectedResponse => write!(f, "unexpected response variant"),
+        }
+    }
+}
+
+impl std::error::Error for ResponseError {}
+
+impl Response {
+    /// Extract [`Response::Ok`]. Folds [`Response::Error`] and
+    /// any other variant into [`ResponseError`].
+    pub fn expect_ok(self) -> Result<(), ResponseError> {
+        match self {
+            Response::Ok => Ok(()),
+            Response::Error(msg) => Err(ResponseError::Remote(msg)),
+            _ => Err(ResponseError::UnexpectedResponse),
+        }
+    }
+
+    /// Extract [`Response::Users`]. Folds [`Response::Error`] and any
+    /// other variant into [`ResponseError`].
+    pub fn expect_users(self) -> Result<Vec<String>, ResponseError> {
+        match self {
+            Response::Users(v) => Ok(v),
+            Response::Error(msg) => Err(ResponseError::Remote(msg)),
+            _ => Err(ResponseError::UnexpectedResponse),
+        }
+    }
+
+    /// Extract [`Response::Index`]. Folds [`Response::Error`] and any
+    /// other variant into [`ResponseError`].
+    pub fn expect_index(self) -> Result<Vec<(Uuid<Record>, Label)>, ResponseError> {
+        match self {
+            Response::Index(v) => Ok(v),
+            Response::Error(msg) => Err(ResponseError::Remote(msg)),
+            _ => Err(ResponseError::UnexpectedResponse),
+        }
+    }
+
+    /// Extract [`Response::Record`]. Folds [`Response::Error`] and any
+    /// other variant into [`ResponseError`].
+    pub fn expect_record(self) -> Result<Record, ResponseError> {
+        match self {
+            Response::Record(r) => Ok(r),
+            Response::Error(msg) => Err(ResponseError::Remote(msg)),
+            _ => Err(ResponseError::UnexpectedResponse),
+        }
+    }
+}
+
 /// Errors from [`Frame::decode_base64`].
 #[derive(Debug)]
 pub enum DecodeError {
@@ -413,5 +514,86 @@ mod tests {
         assert!(domain_matches("example.com", "sub.example.com"));
         assert!(domain_matches("sub.example.com", "example.com"));
         assert!(!domain_matches("example.com", "other.com"));
+    }
+
+    #[test]
+    fn expect_ok_variants() {
+        Response::Ok.expect_ok().unwrap();
+        match Response::Error("nope".into()).expect_ok() {
+            Err(ResponseError::Remote(m)) => assert_eq!(m, "nope"),
+            other => panic!("expected Remote, got {other:?}"),
+        }
+        match Response::Users(vec![]).expect_ok() {
+            Err(ResponseError::UnexpectedResponse) => {}
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expect_users_variants() {
+        assert_eq!(
+            Response::Users(vec!["alice".into()]).expect_users().unwrap(),
+            vec!["alice".to_string()],
+        );
+        match Response::Error("locked".into()).expect_users() {
+            Err(ResponseError::Remote(m)) => assert_eq!(m, "locked"),
+            other => panic!("expected Remote, got {other:?}"),
+        }
+        match Response::Ok.expect_users() {
+            Err(ResponseError::UnexpectedResponse) => {}
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expect_index_variants() {
+        let rec = sample_record();
+        let uuid = rec.uuid().clone();
+        let label = rec.label().clone();
+        let got = Response::Index(vec![(uuid.clone(), label)])
+            .expect_index()
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0.to_uuid(), uuid.to_uuid());
+
+        match Response::Error("boom".into()).expect_index() {
+            Err(ResponseError::Remote(m)) => assert_eq!(m, "boom"),
+            other => panic!("expected Remote, got {other:?}"),
+        }
+        match Response::Ok.expect_index() {
+            Err(ResponseError::UnexpectedResponse) => {}
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expect_record_variants() {
+        let rec = sample_record();
+        let uuid = rec.uuid().clone();
+        let got = Response::Record(rec).expect_record().unwrap();
+        assert_eq!(got.uuid().to_uuid(), uuid.to_uuid());
+
+        match Response::Error("missing".into()).expect_record() {
+            Err(ResponseError::Remote(m)) => assert_eq!(m, "missing"),
+            other => panic!("expected Remote, got {other:?}"),
+        }
+        match Response::Users(vec![]).expect_record() {
+            Err(ResponseError::UnexpectedResponse) => {}
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn response_error_converts_into_error() {
+        let e: Error<io::Error> = ResponseError::Remote("x".into()).into();
+        match e {
+            Error::Response(ResponseError::Remote(m)) => assert_eq!(m, "x"),
+            other => panic!("expected Error::Response(Remote), got {other:?}"),
+        }
+        let e: Error<io::Error> = ResponseError::UnexpectedResponse.into();
+        match e {
+            Error::Response(ResponseError::UnexpectedResponse) => {}
+            other => panic!("expected Error::Response(UnexpectedResponse), got {other:?}"),
+        }
     }
 }

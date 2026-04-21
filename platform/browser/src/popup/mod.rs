@@ -7,7 +7,6 @@ use wasm_bindgen::prelude::*;
 
 pub(crate) mod app;
 pub(crate) mod browser;
-pub(crate) mod rpc;
 
 /// Mount the popup Yew application onto the `#root` DOM element.
 #[wasm_bindgen]

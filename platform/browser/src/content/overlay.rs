@@ -11,7 +11,13 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, Element, HtmlElement, HtmlInputElement, ShadowRootInit, ShadowRootMode};
 
-use super::{fill, rpc};
+use std::str::FromStr;
+use valet::lot::DEFAULT_LOT;
+use valet::{Record, record::Label, uuid::Uuid};
+use valetd::Request;
+
+use super::fill;
+use crate::rpc;
 
 /// Z-index for overlay elements — maximum i32 to sit above all page content.
 const OVERLAY_Z_INDEX: &str = "2147483647";
@@ -201,10 +207,10 @@ async fn show_menu(pw: &HtmlInputElement, username: Option<&HtmlInputElement>) {
 
     // Try to fetch credentials if unlocked — but don't block the menu
     // on this. We always show "Generate password" regardless.
-    // Check if a user is unlocked.
-    match rpc::autofill_status().await {
+    let user = match rpc::first_unlocked_user().await {
         Ok(Some(u)) => {
             tracing::debug!(username = %u, "vault unlocked");
+            u
         }
         Ok(None) => {
             tracing::debug!("vault is locked");
@@ -217,7 +223,17 @@ async fn show_menu(pw: &HtmlInputElement, username: Option<&HtmlInputElement>) {
         }
     };
 
-    let credentials = match rpc::autofill_request(&domain).await {
+    let find_result: Result<Vec<(Uuid<Record>, Label)>, valetd::request::Error<rpc::Error>> = async {
+        Ok(rpc::call(Request::FindRecords {
+            username: user.clone(),
+            lot: DEFAULT_LOT.to_owned(),
+            query: domain.clone(),
+        })
+        .await?
+        .expect_index()?)
+    }
+    .await;
+    let credentials = match find_result {
         Ok(c) => {
             tracing::debug!(domain = %domain, count = c.len(), "credentials found");
             c
@@ -235,7 +251,7 @@ async fn show_menu(pw: &HtmlInputElement, username: Option<&HtmlInputElement>) {
 async fn show_dropdown(
     pw: &HtmlInputElement,
     username: Option<&HtmlInputElement>,
-    credentials: &[rpc::Credential],
+    credentials: &[(Uuid<Record>, Label)],
 ) {
     let document = super::document();
     let rect = pw.get_bounding_client_rect();
@@ -277,12 +293,12 @@ async fn show_dropdown(
     let host_ref = Rc::new(RefCell::new(Some(host.clone())));
 
     // Credential items.
-    for cred in credentials {
-        let item = make_menu_item(&document, &cred.label);
+    for (record_uuid, label) in credentials {
+        let item = make_menu_item(&document, &label.to_string());
 
         let pw = pw.clone();
         let username = username.cloned();
-        let uuid = cred.record_uuid.clone();
+        let uuid = record_uuid.to_string();
         let host_ref = host_ref.clone();
         let click = Closure::wrap(Box::new(move |e: web_sys::MouseEvent| {
             e.prevent_default();
@@ -446,11 +462,40 @@ async fn do_generate(pw: &HtmlInputElement, username_field: Option<&HtmlInputEle
         .unwrap_or_default();
     let label = format!("{id}@{domain}");
 
+    let user = match rpc::first_unlocked_user().await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            show_toast("Valet is locked. Click the Valet toolbar icon to unlock.");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "status check failed");
+            return;
+        }
+    };
+
     tracing::debug!(label = %label, "generating password");
-    match rpc::autofill_generate(&label).await {
-        Ok(data) => {
+    let parsed_label = match Label::from_str(&label) {
+        Ok(l) => l,
+        Err(e) => {
+            show_toast(&format!("Invalid label: {e:?}"));
+            return;
+        }
+    };
+    let result: Result<Record, valetd::request::Error<rpc::Error>> = async {
+        Ok(rpc::call(Request::GenerateRecord {
+            username: user,
+            lot: DEFAULT_LOT.to_owned(),
+            label: parsed_label,
+        })
+        .await?
+        .expect_record()?)
+    }
+    .await;
+    match result {
+        Ok(record) => {
             tracing::info!(label = %label, "password generated and saved");
-            fill::set_field_value(pw, &data.password);
+            fill::set_field_value(pw, record.password().as_str());
         }
         Err(e) => {
             tracing::warn!(label = %label, error = %e, "generate failed");
@@ -465,17 +510,46 @@ async fn do_fill(
     username_field: Option<&HtmlInputElement>,
     record_uuid: &str,
 ) {
+    let user = match rpc::first_unlocked_user().await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            show_toast("Valet is locked. Click the Valet toolbar icon to unlock.");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "status check failed");
+            return;
+        }
+    };
+
     tracing::debug!(record_uuid = %record_uuid, "filling credential");
-    match rpc::autofill_fill(record_uuid).await {
-        Ok(data) => {
+    let uuid: Uuid<Record> = match Uuid::parse(record_uuid) {
+        Ok(u) => u,
+        Err(e) => {
+            show_toast(&format!("Invalid uuid: {e:?}"));
+            return;
+        }
+    };
+    let result: Result<Record, valetd::request::Error<rpc::Error>> = async {
+        Ok(rpc::call(Request::GetRecord {
+            username: user,
+            lot: DEFAULT_LOT.to_owned(),
+            uuid,
+        })
+        .await?
+        .expect_record()?)
+    }
+    .await;
+    match result {
+        Ok(record) => {
             if let Some(u_field) = username_field {
-                if let Some(ref id) = data.username {
+                if let Some(id) = record.label().username() {
                     tracing::debug!(id = %id, "filling username field");
                     fill::set_field_value(u_field, id);
                 }
             }
             tracing::debug!("filling password field");
-            fill::set_field_value(pw, &data.password);
+            fill::set_field_value(pw, record.password().as_str());
             tracing::info!("autofill complete");
         }
         Err(e) => {

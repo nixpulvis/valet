@@ -22,7 +22,7 @@
 
 #[cfg(not(feature = "stub"))]
 use crate::client::Client;
-use crate::request::{Request, Response};
+use crate::request::{Error, Request, Response, ResponseError};
 use crate::server::Handler;
 #[cfg(feature = "stub")]
 use crate::stub::Stub;
@@ -38,7 +38,6 @@ use valet::{
         ValetStrList,
     },
     password::Password,
-    record::Label,
     uuid::Uuid,
 };
 
@@ -75,13 +74,27 @@ enum FfiCallError {
     InvalidUtf8(&'static str),
     PasswordTooLong,
     Io(io::Error),
-    Remote(String),
-    UnexpectedResponse,
+    Response(ResponseError),
 }
 
 impl From<io::Error> for FfiCallError {
     fn from(e: io::Error) -> Self {
         FfiCallError::Io(e)
+    }
+}
+
+impl From<Error<io::Error>> for FfiCallError {
+    fn from(e: Error<io::Error>) -> Self {
+        match e {
+            Error::Rpc(e) => FfiCallError::Io(e),
+            Error::Response(r) => FfiCallError::Response(r),
+        }
+    }
+}
+
+impl From<ResponseError> for FfiCallError {
+    fn from(e: ResponseError) -> Self {
+        FfiCallError::Response(e)
     }
 }
 
@@ -92,7 +105,7 @@ impl FfiError for FfiCallError {
             FfiCallError::InvalidUtf8(_) => VALET_FFI_ERR_INVALID_UTF8,
             FfiCallError::PasswordTooLong => VALET_FFI_ERR_PASSWORD_TOO_LONG,
             FfiCallError::Io(_) => VALET_FFI_ERR_IO,
-            FfiCallError::Remote(_) | FfiCallError::UnexpectedResponse => VALET_FFI_ERR_PROTOCOL,
+            FfiCallError::Response(_) => VALET_FFI_ERR_PROTOCOL,
         }
     }
 
@@ -102,8 +115,7 @@ impl FfiError for FfiCallError {
             FfiCallError::InvalidUtf8(what) => format!("{what} is not valid UTF-8"),
             FfiCallError::PasswordTooLong => "password too long".into(),
             FfiCallError::Io(e) => format!("io: {e}"),
-            FfiCallError::Remote(msg) => format!("remote: {msg}"),
-            FfiCallError::UnexpectedResponse => "unexpected response variant".into(),
+            FfiCallError::Response(r) => r.to_string(),
         }
     }
 }
@@ -149,38 +161,6 @@ unsafe fn bytes_to_string(
 /// Borrow a `ValetdClient` from a raw pointer, null-checked.
 unsafe fn borrow<'a>(client: *mut ValetdClient) -> Result<&'a ValetdClient, FfiCallError> {
     unsafe { client.as_ref() }.ok_or(FfiCallError::Null("client"))
-}
-
-fn expect_ok(r: Response) -> Result<(), FfiCallError> {
-    match r {
-        Response::Ok => Ok(()),
-        Response::Error(msg) => Err(FfiCallError::Remote(msg)),
-        _ => Err(FfiCallError::UnexpectedResponse),
-    }
-}
-
-fn expect_users(r: Response) -> Result<Vec<String>, FfiCallError> {
-    match r {
-        Response::Users(v) => Ok(v),
-        Response::Error(msg) => Err(FfiCallError::Remote(msg)),
-        _ => Err(FfiCallError::UnexpectedResponse),
-    }
-}
-
-fn expect_index(r: Response) -> Result<Vec<(Uuid<Record>, Label)>, FfiCallError> {
-    match r {
-        Response::Index(v) => Ok(v),
-        Response::Error(msg) => Err(FfiCallError::Remote(msg)),
-        _ => Err(FfiCallError::UnexpectedResponse),
-    }
-}
-
-fn expect_record(r: Response) -> Result<Record, FfiCallError> {
-    match r {
-        Response::Record(rec) => Ok(rec),
-        Response::Error(msg) => Err(FfiCallError::Remote(msg)),
-        _ => Err(FfiCallError::UnexpectedResponse),
-    }
 }
 
 fn new_runtime() -> io::Result<Runtime> {
@@ -241,10 +221,13 @@ pub unsafe extern "C" fn valetd_ffi_client_unlock(
             .as_str()
             .try_into()
             .map_err(|_| FfiCallError::PasswordTooLong)?;
-        expect_ok(client.dispatch(Request::Unlock {
-            username,
-            password: pw,
-        })?)
+        client
+            .dispatch(Request::Unlock {
+                username,
+                password: pw,
+            })?
+            .expect_ok()?;
+        Ok(())
     })())
 }
 
@@ -256,7 +239,7 @@ pub unsafe extern "C" fn valetd_ffi_client_status(
     ffi::report((|| -> Result<(), FfiCallError> {
         let client = unsafe { borrow(client) }?;
         not_null(out, "out")?;
-        let users = expect_users(client.dispatch(Request::Status)?)?;
+        let users = client.dispatch(Request::Status)?.expect_users()?;
         unsafe { ptr::write(out, ValetStrList::from_strings(users)) };
         Ok(())
     })())
@@ -270,7 +253,7 @@ pub unsafe extern "C" fn valetd_ffi_client_list_users(
     ffi::report((|| -> Result<(), FfiCallError> {
         let client = unsafe { borrow(client) }?;
         not_null(out, "out")?;
-        let users = expect_users(client.dispatch(Request::ListUsers)?)?;
+        let users = client.dispatch(Request::ListUsers)?.expect_users()?;
         unsafe { ptr::write(out, ValetStrList::from_strings(users)) };
         Ok(())
     })())
@@ -291,7 +274,9 @@ pub unsafe extern "C" fn valetd_ffi_client_list(
         not_null(out, "out")?;
         let username = unsafe { cstr_to_string(username, "username") }?;
         let queries = unsafe { collect_queries(queries, query_lens, queries_count) }?;
-        let entries = expect_index(client.dispatch(Request::List { username, queries })?)?;
+        let entries = client
+            .dispatch(Request::List { username, queries })?
+            .expect_index()?;
         unsafe { ptr::write(out, ValetRecordIndex::from_entries(&entries)) };
         Ok(())
     })())
@@ -348,11 +333,13 @@ pub unsafe extern "C" fn valetd_ffi_client_find_records(
         let username = unsafe { cstr_to_string(username, "username") }?;
         let lot = unsafe { cstr_to_string(lot, "lot") }?;
         let query = unsafe { bytes_to_string(domain, domain_len, "domain") }?;
-        let entries = expect_index(client.dispatch(Request::FindRecords {
-            username,
-            lot,
-            query,
-        })?)?;
+        let entries = client
+            .dispatch(Request::FindRecords {
+                username,
+                lot,
+                query,
+            })?
+            .expect_index()?;
         unsafe { ptr::write(out, ValetRecordIndex::from_entries(&entries)) };
         Ok(())
     })())
@@ -375,7 +362,9 @@ pub unsafe extern "C" fn valetd_ffi_client_fetch(
         let uuid_str = unsafe { bytes_to_string(uuid, uuid_len, "uuid") }?;
         let uuid: Uuid<Record> =
             Uuid::parse(&uuid_str).map_err(|_| FfiCallError::InvalidUtf8("uuid"))?;
-        let record = expect_record(client.dispatch(Request::Fetch { username, uuid })?)?;
+        let record = client
+            .dispatch(Request::Fetch { username, uuid })?
+            .expect_record()?;
         unsafe { ptr::write(out, ValetRecord::from_record(&record)) };
         Ok(())
     })())

@@ -3,16 +3,21 @@
 //! [`App`] is the root component. It delegates to [`LockView`] when no session
 //! is active and [`UnlockedView`] once a user has authenticated.
 
+use std::collections::HashMap;
+use std::str::FromStr;
 use stylist::yew::{Global, styled_component};
 use valet::Record;
 use valet::lot::DEFAULT_LOT;
+use valet::password::Password;
 use valet::record::Label;
 use valet::uuid::Uuid;
+use valetd::Request;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlInputElement, HtmlSelectElement};
 use yew::prelude::*;
 
-use super::{browser, rpc};
+use super::browser;
+use crate::rpc;
 
 /// How long (ms) before the clipboard is cleared after copying a password.
 const CLIPBOARD_CLEAR_MS: u32 = 20_000;
@@ -71,7 +76,9 @@ pub fn app() -> Html {
                     needs_permissions.set(true);
                 }
 
-                match rpc::status().await {
+                let result: Result<Vec<String>, valetd::request::Error<rpc::Error>> =
+                    async { Ok(rpc::call(Request::Status).await?.expect_users()?) }.await;
+                match result {
                     Ok(unlocked) => {
                         tracing::debug!(count = unlocked.len(), "status check ok");
                         if let Some(username) = unlocked.into_iter().next() {
@@ -144,7 +151,9 @@ pub fn app() -> Html {
             let session = session.clone();
             let message = message.clone();
             spawn_local(async move {
-                match rpc::lock_all().await {
+                let result: Result<(), valetd::request::Error<rpc::Error>> =
+                    async { Ok(rpc::call(Request::LockAll).await?.expect_ok()?) }.await;
+                match result {
                     Ok(()) => tracing::debug!("locked all users"),
                     Err(e) => tracing::warn!(error = %e, "lock_all failed"),
                 }
@@ -234,7 +243,9 @@ fn lock_view(props: &LockProps) -> Html {
         let set_message = props.set_message.clone();
         use_effect_with((), move |_| {
             spawn_local(async move {
-                match rpc::list_users().await {
+                let result: Result<Vec<String>, valetd::request::Error<rpc::Error>> =
+                    async { Ok(rpc::call(Request::ListUsers).await?.expect_users()?) }.await;
+                match result {
                     Ok(list) => {
                         if list.is_empty() {
                             set_message.emit(Message::Error(
@@ -287,7 +298,23 @@ fn lock_view(props: &LockProps) -> Html {
             let set_message = set_message.clone();
             let password_state = password.clone();
             spawn_local(async move {
-                match rpc::unlock(&u, &p).await {
+                let password: Password = match p.as_str().try_into() {
+                    Ok(pw) => pw,
+                    Err(_) => {
+                        set_message.emit(Message::Error("password too long".into()));
+                        return;
+                    }
+                };
+                let result: Result<(), valetd::request::Error<rpc::Error>> = async {
+                    Ok(rpc::call(Request::Unlock {
+                        username: u.clone(),
+                        password,
+                    })
+                    .await?
+                    .expect_ok()?)
+                }
+                .await;
+                match result {
                     Ok(()) => {
                         let domain = browser::current_tab_domain().await;
                         tracing::debug!(username = %u, domain = ?domain, "unlock succeeded");
@@ -399,7 +426,17 @@ fn unlocked_view(props: &UnlockedProps) -> Html {
             match session.domain.clone() {
                 None => records.set(Vec::new()),
                 Some(domain) => spawn_local(async move {
-                    match rpc::find_records(&session.username, &session.lot, &domain).await {
+                    let result: Result<Vec<(Uuid<Record>, Label)>, valetd::request::Error<rpc::Error>> = async {
+                        Ok(rpc::call(Request::FindRecords {
+                            username: session.username.clone(),
+                            lot: session.lot.clone(),
+                            query: domain.clone(),
+                        })
+                        .await?
+                        .expect_index()?)
+                    }
+                    .await;
+                    match result {
                         Ok(list) => {
                             tracing::debug!(domain = %domain, count = list.len(), "records loaded");
                             records.set(list);
@@ -423,7 +460,24 @@ fn unlocked_view(props: &UnlockedProps) -> Html {
             let session = session.clone();
             let set_message = set_message.clone();
             spawn_local(async move {
-                match rpc::get_record(&session.username, &session.lot, &uuid).await {
+                let parsed_uuid: Uuid<Record> = match Uuid::parse(&uuid) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        set_message.emit(Message::Error(format!("Invalid uuid: {e:?}")));
+                        return;
+                    }
+                };
+                let result: Result<Record, valetd::request::Error<rpc::Error>> = async {
+                    Ok(rpc::call(Request::GetRecord {
+                        username: session.username.clone(),
+                        lot: session.lot.clone(),
+                        uuid: parsed_uuid,
+                    })
+                    .await?
+                    .expect_record()?)
+                }
+                .await;
+                match result {
                     Ok(record) => {
                         if let Err(e) = browser::copy_to_clipboard(record.password().as_str()).await
                         {
@@ -495,7 +549,33 @@ fn unlocked_view(props: &UnlockedProps) -> Html {
             let refresh_tick = refresh_tick.clone();
             spawn_local(async move {
                 let label = format!("{id}@{domain}");
-                match rpc::create_record(&session.username, &session.lot, &label, &pw).await {
+                let parsed_label = match Label::from_str(&label) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        set_message.emit(Message::Error(format!("Invalid label: {e:?}")));
+                        return;
+                    }
+                };
+                let password: Password = match pw.as_str().try_into() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        set_message.emit(Message::Error("password too long".into()));
+                        return;
+                    }
+                };
+                let result: Result<Record, valetd::request::Error<rpc::Error>> = async {
+                    Ok(rpc::call(Request::CreateRecord {
+                        username: session.username.clone(),
+                        lot: session.lot.clone(),
+                        label: parsed_label,
+                        password,
+                        extra: HashMap::<String, String>::new(),
+                    })
+                    .await?
+                    .expect_record()?)
+                }
+                .await;
+                match result {
                     Ok(_record) => {
                         tracing::debug!(label = %label, "record saved");
                         new_id.set(String::new());
