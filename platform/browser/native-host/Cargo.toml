@@ -8,8 +8,8 @@ name = "valet-native-host"
 path = "src/main.rs"
 
 [dependencies]
-valet = { path = "../../..", default-features = false }
-valetd = { path = "../../../valetd", features = ["native"] }
+valetd = { path = "../../../valetd", default-features = false }
+base64 = "0.22"
 serde_json = "1.0"
 tokio = { version = "1.46", features = [
     "macros",
@@ -17,7 +17,6 @@ tokio = { version = "1.46", features = [
     "io-std",
     "io-util",
     "net",
-    "process",
     "sync",
     "time",
 ] }

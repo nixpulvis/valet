@@ -7,9 +7,12 @@
 //! overhead.  The thread-locals are: one cached [`Port`], a `pending`
 //! map keyed by RPC id, and a monotonic id counter.
 //!
-//! The background script acts as a transparent message broker: it forwards
-//! RPC requests to the native host and passes the raw base64-encoded result
-//! string back to the popup without decoding it.
+//! The background script acts as a transparent byte pump for popup RPCs:
+//! it forwards the popup's already-encoded base64 [`valetd::Request`] to
+//! the native host in an `{ id, request }` envelope and returns the raw
+//! base64 [`valetd::Response`] string back to the popup without decoding
+//! it. Adding an RPC only touches the popup wrappers and `valetd` — the
+//! background is agnostic to message types.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -18,7 +21,7 @@ use futures::channel::oneshot;
 use js_sys::Reflect;
 use serde::Serialize;
 use valet::lot::DEFAULT_LOT;
-use valetd::{Response, request::Frame};
+use valetd::{Request, Response, request::Frame};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
@@ -66,19 +69,20 @@ async fn handle_message(msg: JsValue) -> Result<JsValue, JsValue> {
     }
 }
 
-/// Forward a raw RPC call from the popup to the native host.
+/// Forward a raw RPC call from the popup to the native host. The popup
+/// has already encoded its [`Request`] to base64; the background never
+/// decodes it.
 async fn handle_rpc(msg: JsValue) -> Result<JsValue, JsValue> {
-    let method = Reflect::get(&msg, &JsValue::from_str("method"))?
+    let request_b64 = Reflect::get(&msg, &JsValue::from_str("request"))?
         .as_string()
-        .ok_or_else(|| JsValue::from_str("missing method"))?;
-    let params = Reflect::get(&msg, &JsValue::from_str("params"))?;
-    match call_native(&method, params).await {
+        .ok_or_else(|| JsValue::from_str("missing request"))?;
+    match call_native_raw(&request_b64).await {
         Ok(b64) => {
-            tracing::trace!(method = %method, "rpc ok");
+            tracing::trace!("rpc ok");
             Ok(JsValue::from_str(&b64))
         }
         Err(e) => {
-            tracing::trace!(method = %method, error = %e, "rpc failed");
+            tracing::trace!(error = %e, "rpc failed");
             Err(JsValue::from_str(&e))
         }
     }
@@ -106,14 +110,11 @@ async fn handle_autofill_request(msg: JsValue) -> Result<JsValue, JsValue> {
         Err(_) => return autofill_error("not unlocked"),
     };
 
-    let result = call_native_rpc(
-        "find_records",
-        serde_json::json!({
-            "username": username,
-            "lot": DEFAULT_LOT,
-            "domain": domain,
-        }),
-    )
+    let result = call_native_request(Request::FindRecords {
+        username,
+        lot: DEFAULT_LOT.to_owned(),
+        query: domain,
+    })
     .await?;
     let entries = match result {
         Response::Index(entries) => entries,
@@ -150,14 +151,15 @@ async fn handle_autofill_fill(msg: JsValue) -> Result<JsValue, JsValue> {
         Err(_) => return autofill_error("not unlocked"),
     };
 
-    let result = call_native_rpc(
-        "get_record",
-        serde_json::json!({
-            "username": username,
-            "lot": DEFAULT_LOT,
-            "record_uuid": record_uuid,
-        }),
-    )
+    let uuid: valet::uuid::Uuid<valet::Record> = match valet::uuid::Uuid::parse(&record_uuid) {
+        Ok(u) => u,
+        Err(e) => return autofill_error(&format!("invalid uuid: {e:?}")),
+    };
+    let result = call_native_request(Request::GetRecord {
+        username,
+        lot: DEFAULT_LOT.to_owned(),
+        uuid,
+    })
     .await?;
     let record = match result {
         Response::Record(r) => r,
@@ -169,6 +171,7 @@ async fn handle_autofill_fill(msg: JsValue) -> Result<JsValue, JsValue> {
 
 /// Generate a password, save it as a record, and return the credential.
 async fn handle_autofill_generate(msg: JsValue) -> Result<JsValue, JsValue> {
+    use std::str::FromStr;
     let label = Reflect::get(&msg, &JsValue::from_str("label"))?
         .as_string()
         .ok_or_else(|| JsValue::from_str("missing label"))?;
@@ -178,14 +181,15 @@ async fn handle_autofill_generate(msg: JsValue) -> Result<JsValue, JsValue> {
         Err(_) => return autofill_error("not unlocked"),
     };
 
-    let result = call_native_rpc(
-        "generate_record",
-        serde_json::json!({
-            "username": username,
-            "lot": DEFAULT_LOT,
-            "label": label,
-        }),
-    )
+    let label = match valet::record::Label::from_str(&label) {
+        Ok(l) => l,
+        Err(e) => return autofill_error(&format!("invalid label: {e:?}")),
+    };
+    let result = call_native_request(Request::GenerateRecord {
+        username,
+        lot: DEFAULT_LOT.to_owned(),
+        label,
+    })
     .await?;
     let record = match result {
         Response::Record(r) => r,
@@ -225,13 +229,12 @@ fn autofill_error(msg: &str) -> Result<JsValue, JsValue> {
     })
 }
 
-/// Call `status` on the native host and return the first unlocked username.
+/// Call `Request::Status` and return the first unlocked username.
 async fn first_unlocked_user() -> Result<String, JsValue> {
-    let b64 = call_native("status", JsValue::from_str("{}"))
+    let response = call_native_request(Request::Status)
         .await
-        .map_err(|e| JsValue::from_str(&e))?;
-    let result = Response::decode_base64(&b64).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    match result {
+        .map_err(|e| e)?;
+    match response {
         Response::Users(users) => users
             .into_iter()
             .next()
@@ -241,20 +244,19 @@ async fn first_unlocked_user() -> Result<String, JsValue> {
 }
 
 /// JSON envelope posted to the native host over the [`Port`](super::externs::Port).
-/// The popup's `BrowserEnvelope` carries the same `method` and `params`
-/// payload but a different third field: it tags messages with `kind` so
-/// the background can route among handlers, whereas this envelope carries
-/// an `id` so replies from the native host can be matched back to their
-/// pending [`oneshot`] channel in `PENDING`.
+/// `request` is the base64-encoded bitcode [`valetd::Request`]; the
+/// background never inspects the inner variant. `id` lets replies from the
+/// native host be matched back to their pending [`oneshot`] channel in
+/// `PENDING`.
 #[derive(Serialize)]
 pub(crate) struct NativeEnvelope<'a> {
     id: u32,
-    method: &'a str,
-    params: serde_json::Value,
+    request: &'a str,
 }
 
-/// Send an RPC call to the native host and return the raw base64 result string.
-pub(crate) async fn call_native(method: &str, params: JsValue) -> Result<String, String> {
+/// Send an already-base64-encoded request to the native host and return
+/// the raw base64 result string.
+pub(crate) async fn call_native_raw(request_b64: &str) -> Result<String, String> {
     let id = NEXT_ID.with(|n| {
         let mut n = n.borrow_mut();
         let id = *n;
@@ -264,33 +266,27 @@ pub(crate) async fn call_native(method: &str, params: JsValue) -> Result<String,
     let (tx, rx) = oneshot::channel();
     PENDING.with(|p| p.borrow_mut().insert(id, tx));
 
-    let params_json: serde_json::Value =
-        serde_wasm_bindgen::from_value(params).map_err(|e| e.to_string())?;
     let envelope = NativeEnvelope {
         id,
-        method,
-        params: params_json,
+        request: request_b64,
     };
     let serializer = serde_wasm_bindgen::Serializer::json_compatible();
     let frame_js =
         serde::Serialize::serialize(&envelope, &serializer).map_err(|e| e.to_string())?;
 
-    tracing::trace!(id, method, "→ native host");
+    tracing::trace!(id, "→ native host");
     ensure_port().post_message(&frame_js);
 
     let result = rx.await.map_err(|_| "native port closed".to_string())?;
-    tracing::trace!(id, method, ok = result.is_ok(), "← native host");
+    tracing::trace!(id, ok = result.is_ok(), "← native host");
     result
 }
 
-/// Call the native host and decode the base64 response into a [`Response`].
-///
-/// Combines [`call_native`] with result decoding, mapping all errors to
-/// [`JsValue`] for use in the autofill message handlers.
-async fn call_native_rpc(method: &str, params: serde_json::Value) -> Result<Response, JsValue> {
-    let params_js =
-        serde_wasm_bindgen::to_value(&params).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let b64 = call_native(method, params_js)
+/// Encode a typed [`Request`], send it to the native host, and decode the
+/// base64 reply into a [`Response`]. Used by the autofill handlers that
+/// build their request structurally rather than relaying from the popup.
+async fn call_native_request(request: Request) -> Result<Response, JsValue> {
+    let b64 = call_native_raw(&request.encode_base64())
         .await
         .map_err(|e| JsValue::from_str(&e))?;
     Response::decode_base64(&b64).map_err(|e| JsValue::from_str(&e.to_string()))

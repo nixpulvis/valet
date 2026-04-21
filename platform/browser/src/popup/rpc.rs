@@ -1,41 +1,46 @@
 //! Typed RPC wrappers over [`browser::send_message`](super::browser::send_message).
 //!
-//! Each public function here sends `{ kind: "rpc", method, params }` to the
-//! background script, which forwards the call to the native host. The
-//! background script passes the raw base64-encoded bitcode result string
-//! back, and we decode it here into a [`valetd::Response`] to extract
-//! valet types directly.
+//! Each public function here builds a [`valetd::Request`], encodes it as
+//! base64 via [`Frame::encode_base64`], and sends
+//! `{ kind: "rpc", request: <base64> }` to the background script. The
+//! background forwards the encoded request to the native host without
+//! decoding it. The base64 [`Response`] that comes back is decoded here
+//! and matched for the expected variant.
+//!
+//! Adding an RPC is one new `valetd::Request` variant plus one wrapper
+//! here — the background and native host don't need to learn about it.
 
 use serde::Serialize;
-use valet::{Record, record::Label, uuid::Uuid};
-use valetd::{Response, request::Frame};
+use std::collections::HashMap;
+use std::str::FromStr;
+use valet::{Record, password::Password, record::Label, uuid::Uuid};
+use valetd::{Request, Response, request::Frame};
 use wasm_bindgen::JsValue;
 
 use super::browser;
 
-/// Wrapper sent to the background script as `{ kind: "rpc", method, params }`.
+/// Wrapper sent to the background script. `kind` is always `"rpc"` here;
+/// other kinds (autofill) are handled by dedicated message handlers in the
+/// background script and don't pass through this module.
 #[derive(Serialize)]
-pub(crate) struct BrowserEnvelope<'a, P: Serialize> {
+pub(crate) struct BrowserEnvelope<'a> {
     kind: &'static str,
-    method: &'a str,
-    params: P,
+    request: &'a str,
 }
 
-/// Send an RPC call and decode the base64 response into a [`Response`].
-async fn call(method: &str, params: impl Serialize) -> Result<Response, String> {
-    tracing::trace!(method, "rpc →");
+/// Send a [`Request`] to the background and decode the base64 reply into
+/// a [`Response`].
+async fn call(request: Request) -> Result<Response, String> {
+    let request_b64 = request.encode_base64();
     let envelope = BrowserEnvelope {
         kind: "rpc",
-        method,
-        params,
+        request: &request_b64,
     };
     let js_result = browser::send_message(&envelope).await.map_err(js_err)?;
     let b64 = js_result
         .as_string()
         .ok_or_else(|| "expected base64 string from background".to_string())?;
-    let response = Response::decode_base64(&b64).map_err(|e| e.to_string())?;
-    tracing::trace!(method, "rpc ← ok");
-    Ok(response)
+    Response::decode_base64(&b64).map_err(|e| e.to_string())
 }
 
 fn js_err(v: JsValue) -> String {
@@ -50,12 +55,9 @@ fn js_err(v: JsValue) -> String {
     format!("{v:?}")
 }
 
-#[derive(Serialize)]
-struct Empty {}
-
 /// List all registered usernames.
 pub async fn list_users() -> Result<Vec<String>, String> {
-    match call("list_users", Empty {}).await? {
+    match call(Request::ListUsers).await? {
         Response::Users(users) => Ok(users),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -63,21 +65,21 @@ pub async fn list_users() -> Result<Vec<String>, String> {
 
 /// Return the list of currently unlocked usernames.
 pub async fn status() -> Result<Vec<String>, String> {
-    match call("status", Empty {}).await? {
+    match call(Request::Status).await? {
         Response::Users(users) => Ok(users),
         other => Err(format!("unexpected response: {other:?}")),
     }
 }
 
-#[derive(Serialize)]
-struct UnlockParams<'a> {
-    username: &'a str,
-    password: &'a str,
-}
-
 /// Unlock a user's vault with the given password.
 pub async fn unlock(username: &str, password: &str) -> Result<(), String> {
-    match call("unlock", UnlockParams { username, password }).await? {
+    let password: Password = password.try_into().map_err(|_| "password too long".to_string())?;
+    match call(Request::Unlock {
+        username: username.to_owned(),
+        password,
+    })
+    .await?
+    {
         Response::Ok => Ok(()),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -85,17 +87,10 @@ pub async fn unlock(username: &str, password: &str) -> Result<(), String> {
 
 /// Lock all currently unlocked users.
 pub async fn lock_all() -> Result<(), String> {
-    match call("lock_all", Empty {}).await? {
+    match call(Request::LockAll).await? {
         Response::Ok => Ok(()),
         other => Err(format!("unexpected response: {other:?}")),
     }
-}
-
-#[derive(Serialize)]
-struct FindParams<'a> {
-    username: &'a str,
-    lot: &'a str,
-    domain: &'a str,
 }
 
 /// Find records matching a domain in the given user's lot. Returns only
@@ -106,14 +101,11 @@ pub async fn find_records(
     lot: &str,
     domain: &str,
 ) -> Result<Vec<(Uuid<Record>, Label)>, String> {
-    match call(
-        "find_records",
-        FindParams {
-            username,
-            lot,
-            domain,
-        },
-    )
+    match call(Request::FindRecords {
+        username: username.to_owned(),
+        lot: lot.to_owned(),
+        query: domain.to_owned(),
+    })
     .await?
     {
         Response::Index(entries) => Ok(entries),
@@ -121,36 +113,19 @@ pub async fn find_records(
     }
 }
 
-#[derive(Serialize)]
-struct GetRecordParams<'a> {
-    username: &'a str,
-    lot: &'a str,
-    record_uuid: &'a str,
-}
-
 /// Fetch a full decrypted record by UUID.
 pub async fn get_record(username: &str, lot: &str, record_uuid: &str) -> Result<Record, String> {
-    match call(
-        "get_record",
-        GetRecordParams {
-            username,
-            lot,
-            record_uuid,
-        },
-    )
+    let uuid: Uuid<Record> = Uuid::parse(record_uuid).map_err(|e| format!("{e:?}"))?;
+    match call(Request::GetRecord {
+        username: username.to_owned(),
+        lot: lot.to_owned(),
+        uuid,
+    })
     .await?
     {
         Response::Record(record) => Ok(record),
         other => Err(format!("unexpected response: {other:?}")),
     }
-}
-
-#[derive(Serialize)]
-struct CreateParams<'a> {
-    username: &'a str,
-    lot: &'a str,
-    label: &'a str,
-    password: &'a str,
 }
 
 /// Create a new credential record in the given lot.
@@ -160,18 +135,19 @@ pub async fn create_record(
     label: &str,
     password: &str,
 ) -> Result<Record, String> {
-    match call(
-        "create_record",
-        CreateParams {
-            username,
-            lot,
-            label,
-            password,
-        },
-    )
+    let label = Label::from_str(label).map_err(|e| format!("{e:?}"))?;
+    let password: Password = password.try_into().map_err(|_| "password too long".to_string())?;
+    match call(Request::CreateRecord {
+        username: username.to_owned(),
+        lot: lot.to_owned(),
+        label,
+        password,
+        extra: HashMap::<String, String>::new(),
+    })
     .await?
     {
         Response::Record(record) => Ok(record),
         other => Err(format!("unexpected response: {other:?}")),
     }
 }
+
