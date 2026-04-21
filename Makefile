@@ -36,11 +36,11 @@ install-browser:
 # macOS AutoFill credential provider extension. Its own Makefile handles
 # codesigning and bundle layout; forward variables via the environment.
 macos:
-	$(MAKE) -C platform/macos RELEASE=$(RELEASE)
+	$(MAKE) -C platform/macos $(if $(RELEASE),RELEASE=$(RELEASE))
 
 # Copy the signed AutoFill app bundle into /Applications.
 install-macos:
-	$(MAKE) -C platform/macos install RELEASE=$(RELEASE)
+	$(MAKE) -C platform/macos install $(if $(RELEASE),RELEASE=$(RELEASE))
 
 clean:
 	$(CARGO) clean

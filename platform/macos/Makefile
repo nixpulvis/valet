@@ -53,10 +53,22 @@ APP_BUNDLE      := $(BUILD)/ValetAutoFill.app
 APP_BIN         := $(BUILD)/ValetAutoFill
 EXT_BUNDLE      := $(BUILD)/ValetAutoFillExt.appex
 EXT_BIN         := $(BUILD)/ValetAutoFillExt
+EXT_OBJDIR      := $(BUILD)/ext-obj
+APP_OBJDIR      := $(BUILD)/app-obj
 
 SHARED_SWIFT    := Shared/ValetClient.swift Shared/IdentitySync.swift
 EXT_SWIFT       := Extension/main.swift Extension/CredentialProviderViewController.swift Extension/CredentialListView.swift Extension/UnlockView.swift
 APP_SWIFT       := App/main.swift
+
+EXT_ALL_SWIFT   := $(SHARED_SWIFT) $(EXT_SWIFT)
+APP_ALL_SWIFT   := $(SHARED_SWIFT) $(APP_SWIFT)
+
+# Mirror scripts/gen-output-file-map.py: slashes in source paths become
+# underscores so Shared/Foo.swift and Extension/Foo.swift don't collide.
+EXT_OBJS        := $(patsubst %.swift,$(EXT_OBJDIR)/%.o,$(subst /,_,$(EXT_ALL_SWIFT)))
+APP_OBJS        := $(patsubst %.swift,$(APP_OBJDIR)/%.o,$(subst /,_,$(APP_ALL_SWIFT)))
+EXT_OUTPUT_MAP  := $(EXT_OBJDIR)/output-file-map.json
+APP_OUTPUT_MAP  := $(APP_OBJDIR)/output-file-map.json
 
 SWIFTC          := xcrun -sdk macosx swiftc
 SWIFT_OPT       ?= -O
@@ -82,33 +94,60 @@ $(VALETD_STATICLIB): rust
 
 # Written into the include dir so `header "valet.h"` resolves via the
 # modulemap's own directory, keeping the map arch-agnostic.
+# Content-preserving: only overwrite when the modmap text actually changes,
+# so dependents aren't invalidated by an unchanged rewrite on every run.
 $(VALETD_MODMAP): rust
-	@printf 'module Valetd {\n    header "valet.h"\n    header "valetd.h"\n    export *\n}\n' > $@
+	@mkdir -p $(@D)
+	@printf 'module Valetd {\n    header "valet.h"\n    header "valetd.h"\n    export *\n}\n' > $@.tmp
+	@if cmp -s $@.tmp $@ 2>/dev/null; then rm $@.tmp; else mv $@.tmp $@; fi
 
-$(EXT_BIN): rust $(VALETD_MODMAP) $(EXT_SWIFT) $(SHARED_SWIFT)
-	@mkdir -p $(BUILD)
+$(EXT_OUTPUT_MAP): Makefile scripts/gen-output-file-map.py
+	@mkdir -p $(EXT_OBJDIR)
+	@python3 scripts/gen-output-file-map.py $(EXT_OBJDIR) $(EXT_ALL_SWIFT) > $@
+
+$(APP_OUTPUT_MAP): Makefile scripts/gen-output-file-map.py
+	@mkdir -p $(APP_OBJDIR)
+	@python3 scripts/gen-output-file-map.py $(APP_OBJDIR) $(APP_ALL_SWIFT) > $@
+
+# Two-phase build: swiftc -c with -incremental + -output-file-map lets swiftc
+# skip unchanged files across invocations; the separate link step then assembles
+# the executable from the per-file object files.
+$(EXT_BIN): $(VALETD_STATICLIB) $(VALETD_MODMAP) $(EXT_ALL_SWIFT) $(EXT_OUTPUT_MAP)
+	@mkdir -p $(BUILD) $(EXT_OBJDIR)
 	$(SWIFTC_COMMON) \
+	    -module-name ValetAutoFillExt \
+	    -incremental \
+	    -enable-batch-mode \
+	    -output-file-map $(EXT_OUTPUT_MAP) \
+	    -c \
+	    $(EXT_ALL_SWIFT)
+	$(SWIFTC) -sdk $(SDK) -target $(SWIFT_TARGET) \
 	    -framework AuthenticationServices \
 	    -framework SwiftUI \
 	    -framework AppKit \
 	    -framework Foundation \
-	    -lvaletd \
-	    -module-name ValetAutoFillExt \
+	    -L $(VALETD_LIB_DIR) -lvaletd \
 	    -emit-executable \
 	    -o $@ \
-	    $(SHARED_SWIFT) $(EXT_SWIFT)
+	    $(EXT_OBJS)
 
-$(APP_BIN): rust $(VALETD_MODMAP) $(APP_SWIFT) $(SHARED_SWIFT)
-	@mkdir -p $(BUILD)
+$(APP_BIN): $(VALETD_STATICLIB) $(VALETD_MODMAP) $(APP_ALL_SWIFT) $(APP_OUTPUT_MAP)
+	@mkdir -p $(BUILD) $(APP_OBJDIR)
 	$(SWIFTC_COMMON) \
+	    -module-name ValetAutoFill \
+	    -incremental \
+	    -enable-batch-mode \
+	    -output-file-map $(APP_OUTPUT_MAP) \
+	    -c \
+	    $(APP_ALL_SWIFT)
+	$(SWIFTC) -sdk $(SDK) -target $(SWIFT_TARGET) \
 	    -framework AuthenticationServices \
 	    -framework AppKit \
 	    -framework Foundation \
-	    -lvaletd \
-	    -module-name ValetAutoFill \
+	    -L $(VALETD_LIB_DIR) -lvaletd \
 	    -emit-executable \
 	    -o $@ \
-	    $(SHARED_SWIFT) $(APP_SWIFT)
+	    $(APP_OBJS)
 
 $(EXT_BUNDLE): $(EXT_BIN) Extension/Info.plist Extension/ValetAutoFillExt.entitlements
 	rm -rf $@
