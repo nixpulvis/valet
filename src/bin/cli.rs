@@ -225,10 +225,11 @@ async fn main() -> Result<(), valet::user::Error> {
                     let mut printed = false;
                     for (lot, index) in &matching_lots {
                         for (entry_label, record_uuid) in index.search(&query) {
+                            let name = entry_label.name();
                             if *uuid {
-                                println!("{}::{entry_label} <{record_uuid}>", lot.name());
+                                println!("{}::{name} <{record_uuid}>", lot.name());
                             } else {
-                                println!("{}::{entry_label}", lot.name());
+                                println!("{}::{name}", lot.name());
                             }
                             printed = true;
                         }
@@ -361,6 +362,9 @@ async fn main() -> Result<(), valet::user::Error> {
                                     println!("{} <{}>", record.password(), record.uuid());
                                 } else {
                                     println!("{}", record.password());
+                                }
+                                for (k, v) in record.label().extra() {
+                                    println!("{k}: {v}");
                                 }
                             }
                             Ok(None) => {
