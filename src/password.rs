@@ -105,18 +105,7 @@ impl fmt::Display for Password {
 
 impl fmt::Debug for Password {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let null_pos = self.0.iter().position(|c| *c == 0).unwrap_or(self.0.len());
-        let zero = self.0[null_pos..].iter().fold(0, |a, c| a ^ c);
-        if zero > 0 {
-            write!(
-                f,
-                "{:?} + {:?}...",
-                &self.0[0..null_pos],
-                &self.0[null_pos..]
-            )
-        } else {
-            write!(f, "{:?}", &self.0[0..null_pos])
-        }
+        f.write_str("Password(***)")
     }
 }
 
@@ -180,6 +169,13 @@ mod tests {
         let password_string = String::from("password");
         let password: Password = password_string.as_str().try_into().unwrap();
         assert_eq!(&password.as_bytes()[0..8], password_string.as_bytes());
+    }
+
+    #[test]
+    fn debug_redacts_plaintext() {
+        let password: Password = "hunter2hunter2".try_into().unwrap();
+        let rendered = format!("{password:?}");
+        assert!(!rendered.contains("hunter2"));
     }
 
     #[test]

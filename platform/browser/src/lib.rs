@@ -15,6 +15,7 @@ pub mod background;
 pub mod content;
 pub mod logging;
 pub mod popup;
+pub mod rpc;
 
 /// Check whether a password candidate meets valet's minimum requirements.
 ///

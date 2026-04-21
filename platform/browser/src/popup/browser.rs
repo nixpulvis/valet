@@ -1,5 +1,5 @@
 //! Thin async wrappers over the WebExtensions APIs the popup uses:
-//! message passing, tab queries, and clipboard access.
+//! tab queries, host permissions, local storage, and clipboard access.
 
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -7,9 +7,6 @@ use wasm_bindgen_futures::JsFuture;
 
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_namespace = ["browser", "runtime"], js_name = sendMessage, catch)]
-    fn runtime_send_message(msg: JsValue) -> Result<js_sys::Promise, JsValue>;
-
     #[wasm_bindgen(js_namespace = ["browser", "tabs"], js_name = query, catch)]
     fn tabs_query(filter: JsValue) -> Result<js_sys::Promise, JsValue>;
 
@@ -24,13 +21,6 @@ extern "C" {
 
     #[wasm_bindgen(js_namespace = ["browser", "storage", "local"], js_name = set, catch)]
     fn storage_local_set(items: JsValue) -> Result<js_sys::Promise, JsValue>;
-}
-
-/// Send a message to the background script via `browser.runtime.sendMessage`.
-pub async fn send_message<T: Serialize>(msg: &T) -> Result<JsValue, JsValue> {
-    let value = serde_wasm_bindgen::to_value(msg).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let promise = runtime_send_message(value)?;
-    JsFuture::from(promise).await
 }
 
 #[derive(Serialize)]

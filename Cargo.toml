@@ -4,6 +4,7 @@ members = [
     "valet-build",
     "valetd",
     "platform/browser",
+    "platform/browser/bridge",
     "platform/browser/native-host",
     "platform/browser/xtask",
 ]
@@ -39,6 +40,13 @@ required-features = ["cli"]
 
 [features]
 default = ["cli"]
+
+# Enables `valet::logging::init`, a shared `tracing-subscriber` installer
+# used by every binary that wants stderr logs (valetd, native-host, CLI,
+# GUI). `tracing` itself is always available; this feature only adds the
+# subscriber, which is not wasm-friendly. WASM consumers skip the feature
+# and install their own subscriber (e.g. `tracing-web`).
+logging = ["dep:tracing-subscriber"]
 
 # Enables the SQLite database layer (`db` module, CRUD operations on
 # `User`/`Lot`/`Record`, and the `prelude` convenience re-exports).
@@ -87,6 +95,8 @@ tokio = { version = "1.46", features = ["full"], optional = true }
 rpassword = { version = "7.4", optional = true }
 csv = { version = "1.3", optional = true }
 regex = "1.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std", "fmt", "env-filter"], optional = true }
 clap = { version = "4.5", features = ["derive", "cargo"], optional = true }
 clap-repl = { version = "0.3", features = ["async"], optional = true }
 clap_complete = { version = "4.5", optional = true }

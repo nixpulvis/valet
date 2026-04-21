@@ -25,7 +25,8 @@ pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 /// A message sent from a client to the daemon. Each variant is answered by
 /// exactly one [`Response`] (possibly [`Response::Error`]).
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Decode, Debug, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum Request {
     /// List currently unlocked usernames. Answered with [`Response::Users`].
     Status,
@@ -96,7 +97,8 @@ pub enum Request {
 /// be returned in place of any success variant.
 ///
 /// [`Error`]: Response::Error
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Decode, Debug, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum Response {
     /// Generic success with no payload (Unlock, Lock, LockAll).
     Ok,
@@ -111,6 +113,7 @@ pub enum Response {
     Record(Record),
     /// Human-readable error message, returned in place of any success variant
     /// when the daemon cannot satisfy the request.
+    // TODO: Make a proper Error enum for this too
     Error(String),
 }
 
@@ -163,8 +166,11 @@ fn read_frame<R: Read>(r: &mut R) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Write one length-prefixed frame of already-encoded bytes to `w`. The
+/// payload is anything up to [`MAX_FRAME_LEN`] bytes; callers that want
+/// the typed encode-then-send should use [`Frame::send_async`] instead.
 #[cfg(feature = "native")]
-async fn write_frame_async<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> io::Result<()> {
+pub async fn send_frame_async<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> io::Result<()> {
     check_len(payload.len())?;
     let len = u32::try_from(payload.len()).expect("checked above");
     w.write_all(&len.to_be_bytes()).await?;
@@ -172,8 +178,9 @@ async fn write_frame_async<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> 
     w.flush().await
 }
 
+/// Read one length-prefixed frame from `r`. Inverse of [`send_frame_async`].
 #[cfg(feature = "native")]
-async fn read_frame_async<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Vec<u8>> {
+pub async fn recv_frame_async<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Vec<u8>> {
     let mut len_bytes = [0u8; 4];
     r.read_exact(&mut len_bytes).await?;
     let len = u32::from_be_bytes(len_bytes) as usize;
@@ -188,27 +195,38 @@ fn decode_err<E: std::fmt::Display>(e: E) -> io::Error {
 }
 
 /// Shared framing for wire messages. The length-prefixed `send`/`recv`
-/// helpers speak the Unix-socket wire format used between [`Client`] and
-/// the daemon. The `encode_base64`/`decode_base64` helpers speak the
-/// envelope the browser native-messaging shim stuffs inside its JSON
+/// helpers speak the Unix-socket wire format used between the daemon and
+/// its remote clients. The `encode_base64`/`decode_base64` helpers speak
+/// the envelope the browser native-messaging shim stuffs inside its JSON
 /// frames; same bitcode payload, different outer wrapper.
 ///
 /// TODO: before a proper release, add a version discriminator (one magic
 /// byte or a leading u16) to both the length-prefixed and base64 forms.
 /// Bitcode enum tags are positional, so adding or removing a `Request` /
 /// `Response` variant silently misdecodes across mismatched peers today.
-///
-/// [`Client`]: crate::client::Client
 pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
+    /// Bitcode-encode `self` into a freshly-allocated buffer, without any
+    /// framing. The length-prefix and base64 helpers below are built on
+    /// top of this; callers that already have their own framing (the
+    /// browser native-messaging shim's embedded mode) use it directly.
+    fn encode(&self) -> Vec<u8> {
+        bitcode::encode(self)
+    }
+
+    /// Inverse of [`encode`](Self::encode). Decode failures are surfaced
+    /// as `io::Error` with kind [`io::ErrorKind::InvalidData`].
+    fn decode(bytes: &[u8]) -> io::Result<Self> {
+        bitcode::decode(bytes).map_err(decode_err)
+    }
+
     /// Bitcode-encode `self` and write it as one length-prefixed frame.
     fn send<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_frame(w, &bitcode::encode(self))
+        write_frame(w, &self.encode())
     }
 
     /// Read one length-prefixed frame and bitcode-decode it.
     fn recv<R: Read>(r: &mut R) -> io::Result<Self> {
-        let buf = read_frame(r)?;
-        bitcode::decode(&buf).map_err(decode_err)
+        Self::decode(&read_frame(r)?)
     }
 
     /// Async [`send`](Self::send) over a tokio writer.
@@ -220,7 +238,7 @@ pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
     where
         Self: Sync,
     {
-        async move { write_frame_async(w, &bitcode::encode(self)).await }
+        async move { send_frame_async(w, &self.encode()).await }
     }
 
     /// Async [`recv`](Self::recv) over a tokio reader.
@@ -228,17 +246,14 @@ pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
     fn recv_async<R: AsyncRead + Unpin + Send>(
         r: &mut R,
     ) -> impl std::future::Future<Output = io::Result<Self>> + Send {
-        async move {
-            let buf = read_frame_async(r).await?;
-            bitcode::decode(&buf).map_err(decode_err)
-        }
+        async move { Self::decode(&recv_frame_async(r).await?) }
     }
 
     /// Bitcode-encode `self` and base64 it, for embedding in the browser
     /// native-messaging JSON envelope.
     fn encode_base64(&self) -> String {
         use base64::{Engine, engine::general_purpose::STANDARD};
-        STANDARD.encode(bitcode::encode(self))
+        STANDARD.encode(self.encode())
     }
 
     /// Inverse of [`encode_base64`](Self::encode_base64).
@@ -251,6 +266,106 @@ pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
 
 impl Frame for Request {}
 impl Frame for Response {}
+
+/// RPC-layer error for valetd clients. `T` is the transport-specific
+/// failure type: [`io::Error`] for the socket client and FFI, a richer
+/// enum for the browser extension's native-messaging path.
+///
+/// [`Rpc`](Self::Rpc) means no application-level reply arrived
+/// (transport failure, decode failure, disconnect).
+/// [`Response`](Self::Response) carries a reply-inspection failure
+/// ([`ResponseError`]): either a peer-reported error or an unexpected
+/// response variant.
+#[derive(Debug)]
+pub enum Error<T> {
+    /// The RPC round-trip itself failed.
+    Rpc(T),
+    /// A valid reply arrived but could not be interpreted as the
+    /// expected [`Response`] variant.
+    Response(ResponseError),
+}
+
+impl<T: std::fmt::Display> std::fmt::Display for Error<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Rpc(e) => write!(f, "rpc: {e}"),
+            Error::Response(r) => write!(f, "{r}"),
+        }
+    }
+}
+
+impl<T: std::fmt::Debug + std::fmt::Display> std::error::Error for Error<T> {}
+
+/// Failure variants produced when extracting an expected [`Response`]
+/// variant via the `Response::expect_*` methods. Converts into
+/// [`Error`] for any `T` via `?`.
+#[derive(Debug)]
+pub enum ResponseError {
+    /// The peer's server-side handler returned a failure; the string is
+    /// the message it put inside [`Response::Error`].
+    Remote(String),
+    /// The peer returned a valid [`Response`] of the wrong variant.
+    UnexpectedResponse,
+}
+
+impl<T> From<ResponseError> for Error<T> {
+    fn from(e: ResponseError) -> Self {
+        Error::Response(e)
+    }
+}
+
+impl std::fmt::Display for ResponseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResponseError::Remote(msg) => write!(f, "remote: {msg}"),
+            ResponseError::UnexpectedResponse => write!(f, "unexpected response variant"),
+        }
+    }
+}
+
+impl std::error::Error for ResponseError {}
+
+impl Response {
+    /// Extract [`Response::Ok`]. Folds [`Response::Error`] and
+    /// any other variant into [`ResponseError`].
+    pub fn expect_ok(self) -> Result<(), ResponseError> {
+        match self {
+            Response::Ok => Ok(()),
+            Response::Error(msg) => Err(ResponseError::Remote(msg)),
+            _ => Err(ResponseError::UnexpectedResponse),
+        }
+    }
+
+    /// Extract [`Response::Users`]. Folds [`Response::Error`] and any
+    /// other variant into [`ResponseError`].
+    pub fn expect_users(self) -> Result<Vec<String>, ResponseError> {
+        match self {
+            Response::Users(v) => Ok(v),
+            Response::Error(msg) => Err(ResponseError::Remote(msg)),
+            _ => Err(ResponseError::UnexpectedResponse),
+        }
+    }
+
+    /// Extract [`Response::Index`]. Folds [`Response::Error`] and any
+    /// other variant into [`ResponseError`].
+    pub fn expect_index(self) -> Result<Vec<(Uuid<Record>, Label)>, ResponseError> {
+        match self {
+            Response::Index(v) => Ok(v),
+            Response::Error(msg) => Err(ResponseError::Remote(msg)),
+            _ => Err(ResponseError::UnexpectedResponse),
+        }
+    }
+
+    /// Extract [`Response::Record`]. Folds [`Response::Error`] and any
+    /// other variant into [`ResponseError`].
+    pub fn expect_record(self) -> Result<Record, ResponseError> {
+        match self {
+            Response::Record(r) => Ok(r),
+            Response::Error(msg) => Err(ResponseError::Remote(msg)),
+            _ => Err(ResponseError::UnexpectedResponse),
+        }
+    }
+}
 
 /// Errors from [`Frame::decode_base64`].
 #[derive(Debug)]
@@ -399,5 +514,86 @@ mod tests {
         assert!(domain_matches("example.com", "sub.example.com"));
         assert!(domain_matches("sub.example.com", "example.com"));
         assert!(!domain_matches("example.com", "other.com"));
+    }
+
+    #[test]
+    fn expect_ok_variants() {
+        Response::Ok.expect_ok().unwrap();
+        match Response::Error("nope".into()).expect_ok() {
+            Err(ResponseError::Remote(m)) => assert_eq!(m, "nope"),
+            other => panic!("expected Remote, got {other:?}"),
+        }
+        match Response::Users(vec![]).expect_ok() {
+            Err(ResponseError::UnexpectedResponse) => {}
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expect_users_variants() {
+        assert_eq!(
+            Response::Users(vec!["alice".into()]).expect_users().unwrap(),
+            vec!["alice".to_string()],
+        );
+        match Response::Error("locked".into()).expect_users() {
+            Err(ResponseError::Remote(m)) => assert_eq!(m, "locked"),
+            other => panic!("expected Remote, got {other:?}"),
+        }
+        match Response::Ok.expect_users() {
+            Err(ResponseError::UnexpectedResponse) => {}
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expect_index_variants() {
+        let rec = sample_record();
+        let uuid = rec.uuid().clone();
+        let label = rec.label().clone();
+        let got = Response::Index(vec![(uuid.clone(), label)])
+            .expect_index()
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0.to_uuid(), uuid.to_uuid());
+
+        match Response::Error("boom".into()).expect_index() {
+            Err(ResponseError::Remote(m)) => assert_eq!(m, "boom"),
+            other => panic!("expected Remote, got {other:?}"),
+        }
+        match Response::Ok.expect_index() {
+            Err(ResponseError::UnexpectedResponse) => {}
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expect_record_variants() {
+        let rec = sample_record();
+        let uuid = rec.uuid().clone();
+        let got = Response::Record(rec).expect_record().unwrap();
+        assert_eq!(got.uuid().to_uuid(), uuid.to_uuid());
+
+        match Response::Error("missing".into()).expect_record() {
+            Err(ResponseError::Remote(m)) => assert_eq!(m, "missing"),
+            other => panic!("expected Remote, got {other:?}"),
+        }
+        match Response::Users(vec![]).expect_record() {
+            Err(ResponseError::UnexpectedResponse) => {}
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn response_error_converts_into_error() {
+        let e: Error<io::Error> = ResponseError::Remote("x".into()).into();
+        match e {
+            Error::Response(ResponseError::Remote(m)) => assert_eq!(m, "x"),
+            other => panic!("expected Error::Response(Remote), got {other:?}"),
+        }
+        let e: Error<io::Error> = ResponseError::UnexpectedResponse.into();
+        match e {
+            Error::Response(ResponseError::UnexpectedResponse) => {}
+            other => panic!("expected Error::Response(UnexpectedResponse), got {other:?}"),
+        }
     }
 }

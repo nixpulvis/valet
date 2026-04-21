@@ -1,38 +1,47 @@
-//! In-process stub that returns hardcoded records without going through a
-//! socket. Used by the macOS extension until the daemon lands, and handy for
-//! tests.
+//! In-process fake server. Answers requests from a fixed set of records
+//! without going through a socket or touching a database. Used by the macOS
+//! extension when built with `--features stub`, and by FFI tests.
 //!
-//! The stub implements the same method surface as [`crate::client::Client`]
-//! so the two can be swapped behind the FFI layer via a cargo feature. Not
-//! every method is useful in the stub. Record creation is a no-op that
-//! echoes back what was asked for, idle timeouts do not exist, etc.
+//! The stub is a [`Handler`] just like [`DaemonHandler`]: transports call
+//! `stub.handle(req).await`. Record creation requests are rejected; idle
+//! timeouts don't exist; unlocking accepts any password. Otherwise the
+//! response shape matches what the daemon would produce.
+//!
+//! [`Handler`]: crate::server::Handler
+//! [`DaemonHandler`]: crate::server::DaemonHandler
 
-use crate::client::Error;
-use std::collections::HashMap;
+use crate::request::{Request, Response, label_matches_domain};
+use crate::server::Handler;
+use std::io;
+use tokio::sync::Mutex;
 use valet::{
     Lot, Record,
-    password::Password,
     record::{Data, Label, LabelName, Query},
     uuid::Uuid,
 };
 
-pub struct StubClient {
+const LOT_NAME: &str = "stub";
+const STUB_USER: &str = "stub-user";
+// Fixed UUIDs so the macOS App and Extension processes, which each
+// instantiate their own Stub, agree on record identity. The App writes
+// these uuids into ASCredentialIdentityStore; the Extension's fetch path
+// resolves an autofill request back to the same record by looking them up
+// here. Randomizing per process would break autofill.
+const YCOMBINATOR_UUID: &str = "01900000-0000-7000-8000-00000000a1c0";
+const EXAMPLE_UUID: &str = "01900000-0000-7000-8000-00000000e8a3";
+
+/// In-process request handler backed by a fixed in-memory record set.
+pub struct Stub {
+    state: Mutex<StubState>,
+}
+
+struct StubState {
     lot_name: String,
     records: Vec<Record>,
     active_user: Option<String>,
 }
 
-const LOT_NAME: &str = "stub";
-const STUB_USER: &str = "stub-user";
-// Fixed UUIDs so the macOS App and Extension processes, which each
-// instantiate their own StubClient, agree on record identity. The App
-// writes these uuids into ASCredentialIdentityStore; the Extension's
-// fetch path resolves an autofill request back to the same record by
-// looking them up here. Randomizing per process would break autofill.
-const YCOMBINATOR_UUID: &str = "01900000-0000-7000-8000-00000000a1c0";
-const EXAMPLE_UUID: &str = "01900000-0000-7000-8000-00000000e8a3";
-
-impl StubClient {
+impl Stub {
     pub fn new() -> Self {
         let lot = Lot::new(LOT_NAME);
         let records = vec![
@@ -57,121 +66,94 @@ impl StubClient {
                 Data::new("correct horse battery".try_into().unwrap()),
             ),
         ];
-        StubClient {
-            lot_name: lot.name().to_string(),
-            records,
-            active_user: None,
+        Stub {
+            state: Mutex::new(StubState {
+                lot_name: lot.name().to_string(),
+                records,
+                active_user: None,
+            }),
         }
-    }
-
-    pub fn status(&mut self) -> Result<Vec<String>, Error> {
-        Ok(self.active_user.iter().cloned().collect())
-    }
-
-    pub fn list_users(&mut self) -> Result<Vec<String>, Error> {
-        Ok(vec![STUB_USER.to_owned()])
-    }
-
-    pub fn unlock(&mut self, username: &str, _password: Password) -> Result<(), Error> {
-        self.active_user = Some(username.to_owned());
-        Ok(())
-    }
-
-    pub fn lock(&mut self, username: &str) -> Result<(), Error> {
-        if self.active_user.as_deref() == Some(username) {
-            self.active_user = None;
-        }
-        Ok(())
-    }
-
-    pub fn lock_all(&mut self) -> Result<(), Error> {
-        self.active_user = None;
-        Ok(())
-    }
-
-    pub fn list(
-        &mut self,
-        _username: &str,
-        queries: &[String],
-    ) -> Result<Vec<(Uuid<Record>, Label)>, Error> {
-        let parsed = queries
-            .iter()
-            .map(|s| s.parse::<Query>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| Error::Remote(format!("invalid query: {e}")))?;
-        Ok(self
-            .records
-            .iter()
-            .filter(|r| {
-                parsed.is_empty()
-                    || parsed
-                        .iter()
-                        .any(|q| q.matches_lot(&self.lot_name) && q.matches_label(r.label()))
-            })
-            .map(|r| (r.uuid().clone(), r.label().clone()))
-            .collect())
-    }
-
-    pub fn fetch(&mut self, _username: &str, uuid: &Uuid<Record>) -> Result<Record, Error> {
-        let needle = uuid.to_uuid();
-        for r in &self.records {
-            if r.uuid().to_uuid() == needle {
-                return Ok(clone_record(r));
-            }
-        }
-        Err(Error::Remote(format!("no record with uuid {uuid}")))
-    }
-
-    pub fn find_records(
-        &mut self,
-        _username: &str,
-        lot: &str,
-        query: &str,
-    ) -> Result<Vec<(Uuid<Record>, Label)>, Error> {
-        if lot != self.lot_name {
-            return Ok(Vec::new());
-        }
-        Ok(self
-            .records
-            .iter()
-            .filter(|r| crate::request::label_matches_domain(r.label(), query))
-            .map(|r| (r.uuid().clone(), r.label().clone()))
-            .collect())
-    }
-
-    pub fn get_record(
-        &mut self,
-        username: &str,
-        _lot: &str,
-        uuid: &Uuid<Record>,
-    ) -> Result<Record, Error> {
-        self.fetch(username, uuid)
-    }
-
-    pub fn create_record(
-        &mut self,
-        _username: &str,
-        _lot: &str,
-        _label: Label,
-        _password: Password,
-        _extra: HashMap<String, String>,
-    ) -> Result<Record, Error> {
-        Err(Error::Remote("stub: create_record not supported".into()))
-    }
-
-    pub fn generate_record(
-        &mut self,
-        _username: &str,
-        _lot: &str,
-        _label: Label,
-    ) -> Result<Record, Error> {
-        Err(Error::Remote("stub: generate_record not supported".into()))
     }
 }
 
-impl Default for StubClient {
+impl Default for Stub {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Handler for Stub {
+    async fn handle(&self, req: Request) -> io::Result<Response> {
+        let mut st = self.state.lock().await;
+        Ok(dispatch(&mut st, req))
+    }
+}
+
+fn dispatch(st: &mut StubState, req: Request) -> Response {
+    match req {
+        Request::Status => Response::Users(st.active_user.iter().cloned().collect()),
+        Request::ListUsers => Response::Users(vec![STUB_USER.to_owned()]),
+        Request::Unlock { username, .. } => {
+            st.active_user = Some(username);
+            Response::Ok
+        }
+        Request::Lock { username } => {
+            if st.active_user.as_deref() == Some(username.as_str()) {
+                st.active_user = None;
+            }
+            Response::Ok
+        }
+        Request::LockAll => {
+            st.active_user = None;
+            Response::Ok
+        }
+        Request::List { queries, .. } => {
+            let parsed = match queries
+                .iter()
+                .map(|s| s.parse::<Query>())
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(p) => p,
+                Err(e) => return Response::Error(format!("invalid query: {e}")),
+            };
+            let entries = st
+                .records
+                .iter()
+                .filter(|r| {
+                    parsed.is_empty()
+                        || parsed
+                            .iter()
+                            .any(|q| q.matches_lot(&st.lot_name) && q.matches_label(r.label()))
+                })
+                .map(|r| (r.uuid().clone(), r.label().clone()))
+                .collect();
+            Response::Index(entries)
+        }
+        Request::Fetch { uuid, .. } | Request::GetRecord { uuid, .. } => {
+            let needle = uuid.to_uuid();
+            for r in &st.records {
+                if r.uuid().to_uuid() == needle {
+                    return Response::Record(clone_record(r));
+                }
+            }
+            Response::Error(format!("no record with uuid {uuid}"))
+        }
+        Request::FindRecords { lot, query, .. } => {
+            if lot != st.lot_name {
+                return Response::Index(Vec::new());
+            }
+            let entries = st
+                .records
+                .iter()
+                .filter(|r| label_matches_domain(r.label(), &query))
+                .map(|r| (r.uuid().clone(), r.label().clone()))
+                .collect();
+            Response::Index(entries)
+        }
+        Request::CreateRecord { .. } => Response::Error("stub: create_record not supported".into()),
+        Request::GenerateRecord { .. } => {
+            Response::Error("stub: generate_record not supported".into())
+        }
     }
 }
 
@@ -185,67 +167,164 @@ fn clone_record(r: &Record) -> Record {
 mod tests {
     use super::*;
 
+    async fn handle(stub: &Stub, req: Request) -> Response {
+        stub.handle(req).await.expect("stub never returns io err")
+    }
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+    }
+
     #[test]
     fn list_empty_queries_returns_all() {
-        let mut stub = StubClient::new();
-        assert_eq!(stub.list(STUB_USER, &[]).unwrap().len(), 2);
+        rt().block_on(async {
+            let stub = Stub::new();
+            match handle(
+                &stub,
+                Request::List {
+                    username: STUB_USER.into(),
+                    queries: vec![],
+                },
+            )
+            .await
+            {
+                Response::Index(e) => assert_eq!(e.len(), 2),
+                other => panic!("unexpected {other:?}"),
+            }
+        });
     }
 
     #[test]
     fn list_filters_by_literal_query() {
-        let mut stub = StubClient::new();
-        let hits = stub
-            .list(STUB_USER, &["stub::ycombinator.com".to_string()])
-            .unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(
-            hits[0].1.name(),
-            &LabelName::Simple("ycombinator.com".into())
-        );
+        rt().block_on(async {
+            let stub = Stub::new();
+            match handle(
+                &stub,
+                Request::List {
+                    username: STUB_USER.into(),
+                    queries: vec!["stub::ycombinator.com".into()],
+                },
+            )
+            .await
+            {
+                Response::Index(hits) => {
+                    assert_eq!(hits.len(), 1);
+                    assert_eq!(hits[0].1.name(), &LabelName::Simple("ycombinator.com".into()));
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        });
     }
 
     #[test]
     fn list_filters_by_regex_query() {
-        let mut stub = StubClient::new();
-        let hits = stub.list(STUB_USER, &["stub::~.*".to_string()]).unwrap();
-        assert_eq!(hits.len(), 2);
+        rt().block_on(async {
+            let stub = Stub::new();
+            match handle(
+                &stub,
+                Request::List {
+                    username: STUB_USER.into(),
+                    queries: vec!["stub::~.*".into()],
+                },
+            )
+            .await
+            {
+                Response::Index(hits) => assert_eq!(hits.len(), 2),
+                other => panic!("unexpected {other:?}"),
+            }
+        });
     }
 
     #[test]
     fn list_non_matching_query_returns_empty() {
-        let mut stub = StubClient::new();
-        assert!(
-            stub.list(STUB_USER, &["stub::nope".to_string()])
-                .unwrap()
-                .is_empty()
-        );
+        rt().block_on(async {
+            let stub = Stub::new();
+            match handle(
+                &stub,
+                Request::List {
+                    username: STUB_USER.into(),
+                    queries: vec!["stub::nope".into()],
+                },
+            )
+            .await
+            {
+                Response::Index(hits) => assert!(hits.is_empty()),
+                other => panic!("unexpected {other:?}"),
+            }
+        });
     }
 
     #[test]
     fn list_invalid_query_errors() {
-        let mut stub = StubClient::new();
-        match stub.list(STUB_USER, &["foo<k=v".to_string()]) {
-            Err(Error::Remote(msg)) => assert!(msg.contains("invalid query")),
-            other => panic!("expected Remote error, got {other:?}"),
-        }
+        rt().block_on(async {
+            let stub = Stub::new();
+            match handle(
+                &stub,
+                Request::List {
+                    username: STUB_USER.into(),
+                    queries: vec!["foo<k=v".into()],
+                },
+            )
+            .await
+            {
+                Response::Error(msg) => assert!(msg.contains("invalid query")),
+                other => panic!("unexpected {other:?}"),
+            }
+        });
     }
 
     #[test]
     fn fetch_returns_matching_record() {
-        let mut stub = StubClient::new();
-        let all = stub.list(STUB_USER, &[]).unwrap();
-        let uuid = all[0].0.clone();
-        let got = stub.fetch(STUB_USER, &uuid).unwrap();
-        assert_eq!(got.uuid().to_uuid(), uuid.to_uuid());
+        rt().block_on(async {
+            let stub = Stub::new();
+            let all = match handle(
+                &stub,
+                Request::List {
+                    username: STUB_USER.into(),
+                    queries: vec![],
+                },
+            )
+            .await
+            {
+                Response::Index(e) => e,
+                other => panic!("unexpected {other:?}"),
+            };
+            let uuid = all[0].0.clone();
+            match handle(
+                &stub,
+                Request::Fetch {
+                    username: STUB_USER.into(),
+                    uuid: uuid.clone(),
+                },
+            )
+            .await
+            {
+                Response::Record(r) => assert_eq!(r.uuid().to_uuid(), uuid.to_uuid()),
+                other => panic!("unexpected {other:?}"),
+            }
+        });
     }
 
     #[test]
     fn fetch_missing_returns_error() {
-        let mut stub = StubClient::new();
-        let bogus: Uuid<Record> = Uuid::parse("00000000-0000-0000-0000-000000000000").unwrap();
-        assert!(matches!(
-            stub.fetch(STUB_USER, &bogus),
-            Err(Error::Remote(_))
-        ));
+        rt().block_on(async {
+            let stub = Stub::new();
+            let bogus: Uuid<Record> =
+                Uuid::parse("00000000-0000-0000-0000-000000000000").unwrap();
+            match handle(
+                &stub,
+                Request::Fetch {
+                    username: STUB_USER.into(),
+                    uuid: bogus,
+                },
+            )
+            .await
+            {
+                Response::Error(_) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        });
     }
 }

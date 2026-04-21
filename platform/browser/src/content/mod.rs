@@ -11,7 +11,6 @@ use web_sys::Document;
 mod detect;
 mod fill;
 mod overlay;
-mod rpc;
 
 /// Entry point called from `content.js` after WASM initialisation.
 #[wasm_bindgen]

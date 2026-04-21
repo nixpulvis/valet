@@ -1,22 +1,35 @@
-//! IPC client FFI -- `valetd_ffi_*`.
+//! IPC client FFI — `valetd_ffi_*`.
 //!
-//! Exposes a client handle that speaks the `valetd` wire protocol to a running
-//! daemon over a Unix socket (or, with the `stub` feature, to an in-process
-//! fake). Shared types (`ValetStr`, `ValetRecordIndex`, `ValetRecord`,
-//! `VALET_FFI_*` return codes, `valet_ffi_last_error`, `valet_ffi_record_index_free`,
-//! `valet_ffi_record_free`) come from `valet::ffi` so clients never link two
-//! diverging copies.
+//! Exposes an opaque handle ([`ValetdClient`]) that speaks the `valetd` wire
+//! protocol. The underlying [`Handler`] is chosen at compile time: the real
+//! [`Client`] (a sync-wrapped async Unix-socket round-trip) by default, or
+//! the in-process [`Stub`] with `--features stub`. The C surface and its
+//! return codes are identical either way.
 //!
-//! Each `extern "C"` wrapper builds a `Result<(), FfiCallError>` and hands
-//! it to [`valet::ffi::report`], which sets the last-error slot and
-//! translates the error into a `VALET_FFI_ERR_*` code.
+//! Shared types (`ValetStr`, `ValetRecordIndex`, `ValetRecord`,
+//! `VALET_FFI_*` return codes, `valet_ffi_last_error`,
+//! `valet_ffi_record_index_free`, `valet_ffi_record_free`) come from
+//! `valet::ffi` so clients never link two diverging copies.
+//!
+//! Each `extern "C"` wrapper builds a [`Request`], drives
+//! [`Handler::handle`] to a [`Response`] on a single-thread tokio runtime,
+//! and hands a `Result<(), FfiCallError>` to [`valet::ffi::report`], which
+//! sets the last-error slot and translates the error into a
+//! `VALET_FFI_ERR_*` code.
+//!
+//! [`Client`]: crate::client::Client
+//! [`Stub`]: crate::stub::Stub
 
 #[cfg(not(feature = "stub"))]
 use crate::client::Client;
-use crate::client::Error;
+use crate::request::{Error, Request, Response, ResponseError};
+use crate::server::Handler;
+#[cfg(feature = "stub")]
+use crate::stub::Stub;
 #[cfg(not(feature = "stub"))]
 use std::path::Path;
-use std::{ffi::CStr, os::raw::c_char, ptr, slice};
+use std::{ffi::CStr, io, os::raw::c_char, ptr, slice};
+use tokio::runtime::Runtime;
 use valet::{
     Record,
     ffi::{
@@ -29,35 +42,28 @@ use valet::{
 };
 
 #[cfg(feature = "stub")]
-use crate::stub::StubClient;
-
-#[cfg(feature = "stub")]
-type Inner = StubClient;
+type Inner = Stub;
 #[cfg(not(feature = "stub"))]
 type Inner = Client;
 
-/// Opaque client handle. The C side only ever sees `*mut ValetdClient`.
+/// Opaque FFI handle. The C side only ever sees `*mut ValetdClient`.
 ///
-/// The inner client is wrapped in a [`std::sync::Mutex`] so concurrent
-/// callers (the macOS extension runs AutoFill RPCs on background tasks
-/// that can overlap) serialize at the FFI boundary. Without this, two
-/// [`Client::round_trip`] calls on the same socket would interleave
-/// their send+recv pairs and the length-prefixed frame parser would
-/// trip `MAX_FRAME_LEN` on the misaligned read.
+/// Owns a current-thread tokio runtime used to drive [`Handler::handle`]
+/// to completion synchronously — the C ABI is blocking. The inner handler
+/// takes `&self` and does its own locking (sockets are guarded by a mutex
+/// inside [`Client`]; the stub's state is likewise), so concurrent C
+/// callers are serialized correctly without a second mutex here.
+///
+/// [`Client`]: crate::client::Client
 pub struct ValetdClient {
-    inner: std::sync::Mutex<Inner>,
+    inner: Inner,
+    rt: Runtime,
 }
 
-/// Borrow-and-lock helper: dereferences the raw client pointer and
-/// acquires the inner mutex. Poisoned-lock recovery is intentional — a
-/// prior panic while holding the guard already produced whatever error
-/// the caller would see; there's nothing useful to do with the poison
-/// flag in an FFI context.
-unsafe fn lock_inner<'a>(
-    client: *mut ValetdClient,
-) -> Result<std::sync::MutexGuard<'a, Inner>, FfiCallError> {
-    let handle = unsafe { client.as_ref() }.ok_or(FfiCallError::Null("client"))?;
-    Ok(handle.inner.lock().unwrap_or_else(|e| e.into_inner()))
+impl ValetdClient {
+    fn dispatch(&self, req: Request) -> Result<Response, FfiCallError> {
+        Ok(self.rt.block_on(self.inner.handle(req))?)
+    }
 }
 
 /// Error variants produced inside a `valetd_ffi_*` wrapper. The
@@ -67,18 +73,28 @@ enum FfiCallError {
     Null(&'static str),
     InvalidUtf8(&'static str),
     PasswordTooLong,
-    Client(Error),
+    Io(io::Error),
+    Response(ResponseError),
 }
 
-impl From<Error> for FfiCallError {
-    fn from(e: Error) -> Self {
-        FfiCallError::Client(e)
+impl From<io::Error> for FfiCallError {
+    fn from(e: io::Error) -> Self {
+        FfiCallError::Io(e)
     }
 }
 
-impl From<std::io::Error> for FfiCallError {
-    fn from(e: std::io::Error) -> Self {
-        FfiCallError::Client(Error::Io(e))
+impl From<Error<io::Error>> for FfiCallError {
+    fn from(e: Error<io::Error>) -> Self {
+        match e {
+            Error::Rpc(e) => FfiCallError::Io(e),
+            Error::Response(r) => FfiCallError::Response(r),
+        }
+    }
+}
+
+impl From<ResponseError> for FfiCallError {
+    fn from(e: ResponseError) -> Self {
+        FfiCallError::Response(e)
     }
 }
 
@@ -88,10 +104,8 @@ impl FfiError for FfiCallError {
             FfiCallError::Null(_) => VALET_FFI_ERR_NULL_ARG,
             FfiCallError::InvalidUtf8(_) => VALET_FFI_ERR_INVALID_UTF8,
             FfiCallError::PasswordTooLong => VALET_FFI_ERR_PASSWORD_TOO_LONG,
-            FfiCallError::Client(Error::Io(_)) => VALET_FFI_ERR_IO,
-            FfiCallError::Client(Error::Remote(_) | Error::UnexpectedResponse) => {
-                VALET_FFI_ERR_PROTOCOL
-            }
+            FfiCallError::Io(_) => VALET_FFI_ERR_IO,
+            FfiCallError::Response(_) => VALET_FFI_ERR_PROTOCOL,
         }
     }
 
@@ -100,9 +114,8 @@ impl FfiError for FfiCallError {
             FfiCallError::Null(what) => format!("{what} is null"),
             FfiCallError::InvalidUtf8(what) => format!("{what} is not valid UTF-8"),
             FfiCallError::PasswordTooLong => "password too long".into(),
-            FfiCallError::Client(Error::Io(e)) => format!("io: {e}"),
-            FfiCallError::Client(Error::Remote(msg)) => format!("remote: {msg}"),
-            FfiCallError::Client(Error::UnexpectedResponse) => "unexpected response variant".into(),
+            FfiCallError::Io(e) => format!("io: {e}"),
+            FfiCallError::Response(r) => r.to_string(),
         }
     }
 }
@@ -145,13 +158,26 @@ unsafe fn bytes_to_string(
         .map_err(|_| FfiCallError::InvalidUtf8(name))
 }
 
+/// Borrow a `ValetdClient` from a raw pointer, null-checked.
+unsafe fn borrow<'a>(client: *mut ValetdClient) -> Result<&'a ValetdClient, FfiCallError> {
+    unsafe { client.as_ref() }.ok_or(FfiCallError::Null("client"))
+}
+
+fn new_runtime() -> io::Result<Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 #[cfg(feature = "stub")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn valetd_ffi_client_new_stub(out: *mut *mut ValetdClient) -> i32 {
     ffi::report((|| -> Result<(), FfiCallError> {
         not_null(out, "out")?;
+        let rt = new_runtime()?;
         let boxed = Box::new(ValetdClient {
-            inner: std::sync::Mutex::new(StubClient::new()),
+            inner: Stub::new(),
+            rt,
         });
         unsafe { *out = Box::into_raw(boxed) };
         Ok(())
@@ -168,10 +194,9 @@ pub unsafe extern "C" fn valetd_ffi_client_connect(
         not_null(socket_path, "socket_path")?;
         not_null(out, "out")?;
         let path = unsafe { cstr_to_string(socket_path, "socket_path") }?;
-        let c = Client::connect(Path::new(&path))?;
-        let boxed = Box::new(ValetdClient {
-            inner: std::sync::Mutex::new(c),
-        });
+        let rt = new_runtime()?;
+        let inner = rt.block_on(Client::connect(Path::new(&path)))?;
+        let boxed = Box::new(ValetdClient { inner, rt });
         unsafe { *out = Box::into_raw(boxed) };
         Ok(())
     })())
@@ -185,19 +210,23 @@ pub unsafe extern "C" fn valetd_ffi_client_unlock(
     password_len: usize,
 ) -> i32 {
     ffi::report((|| -> Result<(), FfiCallError> {
-        let mut guard = unsafe { lock_inner(client) }?;
-        let inner = &mut *guard;
+        let client = unsafe { borrow(client) }?;
         not_null(username, "username")?;
         if password.is_null() && password_len > 0 {
             return Err(FfiCallError::Null("password"));
         }
-        let user = unsafe { cstr_to_string(username, "username") }?;
+        let username = unsafe { cstr_to_string(username, "username") }?;
         let pw_str = unsafe { bytes_to_string(password, password_len, "password") }?;
         let pw: Password = pw_str
             .as_str()
             .try_into()
             .map_err(|_| FfiCallError::PasswordTooLong)?;
-        inner.unlock(&user, pw)?;
+        client
+            .dispatch(Request::Unlock {
+                username,
+                password: pw,
+            })?
+            .expect_ok()?;
         Ok(())
     })())
 }
@@ -208,10 +237,9 @@ pub unsafe extern "C" fn valetd_ffi_client_status(
     out: *mut ValetStrList,
 ) -> i32 {
     ffi::report((|| -> Result<(), FfiCallError> {
-        let mut guard = unsafe { lock_inner(client) }?;
-        let inner = &mut *guard;
+        let client = unsafe { borrow(client) }?;
         not_null(out, "out")?;
-        let users = inner.status()?;
+        let users = client.dispatch(Request::Status)?.expect_users()?;
         unsafe { ptr::write(out, ValetStrList::from_strings(users)) };
         Ok(())
     })())
@@ -223,10 +251,9 @@ pub unsafe extern "C" fn valetd_ffi_client_list_users(
     out: *mut ValetStrList,
 ) -> i32 {
     ffi::report((|| -> Result<(), FfiCallError> {
-        let mut guard = unsafe { lock_inner(client) }?;
-        let inner = &mut *guard;
+        let client = unsafe { borrow(client) }?;
         not_null(out, "out")?;
-        let users = inner.list_users()?;
+        let users = client.dispatch(Request::ListUsers)?.expect_users()?;
         unsafe { ptr::write(out, ValetStrList::from_strings(users)) };
         Ok(())
     })())
@@ -242,13 +269,14 @@ pub unsafe extern "C" fn valetd_ffi_client_list(
     out: *mut ValetRecordIndex,
 ) -> i32 {
     ffi::report((|| -> Result<(), FfiCallError> {
-        let mut guard = unsafe { lock_inner(client) }?;
-        let inner = &mut *guard;
+        let client = unsafe { borrow(client) }?;
         not_null(username, "username")?;
         not_null(out, "out")?;
-        let user = unsafe { cstr_to_string(username, "username") }?;
-        let ids = unsafe { collect_queries(queries, query_lens, queries_count) }?;
-        let entries = inner.list(&user, &ids)?;
+        let username = unsafe { cstr_to_string(username, "username") }?;
+        let queries = unsafe { collect_queries(queries, query_lens, queries_count) }?;
+        let entries = client
+            .dispatch(Request::List { username, queries })?
+            .expect_index()?;
         unsafe { ptr::write(out, ValetRecordIndex::from_entries(&entries)) };
         Ok(())
     })())
@@ -280,10 +308,10 @@ unsafe fn collect_queries(
 }
 
 /// Domain-suffix search within a single lot. Mirrors
-/// [`crate::request::Request::FindRecords`]: symmetric suffix matching
-/// against the record's domain label, no regex. Used by platform code
-/// (macOS AutoFill, browser extension) that receives a host string from
-/// the OS and wants the same match behavior on both sides.
+/// [`Request::FindRecords`]: symmetric suffix matching against the record's
+/// domain label, no regex. Used by platform code (macOS AutoFill, browser
+/// extension) that receives a host string from the OS and wants the same
+/// match behavior on both sides.
 ///
 /// TODO: replace with a `Query::Domain` variant on [`Request::List`]
 /// that carries suffix semantics across lots; see the TODO on
@@ -298,15 +326,20 @@ pub unsafe extern "C" fn valetd_ffi_client_find_records(
     out: *mut ValetRecordIndex,
 ) -> i32 {
     ffi::report((|| -> Result<(), FfiCallError> {
-        let mut guard = unsafe { lock_inner(client) }?;
-        let inner = &mut *guard;
+        let client = unsafe { borrow(client) }?;
         not_null(username, "username")?;
         not_null(lot, "lot")?;
         not_null(out, "out")?;
-        let user = unsafe { cstr_to_string(username, "username") }?;
-        let lot_name = unsafe { cstr_to_string(lot, "lot") }?;
-        let domain_s = unsafe { bytes_to_string(domain, domain_len, "domain") }?;
-        let entries = inner.find_records(&user, &lot_name, &domain_s)?;
+        let username = unsafe { cstr_to_string(username, "username") }?;
+        let lot = unsafe { cstr_to_string(lot, "lot") }?;
+        let query = unsafe { bytes_to_string(domain, domain_len, "domain") }?;
+        let entries = client
+            .dispatch(Request::FindRecords {
+                username,
+                lot,
+                query,
+            })?
+            .expect_index()?;
         unsafe { ptr::write(out, ValetRecordIndex::from_entries(&entries)) };
         Ok(())
     })())
@@ -321,16 +354,17 @@ pub unsafe extern "C" fn valetd_ffi_client_fetch(
     out: *mut ValetRecord,
 ) -> i32 {
     ffi::report((|| -> Result<(), FfiCallError> {
-        let mut guard = unsafe { lock_inner(client) }?;
-        let inner = &mut *guard;
+        let client = unsafe { borrow(client) }?;
         not_null(username, "username")?;
         not_null(uuid, "uuid")?;
         not_null(out, "out")?;
-        let user = unsafe { cstr_to_string(username, "username") }?;
+        let username = unsafe { cstr_to_string(username, "username") }?;
         let uuid_str = unsafe { bytes_to_string(uuid, uuid_len, "uuid") }?;
-        let parsed: Uuid<Record> =
+        let uuid: Uuid<Record> =
             Uuid::parse(&uuid_str).map_err(|_| FfiCallError::InvalidUtf8("uuid"))?;
-        let record = inner.fetch(&user, &parsed)?;
+        let record = client
+            .dispatch(Request::Fetch { username, uuid })?
+            .expect_record()?;
         unsafe { ptr::write(out, ValetRecord::from_record(&record)) };
         Ok(())
     })())
