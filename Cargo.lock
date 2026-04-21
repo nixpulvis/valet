@@ -7585,9 +7585,9 @@ dependencies = [
 name = "valet-native-host"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "serde_json",
  "tokio",
- "valet",
  "valetd",
 ]
 
