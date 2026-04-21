@@ -7,6 +7,14 @@ edition = "2024"
 name = "valet-native-host"
 path = "src/main.rs"
 
+[features]
+default = []
+# Embed a `valetd::DaemonHandler` directly inside the shim, skipping the
+# Unix socket. Used for single-binary installs where spawning a separate
+# daemon isn't worth it. Pulls in the full server-side stack (SQLite,
+# crypto), so the default stays socket-relay.
+embedded = ["valetd/native"]
+
 [dependencies]
 valetd = { path = "../../../valetd", default-features = false }
 base64 = "0.22"

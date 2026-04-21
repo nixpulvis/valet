@@ -198,15 +198,28 @@ fn decode_err<E: std::fmt::Display>(e: E) -> io::Error {
 /// Bitcode enum tags are positional, so adding or removing a `Request` /
 /// `Response` variant silently misdecodes across mismatched peers today.
 pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
+    /// Bitcode-encode `self` into a freshly-allocated buffer, without any
+    /// framing. The length-prefix and base64 helpers below are built on
+    /// top of this; callers that already have their own framing (the
+    /// browser native-messaging shim's embedded mode) use it directly.
+    fn encode(&self) -> Vec<u8> {
+        bitcode::encode(self)
+    }
+
+    /// Inverse of [`encode`](Self::encode). Decode failures are surfaced
+    /// as `io::Error` with kind [`io::ErrorKind::InvalidData`].
+    fn decode(bytes: &[u8]) -> io::Result<Self> {
+        bitcode::decode(bytes).map_err(decode_err)
+    }
+
     /// Bitcode-encode `self` and write it as one length-prefixed frame.
     fn send<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_frame(w, &bitcode::encode(self))
+        write_frame(w, &self.encode())
     }
 
     /// Read one length-prefixed frame and bitcode-decode it.
     fn recv<R: Read>(r: &mut R) -> io::Result<Self> {
-        let buf = read_frame(r)?;
-        bitcode::decode(&buf).map_err(decode_err)
+        Self::decode(&read_frame(r)?)
     }
 
     /// Async [`send`](Self::send) over a tokio writer.
@@ -218,7 +231,7 @@ pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
     where
         Self: Sync,
     {
-        async move { write_frame_async(w, &bitcode::encode(self)).await }
+        async move { write_frame_async(w, &self.encode()).await }
     }
 
     /// Async [`recv`](Self::recv) over a tokio reader.
@@ -226,17 +239,14 @@ pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
     fn recv_async<R: AsyncRead + Unpin + Send>(
         r: &mut R,
     ) -> impl std::future::Future<Output = io::Result<Self>> + Send {
-        async move {
-            let buf = read_frame_async(r).await?;
-            bitcode::decode(&buf).map_err(decode_err)
-        }
+        async move { Self::decode(&read_frame_async(r).await?) }
     }
 
     /// Bitcode-encode `self` and base64 it, for embedding in the browser
     /// native-messaging JSON envelope.
     fn encode_base64(&self) -> String {
         use base64::{Engine, engine::general_purpose::STANDARD};
-        STANDARD.encode(bitcode::encode(self))
+        STANDARD.encode(self.encode())
     }
 
     /// Inverse of [`encode_base64`](Self::encode_base64).

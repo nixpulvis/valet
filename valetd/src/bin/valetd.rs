@@ -19,7 +19,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
-use valet::db::{self, Database};
 use valetd::{
     DaemonHandler, Handler, Request, Response,
     request::Frame,
@@ -31,15 +30,14 @@ const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    let db_url = std::env::var("VALET_DB").unwrap_or_else(|_| db::default_url());
     let socket_path: PathBuf = std::env::var_os("VALET_SOCKET")
         .map(PathBuf::from)
         .unwrap_or_else(socket::default_path);
 
-    let db = match Database::new(&db_url).await {
-        Ok(db) => db,
+    let handler = match DaemonHandler::from_env().await {
+        Ok(h) => h,
         Err(err) => {
-            eprintln!("valetd: failed to open database at {db_url}: {err:?}");
+            eprintln!("valetd: {err}");
             std::process::exit(1);
         }
     };
@@ -68,7 +66,7 @@ async fn main() {
     };
     eprintln!("valetd: listening on {}", socket_path.display());
 
-    let handler = Arc::new(DaemonHandler::new(db));
+    let handler = Arc::new(handler);
 
     // Background reaper: drops cached keys after IDLE_TIMEOUT of inactivity.
     {
