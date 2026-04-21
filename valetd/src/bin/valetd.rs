@@ -108,7 +108,7 @@ async fn serve(mut conn: UnixStream, handler: Arc<DaemonHandler>) -> std::io::Re
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(e) => return Err(e),
         };
-        let response: Response = handler.handle(req).await;
+        let response: Response = handler.handle(req).await?;
         response.send_async(&mut conn).await?;
     }
 }

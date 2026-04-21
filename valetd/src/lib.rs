@@ -1,17 +1,24 @@
 //! Wire protocol, socket-path resolution, and (with the `native` feature)
-//! the sync client, FFI layer, and daemon binary for Valet.
+//! the request handler, remote client, FFI layer, and daemon binary for
+//! Valet.
+//!
+//! All server logic sits behind one abstraction, [`Handler`]: an async
+//! `handle(req: Request) -> io::Result<Response>`. Transports call it and
+//! don't care whether the backend is the real DB-backed daemon
+//! ([`DaemonHandler`]), an in-process fake ([`stub::Stub`]), or a remote
+//! socket ([`client::Client`]).
 //!
 //! The crate has three consumers:
 //!
-//! * The `valetd` binary (`src/bin/valetd.rs`) is the daemon itself. It owns
-//!   the database, holds unlocked [`valet::user::User`] / [`valet::Lot`]
-//!   state, and serves the [`Request`] / [`Response`] protocol on a Unix
-//!   socket.
-//! * Rust clients link this crate as an `rlib` and use [`client::Client`] to
-//!   speak to the daemon synchronously.
-//! * The macOS AutoFill extension links this crate as a `staticlib` through
-//!   the extern-"C" surface in [`ffi`]; its C header is regenerated at build
-//!   time into `target/<triple>/include/valetd.h`.
+//! * The `valetd` binary (`src/bin/valetd.rs`) wraps a [`DaemonHandler`]
+//!   in a Unix-socket listener plus an idle reaper.
+//! * Rust clients link this crate as an `rlib` and use [`client::Client`]
+//!   — which itself implements [`Handler`] — to speak to the daemon.
+//! * The macOS AutoFill extension links this crate as a `staticlib`
+//!   through the extern-"C" surface in [`ffi`]; its C header is
+//!   regenerated at build time into `target/<triple>/include/valetd.h`.
+//!   The FFI picks the concrete [`Handler`] at compile time: [`client::Client`]
+//!   by default, or [`stub::Stub`] with `--features stub`.
 //!
 //! The wire payload types are the same [`valet::Record`] / [`valet::record::Data`]
 //! / [`valet::password::Password`] / [`valet::uuid::Uuid`] types used inside

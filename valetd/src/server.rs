@@ -12,6 +12,7 @@
 
 use crate::request::{Request, Response};
 use std::collections::HashMap;
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -33,15 +34,17 @@ pub const FAILED_UNLOCK_DELAY_MS: u64 = 750;
 /// the real DB-backed daemon ([`DaemonHandler`]), the in-process fake
 /// ([`crate::stub::Stub`]), and by byte-level relays that forward frames
 /// without decoding.
+///
+/// The [`io::Result`] outer return is for transport failures (socket
+/// dropped, disk full while writing, …); application-level failures —
+/// locked user, record not found, bad query — are conveyed as
+/// [`Response::Error`]. In-process backends (`DaemonHandler`, `Stub`) never
+/// return `Err`; `Err` only comes from remote/relay impls.
 pub trait Handler: Send + Sync {
-    /// Answer one request. Returns [`Response::Error`] in place of any
-    /// success variant when the request cannot be satisfied; transport-level
-    /// failures (IO) are not this trait's concern and are surfaced by
-    /// whichever glue code pumps bytes.
     fn handle(
         &self,
         req: Request,
-    ) -> impl std::future::Future<Output = Response> + Send;
+    ) -> impl std::future::Future<Output = io::Result<Response>> + Send;
 }
 
 /// Daemon-side state: the SQLite handle plus caches of currently unlocked
@@ -116,14 +119,15 @@ impl DaemonHandler {
 }
 
 impl Handler for DaemonHandler {
-    async fn handle(&self, req: Request) -> Response {
-        match dispatch(&self.state, req).await {
+    async fn handle(&self, req: Request) -> io::Result<Response> {
+        let response = match dispatch(&self.state, req).await {
             Ok(r) => {
                 self.state.lock().await.touch();
                 r
             }
             Err(msg) => Response::Error(msg),
-        }
+        };
+        Ok(response)
     }
 }
 
