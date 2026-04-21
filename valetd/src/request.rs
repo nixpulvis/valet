@@ -188,17 +188,15 @@ fn decode_err<E: std::fmt::Display>(e: E) -> io::Error {
 }
 
 /// Shared framing for wire messages. The length-prefixed `send`/`recv`
-/// helpers speak the Unix-socket wire format used between [`Client`] and
-/// the daemon. The `encode_base64`/`decode_base64` helpers speak the
-/// envelope the browser native-messaging shim stuffs inside its JSON
+/// helpers speak the Unix-socket wire format used between the daemon and
+/// its remote clients. The `encode_base64`/`decode_base64` helpers speak
+/// the envelope the browser native-messaging shim stuffs inside its JSON
 /// frames; same bitcode payload, different outer wrapper.
 ///
 /// TODO: before a proper release, add a version discriminator (one magic
 /// byte or a leading u16) to both the length-prefixed and base64 forms.
 /// Bitcode enum tags are positional, so adding or removing a `Request` /
 /// `Response` variant silently misdecodes across mismatched peers today.
-///
-/// [`Client`]: crate::client::Client
 pub trait Frame: Encode + for<'de> Decode<'de> + Sized {
     /// Bitcode-encode `self` and write it as one length-prefixed frame.
     fn send<W: Write>(&self, w: &mut W) -> io::Result<()> {
