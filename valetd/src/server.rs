@@ -103,6 +103,18 @@ impl DaemonHandler {
         }
     }
 
+    /// Open the database at `$VALET_DB` (or [`valet::db::default_url`] when
+    /// unset) and build a handler around it. Used by the `valetd` binary
+    /// and by any transport — such as the browser native-host's embedded
+    /// mode — that just wants the default location.
+    pub async fn from_env() -> Result<Self, String> {
+        let db_url = std::env::var("VALET_DB").unwrap_or_else(|_| valet::db::default_url());
+        let db = Database::new(&db_url)
+            .await
+            .map_err(|e| format!("failed to open database at {db_url}: {e:?}"))?;
+        Ok(Self::new(db))
+    }
+
     /// Drop every cached user if the idle window has elapsed since the last
     /// request touched the state. Returns `true` when something was dropped,
     /// so the caller can log it.
