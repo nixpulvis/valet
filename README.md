@@ -13,6 +13,68 @@ it:
   database access. See the [browser extension README](platform/browser/README.md)
   for build and development instructions.
 
+## What Valet Aims to Solve
+
+Most people end up choosing between hosted password managers like 1Password
+or Bitwarden, which require trusting a vendor's servers and keeping a
+subscription current, and local-first tools like KeePass or `pass`, which
+keep you in control of the data but scatter the experience across a loose
+collection of third-party clients with inconsistent platform support and
+dated cryptography.
+
+Valet is closest in spirit to KeePass: a local, encrypted database that you
+own, synced between your own devices rather than through a vendor. The aim is
+to take that model and modernize it:
+
+- **Real multi-user, without a shared master password.** A single database
+  holds multiple users, each with their own password. Lots (named
+  collections of secrets) are shared by re-encrypting the lot key for each
+  recipient, so access can be granted and revoked per-user instead of handing
+  out one password that everybody has to keep rotating.
+- **Durability over destructiveness.** Records store their history and are 
+  archived rather than hard-deleted, so an accidental overwrite does not strand
+  a working credential.
+- **Modern cryptography.** AES-GCM-SIV for nonce-misuse resistance, Argon2
+  for key derivation, and AAD binding every ciphertext to the identifier it
+  belongs to.
+- **Local ownership by default.** The database is a SQLite file with embedded
+  Git repos on your disk. Nothing is sent to a vendor by default; there is no
+  account to create. When sync lands it will be peer-to-peer between your own
+  devices or servers.
+- **First-party clients on every platform.** The core library is consumed by
+  a CLI, a desktop GUI, browser extensions for Firefox/Chrome/Safari, and
+  system-level autofill on macOS and iOS, all developed in this repo against
+  the same encrypted store.
+
+## Feature Matrix
+
+| Feature                    | CLI | GUI | Firefox | Chrome | Safari | macOS Ext | macOS App | iOS App |
+|----------------------------|:---:|:---:|:-------:|:------:|:------:|:---------:|:---------:|:-------:|
+| Register user              | 🟩  | 🟩  |   🟦    |  🟦    |  🟦    |    🟥     |    🟦     |   🟦    |
+| Unlock / lock              | 🟩  | 🟩  |   🟩    |  🟦    |  🟦    |    🟩     |    🟦     |   🟦    |
+| List records               | 🟩  | 🟩  |   🟩    |  🟦    |  🟦    |    🟩     |    🟦     |   🟦    |
+| Get / copy password        | 🟩  | 🟩  |   🟩    |  🟦    |  🟦    |    🟩     |    🟦     |   🟦    |
+| Add record                 | 🟩  | 🟩  |   🟦    |  🟦    |  🟦    |    🟦     |    🟦     |   🟦    |
+| Edit record                | 🟩  | 🟦  |   🟦    |  🟦    |  🟦    |    🟦     |    🟦     |   🟦    |
+| Archive record             | 🟩  | 🟩  |   🟦    |  🟦    |  🟦    |    🟦     |    🟦     |   🟦    |
+| Multi-user                 | 🟩  | 🟩  |   🟦    |  🟦    |  🟦    |    🟦     |    🟦     |   🟦    |
+| Multi-lot (sharing)        | 🟩  | 🟩  |   🟦    |  🟦    |  🟦    |    🟦     |    🟦     |   🟦    |
+| Auto-fill                  | 🟥  | 🟥  |   🟩    |  🟦    |  🟦    |    🟩     |    🟥     |   🟦    |
+| Password generator         | 🟦  | 🟦  |   🟦    |  🟦    |  🟦    |    🟥     |    🟦     |   🟦    |
+| SSH / GPG key storage      | 🟦  | 🟦  |   🟥    |  🟥    |  🟥    |    🟥     |    🟦     |   🟥    |
+| Passkey provider           | 🟥  | 🟥  |   🟦    |  🟦    |  🟦    |    🟦     |    🟥     |   🟦    |
+| Passkey sync               | 🟦  | 🟦  |   🟦    |  🟦    |  🟦    |    🟥     |    🟦     |   🟦    |
+| Biometric unlock           | 🟥  | 🟥  |   🟥    |  🟥    |  🟥    |    🟦     |    🟦     |   🟦    |
+| Auto-lock on idle          | 🟦  | 🟦  |   🟩    |  🟦    |  🟦    |    🟦     |    🟦     |   🟦    |
+| Import / export            | 🟦  | 🟦  |   🟦    |  🟦    |  🟦    |    🟦     |    🟦     |   🟦    |
+| Offline use                | 🟩  | 🟩  |   🟩    |  🟦    |  🟦    |    🟩     |    🟦     |   🟦    |
+| Sync between devices       | 🟦  | 🟦  |   🟦    |  🟦    |  🟦    |    🟦     |    🟦     |   🟦    |
+| Daemon-backed (`valetd`)   | 🟦  | 🟦  |   🟩    |  🟦    |  🟦    |    🟩     |    🟦     |   🟥    |
+
+Legend: 🟩 = Supported, 🟦 = Planned, 🟥 = Not supported.
+
+Note: macOS Ext. and the macOS App will be merged before release.
+
 ## CLI
 
 An idea for the CLI...
