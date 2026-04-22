@@ -38,11 +38,6 @@ name = "valet"
 path = "src/bin/cli.rs"
 required-features = ["cli"]
 
-[[bin]]
-name = "profile_put"
-path = "src/bin/profile_put.rs"
-required-features = ["cli"]
-
 [features]
 default = ["cli"]
 

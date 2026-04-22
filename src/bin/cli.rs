@@ -10,11 +10,7 @@ use std::io::Write;
 use std::str::FromStr;
 use tokio;
 use valet::record::{LabelName, SaveProgress};
-use valet::{
-    prelude::*,
-    record::{Query, RecordIndex},
-    user,
-};
+use valet::{prelude::*, record::Query, user};
 
 #[derive(Parser)]
 #[command(version, about = crate_description!())]
@@ -180,13 +176,14 @@ async fn main() -> Result<(), valet::user::Error> {
                 .with_prompt(Box::new(prompt.clone()))
                 .build();
 
-            let mut store: Vec<(Lot, RecordIndex)> = load_store(&db, &user).await;
+            let mut store: Vec<Lot> = user.lots(&db).await.expect("failed to load lots");
 
             rl.repl_async(async |command| match &command {
                 Repl::Lot(LotCommand::Create { name }) => {
-                    match Lot::new(&name).save(&db, &user).await {
+                    let mut lot = Lot::new(&name);
+                    match lot.save(&db, &user).await {
                         Ok(_) => {
-                            store = load_store(&db, &user).await;
+                            store.push(lot);
                         }
                         Err(e) => {
                             println!("Failed to save lot: {e:?}");
@@ -194,7 +191,7 @@ async fn main() -> Result<(), valet::user::Error> {
                     }
                 }
                 Repl::Lot(LotCommand::List { uuid }) => {
-                    for (lot, _) in store.iter() {
+                    for lot in store.iter() {
                         if *uuid {
                             println!("{} <{}>", lot.name(), lot.uuid());
                         } else {
@@ -216,15 +213,15 @@ async fn main() -> Result<(), valet::user::Error> {
                     };
                     let matching_lots: Vec<_> = store
                         .iter()
-                        .filter(|(lot, _)| query.matches_lot(lot.name()))
+                        .filter(|lot| query.matches_lot(lot.name()))
                         .collect();
                     if matching_lots.is_empty() {
                         println!("No lots match: {path}");
                         return;
                     }
                     let mut printed = false;
-                    for (lot, index) in &matching_lots {
-                        for (entry_label, record_uuid) in index.search(&query) {
+                    for lot in &matching_lots {
+                        for (entry_label, record_uuid) in lot.index().search(&query) {
                             let name = entry_label.name();
                             if *uuid {
                                 println!("{}::{name} <{record_uuid}>", lot.name());
@@ -250,8 +247,7 @@ async fn main() -> Result<(), valet::user::Error> {
                         println!("Invalid password");
                         return;
                     };
-                    let Some((lot, index)) = store.iter_mut().find(|(l, _)| l.name() == target.lot)
-                    else {
+                    let Some(lot) = store.iter_mut().find(|l| l.name() == target.lot) else {
                         println!("Unknown lot: {}", target.lot);
                         return;
                     };
@@ -260,7 +256,7 @@ async fn main() -> Result<(), valet::user::Error> {
                     // uuid (if any) for this name so storgit extends the
                     // submodule's history instead of starting a fresh one.
                     // TODO: Put data in a Password itself.
-                    let record = match index.find_by_name(target.label.name()).cloned() {
+                    let record = match lot.index().find_by_name(target.label.name()).cloned() {
                         Some(existing_uuid) => Record::with_uuid(
                             existing_uuid,
                             &*lot,
@@ -269,13 +265,8 @@ async fn main() -> Result<(), valet::user::Error> {
                         ),
                         None => Record::new(&*lot, target.label, Data::new(password)),
                     };
-                    match record.save(&db, lot).await {
-                        Ok(_) => {
-                            store = load_store(&db, &user).await;
-                        }
-                        Err(e) => {
-                            println!("Failed to save record: {e:?}");
-                        }
+                    if let Err(e) = record.save(&db, lot).await {
+                        println!("Failed to save record: {e:?}");
                     }
                 }
                 Repl::Get {
@@ -292,7 +283,7 @@ async fn main() -> Result<(), valet::user::Error> {
                     };
                     let matching_lots: Vec<_> = store
                         .iter()
-                        .filter(|(lot, _)| query.matches_lot(lot.name()))
+                        .filter(|lot| query.matches_lot(lot.name()))
                         .collect();
                     if matching_lots.is_empty() {
                         println!("No lots match: {path}");
@@ -300,10 +291,10 @@ async fn main() -> Result<(), valet::user::Error> {
                     }
                     let matches: Vec<_> = matching_lots
                         .iter()
-                        .flat_map(|(lot, index)| {
-                            index
+                        .flat_map(|lot| {
+                            lot.index()
                                 .search(&query)
-                                .map(move |(label, uuid)| (lot, label, uuid))
+                                .map(move |(label, uuid)| (*lot, label, uuid))
                         })
                         .collect();
                     let (picked_lot, record_uuid) = match matches.as_slice() {
@@ -415,18 +406,6 @@ async fn main() -> Result<(), valet::user::Error> {
     }
 
     Ok(())
-}
-
-/// Load every lot for `user`, paired with its record index, so the REPL can
-/// serve `list`/`get` without re-decrypting the user's lot keys on each call.
-async fn load_store(db: &Database, user: &User) -> Vec<(Lot, RecordIndex)> {
-    let lots = user.lots(db).await.expect("failed to load lots");
-    let mut store = Vec::with_capacity(lots.len());
-    for lot in lots {
-        let index = lot.index(db).await.expect("failed to load index");
-        store.push((lot, index));
-    }
-    store
 }
 
 async fn get_default_username(

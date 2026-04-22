@@ -129,6 +129,9 @@ impl Record {
     /// Save this record to the database and return its uuid.
     #[cfg(feature = "db")]
     pub async fn save(&self, db: &Database, lot: &mut Lot) -> Result<Uuid<Self>, Error> {
+        lot.index()
+            .check_name_owner(self.label.name(), &self.uuid)?;
+
         // Integrity check: if a row already exists for this uuid
         // under a different lot, the INSERT ... ON CONFLICT below
         // would silently rewrite its lot_uuid and claim it for ours.
@@ -221,6 +224,8 @@ impl Record {
         }
         txn.commit().await?;
 
+        lot.index_mut().insert(self.label.clone(), self.uuid.clone());
+
         Ok(self.uuid.clone())
     }
 
@@ -247,11 +252,24 @@ impl Record {
             return Ok(Vec::new());
         }
 
+        let mut batch_names: std::collections::HashMap<&LabelName, &Uuid<Self>> =
+            std::collections::HashMap::with_capacity(records.len());
         for record in records {
             if record.lot_uuid != *lot.uuid() {
                 return Err(Error::LotMismatch {
                     expected: lot.uuid().clone(),
                     actual: record.lot_uuid.clone(),
+                });
+            }
+            lot.index()
+                .check_name_owner(record.label.name(), &record.uuid)?;
+            if let Some(prior) = batch_names.insert(record.label.name(), &record.uuid)
+                && prior != &record.uuid
+            {
+                return Err(Error::LabelCollision {
+                    name: record.label.name().clone(),
+                    existing: prior.clone(),
+                    attempted: record.uuid.clone(),
                 });
             }
         }
@@ -300,8 +318,15 @@ impl Record {
         // modules go through the fetcher (decrypt under lot key); a
         // byte-identical put returns Ok(None) and contributes no
         // dirty module to the snapshot, so we skip persisting it.
-        let (active_models, new_parent) = tokio::task::block_in_place(
-            || -> Result<(Vec<self::orm::ActiveModel>, Option<Vec<u8>>), Error> {
+        let (active_models, changed_ids, new_parent) = tokio::task::block_in_place(
+            || -> Result<
+                (
+                    Vec<self::orm::ActiveModel>,
+                    std::collections::HashSet<storgit::Id>,
+                    Option<Vec<u8>>,
+                ),
+                Error,
+            > {
                 for (rec, p) in records.iter().zip(&prepared) {
                     lot.store_mut()
                         .put(&p.storgit_id, Some(&p.label_bytes), Some(&p.data_bytes))
@@ -312,6 +337,7 @@ impl Record {
                 on_progress(SaveProgress::Snapshot(&snap));
 
                 let mut active_models = Vec::with_capacity(records.len());
+                let mut changed_ids = std::collections::HashSet::with_capacity(records.len());
                 for p in &prepared {
                     let Some(change) = snap.modules.get(&p.storgit_id) else {
                         // Byte-identical put; nothing to persist for
@@ -335,8 +361,9 @@ impl Record {
                         }
                         .into_active_model(),
                     );
+                    changed_ids.insert(p.storgit_id.clone());
                 }
-                Ok((active_models, snap.parent))
+                Ok((active_models, changed_ids, snap.parent))
             },
         )?;
 
@@ -365,6 +392,18 @@ impl Record {
         }
         txn.commit().await?;
         on_progress(SaveProgress::SaveRecord);
+
+        // Only records whose put marked the module dirty need an
+        // index update; byte-identical repeats already have the same
+        // (label, uuid) in the index from a prior save. Matches the
+        // single `Record::save` path, which skips the insert on the
+        // byte-identical early return.
+        for (record, p) in records.iter().zip(&prepared) {
+            if changed_ids.contains(&p.storgit_id) {
+                lot.index_mut()
+                    .insert(record.label.clone(), record.uuid.clone());
+            }
+        }
 
         if new_parent.is_some() {
             on_progress(SaveProgress::SaveLot);
@@ -426,6 +465,8 @@ impl Record {
             .await?;
         }
         txn.commit().await?;
+
+        lot.index_mut().remove(&self.uuid);
 
         Ok(())
     }
@@ -561,11 +602,22 @@ impl fmt::Debug for Record {
 
 #[derive(Debug)]
 pub enum Error {
-    MissingLot,
     #[cfg(feature = "db")]
     LotMismatch {
         expected: Uuid<Lot>,
         actual: Uuid<Lot>,
+    },
+    /// A different record already owns the label's name in this lot.
+    /// Record identity within a lot is the [`LabelName`] alone; callers
+    /// who want to update the existing record must reuse its uuid via
+    /// [`Record::with_uuid`] (resolved through
+    /// [`RecordIndex::find_by_name`]). Two records with the same name
+    /// are unrepresentable in [`RecordIndex`].
+    #[cfg(feature = "db")]
+    LabelCollision {
+        name: LabelName,
+        existing: Uuid<Record>,
+        attempted: Uuid<Record>,
     },
     Uuid(crate::uuid::Error),
     #[cfg(feature = "db")]
@@ -872,5 +924,121 @@ mod tests {
             .await
             .expect_err("expected LotMismatch");
         assert!(matches!(err, Error::LotMismatch { .. }));
+    }
+
+    #[cfg(feature = "db")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn save_rejects_name_collision_with_different_uuid() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let mut lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        let first = Record::new(
+            &lot,
+            "acct".parse::<Label>().unwrap(),
+            Data::new("p1".try_into().unwrap()),
+        );
+        let first_uuid = first.save(&db, &mut lot).await.unwrap();
+
+        // A fresh Record::new for the same name mints a new uuid and
+        // must be rejected; the name is already owned.
+        let collider = Record::new(
+            &lot,
+            "acct".parse::<Label>().unwrap(),
+            Data::new("p2".try_into().unwrap()),
+        );
+        assert_ne!(&first_uuid, collider.uuid());
+        let err = collider
+            .save(&db, &mut lot)
+            .await
+            .expect_err("expected LabelCollision");
+        assert!(matches!(
+            err,
+            Error::LabelCollision { ref existing, .. } if existing == &first_uuid
+        ));
+
+        // Reusing the existing uuid is the supported update path.
+        Record::with_uuid(
+            first_uuid.clone(),
+            &lot,
+            "acct".parse::<Label>().unwrap(),
+            Data::new("p3".try_into().unwrap()),
+        )
+        .save(&db, &mut lot)
+        .await
+        .expect("reuse should succeed");
+    }
+
+    #[cfg(feature = "db")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn save_many_rejects_name_collision() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let mut lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        Record::new(
+            &lot,
+            "acct".parse::<Label>().unwrap(),
+            Data::new("p1".try_into().unwrap()),
+        )
+        .save(&db, &mut lot)
+        .await
+        .unwrap();
+
+        let collider = Record::new(
+            &lot,
+            "acct".parse::<Label>().unwrap(),
+            Data::new("p2".try_into().unwrap()),
+        );
+        let err = Record::save_many(&db, &mut lot, &[collider], |_| {})
+            .await
+            .expect_err("expected LabelCollision");
+        assert!(matches!(err, Error::LabelCollision { .. }));
+    }
+
+    #[cfg(feature = "db")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn save_many_rejects_intra_batch_collision() {
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let mut lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+        // Two fresh records minted with different uuids but the same
+        // label name. Neither is in the index yet, so the per-record
+        // check_name_owner passes for both; the intra-batch guard has
+        // to catch it.
+        let a = Record::new(
+            &lot,
+            "dup".parse::<Label>().unwrap(),
+            Data::new("p1".try_into().unwrap()),
+        );
+        let b = Record::new(
+            &lot,
+            "dup".parse::<Label>().unwrap(),
+            Data::new("p2".try_into().unwrap()),
+        );
+        assert_ne!(a.uuid(), b.uuid());
+        let err = Record::save_many(&db, &mut lot, &[a, b], |_| {})
+            .await
+            .expect_err("expected LabelCollision");
+        assert!(matches!(err, Error::LabelCollision { .. }));
     }
 }

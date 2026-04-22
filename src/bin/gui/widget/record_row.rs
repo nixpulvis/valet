@@ -2,7 +2,7 @@ use crate::util::button_width;
 use eframe::egui;
 use egui_inbox::UiInbox;
 use std::sync::Arc;
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, sync::Mutex};
 use valet::{
     Lot, Record,
     db::Database,
@@ -19,7 +19,7 @@ enum PasswordEvent {
 pub struct RecordRow<'a> {
     label: &'a Label,
     record_uuid: &'a Uuid<Record>,
-    lot: Arc<Lot>,
+    lot: Arc<Mutex<Lot>>,
     db: &'a Arc<Database>,
     rt: &'a Runtime,
 }
@@ -28,7 +28,7 @@ impl<'a> RecordRow<'a> {
     pub fn new(
         label: &'a Label,
         record_uuid: &'a Uuid<Record>,
-        lot: Arc<Lot>,
+        lot: Arc<Mutex<Lot>>,
         db: &'a Arc<Database>,
         rt: &'a Runtime,
     ) -> Self {
@@ -220,12 +220,13 @@ impl egui::Widget for RecordRow<'_> {
 fn spawn_fetch(
     rt: &Runtime,
     db: Arc<Database>,
-    lot: Arc<Lot>,
+    lot: Arc<Mutex<Lot>>,
     record_uuid: Uuid<Record>,
     tx: egui_inbox::UiInboxSender<PasswordEvent>,
     wrap: fn(Password) -> PasswordEvent,
 ) {
     rt.spawn(async move {
+        let lot = lot.lock().await;
         // TODO: surface these errors in the UI instead of stderr.
         let record = match Record::show(&db, &lot, &record_uuid).await {
             Ok(Some(record)) => record,

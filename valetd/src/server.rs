@@ -22,7 +22,7 @@ use valet::{
     Lot, Record,
     db::Database,
     password::Password,
-    record::{Data, Label, RecordIndex},
+    record::{Data, Label},
     user::User,
     uuid::Uuid,
 };
@@ -253,8 +253,7 @@ async fn list(
 
     let mut out: Vec<(Uuid<Record>, Label)> = Vec::new();
     for lot in &user_lots {
-        let index = RecordIndex::load(&st.db, lot).await.map_err(err)?;
-        for (label, uuid) in index.iter() {
+        for (label, uuid) in lot.index().iter() {
             let keep = parsed.is_empty()
                 || parsed
                     .iter()
@@ -297,10 +296,10 @@ async fn find_records(
     use crate::request::label_matches_domain;
     let mut st = state.lock().await;
     ensure_lot(&mut st, username, lot).await?;
-    let State { db, lots, .. } = &*st;
+    let State { lots, .. } = &*st;
     let l = &lots[&(username.to_owned(), lot.to_owned())];
-    let index = RecordIndex::load(db, l).await.map_err(err)?;
-    let entries: Vec<(Uuid<Record>, Label)> = index
+    let entries: Vec<(Uuid<Record>, Label)> = l
+        .index()
         .iter()
         .filter(|(label, _)| label_matches_domain(label, query))
         .map(|(label, uuid)| (uuid.clone(), label.clone()))

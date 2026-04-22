@@ -56,6 +56,12 @@ pub struct Lot {
     /// costs once per session instead of once per op.
     #[cfg(feature = "db")]
     store: storgit::Store,
+    /// Materialised label->uuid index for every live record in the
+    /// lot. Built from the store's label cache on construction and
+    /// kept in sync by [`Record::save`] / [`Record::delete`], which
+    /// hold `&mut Lot` for the mutation.
+    #[cfg(feature = "db")]
+    index: RecordIndex,
 }
 
 impl PartialEq for Lot {
@@ -80,6 +86,8 @@ impl Lot {
             // but Lot::new has no Error return today.
             #[cfg(feature = "db")]
             store: storgit::Store::new().expect("fresh storgit store"),
+            #[cfg(feature = "db")]
+            index: RecordIndex::default(),
         }
     }
 
@@ -184,14 +192,26 @@ impl Lot {
         })
     }
 
-    /// Load the label-to-uuid index for this lot.
+    /// The label->uuid index for this lot.
     ///
-    /// The index decrypts only labels, leaving the password-bearing data
-    /// column on disk. Pair this with [`Record::show`] to reveal exactly one
-    /// password at a time.
+    /// Materialised once when the lot is loaded (from the storgit
+    /// store's label cache, which covers every live record in the
+    /// lot) and kept in sync as records are added or removed. No DB
+    /// round trip, no ciphertext opened here - pair with
+    /// [`Record::show`] to reveal one password at a time.
     #[cfg(feature = "db")]
-    pub async fn index(&self, db: &Database) -> Result<RecordIndex, Error> {
-        RecordIndex::load(db, self).await.map_err(Into::into)
+    pub fn index(&self) -> &RecordIndex {
+        &self.index
+    }
+
+    /// Mutable access to the index. Used by
+    /// [`Record::save`](crate::record::Record::save) and
+    /// [`Record::delete`](crate::record::Record::delete) to mirror a
+    /// storgit put/archive into the index under the same `&mut Lot`
+    /// borrow.
+    #[cfg(feature = "db")]
+    pub(crate) fn index_mut(&mut self) -> &mut RecordIndex {
+        &mut self.index
     }
 
     /// Persist this lot and its binding to `user`.
@@ -313,8 +333,11 @@ impl Lot {
     }
 
     /// Delete this lot, cascading to records and user_lots.
+    ///
+    /// Consumes the handle so callers can't accidentally read its
+    /// stale cached index after the row is gone.
     #[cfg(feature = "db")]
-    pub async fn delete(&self, db: &Database) -> Result<(), Error> {
+    pub async fn delete(self, db: &Database) -> Result<(), Error> {
         self::orm::Entity::delete_by_id(self.uuid.to_string())
             .exec(db.connection())
             .await?;
@@ -348,12 +371,14 @@ impl Lot {
             fetcher: Some(fetcher),
         })
         .map_err(|e| Error::Record(record::Error::Storgit(e)))?;
+        let index = RecordIndex::from_store(&store).map_err(Error::Record)?;
 
         Ok(Lot {
             uuid,
             name: ul.name,
             key,
             store,
+            index,
         })
     }
 
@@ -473,10 +498,8 @@ mod tests {
             .await
             .expect("failed to load lot")
             .expect("no lot");
-        let index_a = lot_a.index(&db).await.expect("failed to load index a");
-        let index_b = lot_b.index(&db).await.expect("failed to load index b");
-        let mut labels_a: Vec<_> = index_a.labels().collect();
-        let mut labels_b: Vec<_> = index_b.labels().collect();
+        let mut labels_a: Vec<_> = lot_a.index().labels().collect();
+        let mut labels_b: Vec<_> = lot_b.index().labels().collect();
         labels_a.sort_by_key(|l| l.to_string());
         labels_b.sort_by_key(|l| l.to_string());
         assert_eq!(labels_a, labels_b);
@@ -555,24 +578,17 @@ mod tests {
         .save(&db, &mut lot)
         .await
         .expect("failed to save record");
+        let uuid = lot.uuid().to_string();
         lot.delete(&db).await.expect("failed to delete lot");
         let lots = Lot::load_all(&db, &user)
             .await
             .expect("failed to load lots");
         assert!(lots.is_empty());
-        // Stale lot handle: the row is gone, so the index load must error out
-        // rather than silently return an empty index.
-        assert!(matches!(
-            lot.index(&db).await,
-            Err(Error::Record(record::Error::MissingLot)),
-        ));
-        let user_lot = self::orm::user_lots::Entity::find_by_id((
-            user.username().to_owned(),
-            lot.uuid().to_string(),
-        ))
-        .one(db.connection())
-        .await
-        .expect("failed to load user_lot");
+        let user_lot =
+            self::orm::user_lots::Entity::find_by_id((user.username().to_owned(), uuid))
+                .one(db.connection())
+                .await
+                .expect("failed to load user_lot");
         assert!(user_lot.is_none());
     }
 

@@ -12,16 +12,17 @@ use std::{
     str::FromStr,
     sync::{Arc, RwLock},
 };
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, sync::Mutex};
 use valet::{
     Lot, Record, User,
     db::Database,
     lot::DEFAULT_LOT,
     password::Password,
-    record::{Data, Query, RecordIndex},
+    record::{Data, Label, Query},
+    uuid::Uuid,
 };
 
-type Store = Vec<(Arc<Lot>, RecordIndex)>;
+type Store = Vec<Arc<Mutex<Lot>>>;
 
 pub struct Unlocked<'a> {
     // TODO: come up with a better organization for these shared values.
@@ -65,12 +66,8 @@ impl<'a> View for Unlocked<'a> {
             let user2 = user.clone();
             self.rt.spawn(async move {
                 let lots = user2.lots(&db).await.expect("failed to load lots");
-                let mut lots_with_index = Vec::new();
-                for lot in lots {
-                    let index = lot.index(&db).await.expect("failed to load index");
-                    lots_with_index.push((Arc::new(lot), index));
-                }
-                tx.send(lots_with_index).ok();
+                tx.send(lots.into_iter().map(|l| Arc::new(Mutex::new(l))).collect())
+                    .ok();
             });
         }
 
@@ -149,22 +146,23 @@ impl<'a> View for Unlocked<'a> {
                                 !state.new_label.is_empty() && !state.new_password.is_empty();
                             if ui.add_enabled(can_add, Button::new("Add Record")).clicked() {
                                 let db = self.db.clone();
-                                let tx = state.store_inbox.sender();
-                                let user = user.clone();
                                 let new_label = state.new_label.clone();
                                 let new_password = state.new_password.clone();
                                 state.show_new_record = false;
                                 state.new_label = String::new();
                                 state.new_password = Password::default();
-                                // TODO: Don't clear the store here; it flashes
-                                // "Loading..." on every add. Update just the
-                                // changed lot entry once the async save lands.
-                                state.store.write().unwrap().clear();
-                                self.rt.spawn(async move {
-                                    if let Some(mut lot) = Lot::load(&db, DEFAULT_LOT, &user)
-                                        .await
-                                        .expect("failed to load main lot")
-                                    {
+                                let main_lot = state
+                                    .store
+                                    .read()
+                                    .unwrap()
+                                    .iter()
+                                    .find(|l| {
+                                        l.blocking_lock().name() == DEFAULT_LOT
+                                    })
+                                    .cloned();
+                                if let Some(main_lot) = main_lot {
+                                    self.rt.spawn(async move {
+                                        let mut lot = main_lot.lock().await;
                                         match Query::from_str(&new_label).and_then(Query::into_path)
                                         {
                                             Ok(path) => {
@@ -183,17 +181,8 @@ impl<'a> View for Unlocked<'a> {
                                                 eprintln!("{error}: {}", new_label)
                                             }
                                         }
-                                    }
-                                    // TODO: We probably just need to query this one record.
-                                    let lots = user.lots(&db).await.expect("failed to reload lots");
-                                    let mut lots_with_index = Vec::new();
-                                    for lot in lots {
-                                        let index =
-                                            lot.index(&db).await.expect("failed to load index");
-                                        lots_with_index.push((Arc::new(lot), index));
-                                    }
-                                    tx.send(lots_with_index).ok();
-                                });
+                                    });
+                                }
                             }
                             if ui.button("Cancel").clicked() {
                                 state.show_new_record = false;
@@ -215,8 +204,9 @@ impl<'a> View for Unlocked<'a> {
                         })
                         .show(ui, |ui| {
                             let store = state.store.read().unwrap();
-                            let main_lot_entry: Option<&(Arc<Lot>, RecordIndex)> =
-                                store.iter().find(|(l, _)| l.name() == DEFAULT_LOT);
+                            let main_lot: Option<&Arc<Mutex<Lot>>> = store
+                                .iter()
+                                .find(|l| l.blocking_lock().name() == DEFAULT_LOT);
 
                             // Bare input is a case-insensitive literal prefix
                             // match on the label name. A leading `~` opts into
@@ -230,36 +220,48 @@ impl<'a> View for Unlocked<'a> {
                             } else {
                                 Ok(Some(Query::label_prefix(search, true)))
                             };
-                            match (main_lot_entry, query) {
+                            match (main_lot, query) {
                                 (None, _) => {
                                     ui.label("Loading...");
-                                }
-                                (Some((_lot, index)), _) if index.is_empty() => {
-                                    ui.label("No records yet.");
                                 }
                                 (_, Err(e)) => {
                                     ui.label(format!("Invalid query: {e}"));
                                 }
-                                (Some((lot, index)), Ok(query)) => {
-                                    let mut any = false;
-                                    for (label, record_uuid) in index {
-                                        if let Some(q) = &query
-                                            && !q.matches_label(label)
-                                        {
-                                            continue;
+                                (Some(lot_arc), Ok(query)) => {
+                                    // Snapshot labels+uuids under the lock, then
+                                    // drop the guard before touching egui so a
+                                    // concurrent save or reveal never queues
+                                    // behind the render.
+                                    let entries: Vec<(Label, Uuid<Record>)> = {
+                                        let lot = lot_arc.blocking_lock();
+                                        lot.index()
+                                            .iter()
+                                            .map(|(l, u)| (l.clone(), u.clone()))
+                                            .collect()
+                                    };
+                                    if entries.is_empty() {
+                                        ui.label("No records yet.");
+                                    } else {
+                                        let mut any = false;
+                                        for (label, record_uuid) in &entries {
+                                            if let Some(q) = &query
+                                                && !q.matches_label(label)
+                                            {
+                                                continue;
+                                            }
+                                            ui.add(RecordRow::new(
+                                                label,
+                                                record_uuid,
+                                                lot_arc.clone(),
+                                                self.db,
+                                                self.rt,
+                                            ));
+                                            ui.separator();
+                                            any = true;
                                         }
-                                        ui.add(RecordRow::new(
-                                            label,
-                                            record_uuid,
-                                            lot.clone(),
-                                            self.db,
-                                            self.rt,
-                                        ));
-                                        ui.separator();
-                                        any = true;
-                                    }
-                                    if !any {
-                                        ui.label("No matching records.");
+                                        if !any {
+                                            ui.label("No matching records.");
+                                        }
                                     }
                                 }
                             }
