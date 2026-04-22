@@ -93,22 +93,33 @@ impl State {
 /// Real server: owns the database and the unlocked-user cache. The mutex
 /// lives inside so [`Handler::handle`] can take `&self` and still allow
 /// multiple concurrent connections to share one cache.
+/// Cached keys are dropped after this much wall-clock inactivity.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// How often the reaper checks the idle window.
+pub const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+
 pub struct DaemonHandler {
     state: Arc<Mutex<State>>,
 }
 
 impl DaemonHandler {
-    pub fn new(db: Database) -> Self {
-        Self {
+    /// Build a handler around `db` and spawn the idle reaper. Must be called
+    /// from within a tokio runtime; the reaper is what guarantees cached keys
+    /// are dropped after [`IDLE_TIMEOUT`] of inactivity, so construction and
+    /// reaper-spawning are deliberately fused.
+    pub fn new(db: Database) -> Arc<Self> {
+        let handler = Arc::new(Self {
             state: Arc::new(Mutex::new(State::new(db))),
-        }
+        });
+        handler.spawn_reaper(IDLE_TIMEOUT, IDLE_CHECK_INTERVAL);
+        handler
     }
 
     /// Open the database at `$VALET_DB` (or [`valet::db::default_url`] when
     /// unset) and build a handler around it. Used by the `valetd` binary
-    /// and by any transport — such as the browser native-host's embedded
-    /// mode — that just wants the default location.
-    pub async fn from_env() -> Result<Self, String> {
+    /// and by any transport, such as the browser native-host's embedded
+    /// mode, that just wants the default location.
+    pub async fn from_env() -> Result<Arc<Self>, String> {
         let db_url = std::env::var("VALET_DB").unwrap_or_else(|_| valet::db::default_url());
         let db = Database::new(&db_url)
             .await
@@ -119,15 +130,36 @@ impl DaemonHandler {
     /// Drop every cached user if the idle window has elapsed since the last
     /// request touched the state. Returns `true` when something was dropped,
     /// so the caller can log it.
-    pub async fn reap_if_idle(&self, idle_timeout: Duration) -> bool {
-        let mut st = self.state.lock().await;
-        match st.last_activity {
+    async fn reap_if_idle(&self, idle_timeout: Duration) -> bool {
+        let mut state = self.state.lock().await;
+        match state.last_activity {
             Some(last) if last.elapsed() >= idle_timeout => {
-                st.drop_all();
+                state.drop_all();
                 true
             }
             _ => false,
         }
+    }
+
+    /// Spawn a background task that calls [`reap_if_idle`] on `check_interval`,
+    /// dropping cached keys after `idle_timeout` of inactivity.
+    ///
+    /// [`reap_if_idle`]: Self::reap_if_idle
+    fn spawn_reaper(self: &Arc<Self>, idle_timeout: Duration, check_interval: Duration) {
+        let handler = self.clone();
+        tokio::spawn(async move {
+            info!(
+                idle_timeout_secs = idle_timeout.as_secs(),
+                check_interval_secs = check_interval.as_secs(),
+                "reaper started",
+            );
+            loop {
+                tokio::time::sleep(check_interval).await;
+                if handler.reap_if_idle(idle_timeout).await {
+                    info!("idle timeout, locked all users");
+                }
+            }
+        });
     }
 }
 

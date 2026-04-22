@@ -2,12 +2,12 @@
 //!
 //! Owns a single SQLite database, a cache of unlocked [`User`] / [`Lot`]
 //! keys, and serves the [`valetd::Request`] / [`valetd::Response`] protocol
-//! on a Unix socket. Cached keys are dropped after [`IDLE_TIMEOUT`] with no
-//! activity; they are also dropped when the process exits because
-//! [`valet::encrypt::Key`] is `ZeroizeOnDrop`.
+//! on a Unix socket. Cached keys are dropped after the idle window with no
+//! activity (see [`valetd::server::IDLE_TIMEOUT`]); they are also dropped
+//! when the process exits because [`valet::encrypt::Key`] is `ZeroizeOnDrop`.
 //!
 //! All request handling lives in [`valetd::server::DaemonHandler`]; this
-//! binary is the Unix-socket transport and the idle reaper around it.
+//! binary is the Unix-socket transport around it.
 //!
 //! Socket path: `$VALET_SOCKET` if set, otherwise [`valetd::socket::default_path`].
 //! Database path: `$VALET_DB` if set, otherwise [`valet::db::default_url`].
@@ -16,7 +16,6 @@
 //! [`Lot`]: valet::Lot
 
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{error, info, warn};
 use valetd::{
@@ -24,9 +23,6 @@ use valetd::{
     request::Frame,
     socket,
 };
-
-const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
@@ -64,21 +60,6 @@ async fn main() {
         }
     };
     info!(path = %socket_path.display(), "listening");
-
-    let handler = Arc::new(handler);
-
-    // Background reaper: drops cached keys after IDLE_TIMEOUT of inactivity.
-    {
-        let handler = handler.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(IDLE_CHECK_INTERVAL).await;
-                if handler.reap_if_idle(IDLE_TIMEOUT).await {
-                    info!("idle timeout, locked all users");
-                }
-            }
-        });
-    }
 
     loop {
         let (conn, _) = match listener.accept().await {
