@@ -10,42 +10,39 @@ use std::collections::BTreeMap;
 
 /// An in-memory map from `Label` to `Uuid<Record>` for a single lot.
 ///
-/// Built from the label cache carried in the lot's storgit parent tarball.
-/// Labels are stored plaintext inside storgit (the parent itself is encrypted
-/// at the DB boundary under the lot key), so building the index neither opens
-/// any submodules nor decrypts any record-level ciphertext - a password is
-/// only materialized by [`Record::show`](crate::record::Record::show).
+/// Built from the label cache carried in the lot's live storgit store.
+/// Labels are stored plaintext inside the store's parent tree (the
+/// parent itself is encrypted at the DB boundary under the lot key),
+/// so building the index neither opens any submodules nor decrypts
+/// any record-level ciphertext - a password is only materialized by
+/// [`Record::show`](crate::record::Record::show).
 ///
 /// The index is not persisted; it's rebuilt from the store on every
-/// [`RecordIndex::load`]. This keeps storage as the single source of truth
-/// and removes any sync burden on `save`/`delete`.
+/// [`RecordIndex::load`].
 pub struct RecordIndex {
     entries: BTreeMap<Label, Uuid<Record>>,
 }
 
 impl RecordIndex {
-    /// Build an index for `lot` by reading its storgit parent label cache.
+    /// Build an index for `lot` by reading its live storgit store's
+    /// label cache.
     ///
-    /// Re-reads `lots.store` from the database so the index reflects the
-    /// current persisted state. Returns [`Error::MissingLot`] if the lot
-    /// row is gone (stale `&Lot` after [`Lot::delete`](crate::lot::Lot::delete),
-    /// or a lot that was never saved) so callers can distinguish "empty
-    /// lot" from "lot does not exist".
+    /// Confirms the `lots` row still exists (so stale `&Lot` handles
+    /// after [`Lot::delete`](crate::lot::Lot::delete) return
+    /// [`Error::MissingLot`] rather than an empty index from the
+    /// in-memory store), then reads labels straight off the lot's
+    /// open store without any DB decrypt.
     pub async fn load(db: &Database, lot: &Lot) -> Result<Self, Error> {
-        let model = crate::lot::orm::Entity::find_by_id(lot.uuid().to_string())
+        let exists = crate::lot::orm::Entity::find_by_id(lot.uuid().to_string())
             .one(db.connection())
             .await?
-            .ok_or(Error::MissingLot)?;
-        let parent_bytes = lot.decrypt_store_bytes(&model.store)?;
-
-        let store = storgit::Store::open(storgit::Parts {
-            parent: parent_bytes,
-            modules: std::collections::HashMap::new(),
-        })
-        .map_err(Error::Storgit)?;
+            .is_some();
+        if !exists {
+            return Err(Error::MissingLot);
+        }
 
         let mut entries = BTreeMap::new();
-        for (id, label_bytes) in store.list_labels() {
+        for (id, label_bytes) in lot.store().list_labels() {
             let uuid = Uuid::<Record>::parse(id.as_str())?;
             let label = Label::decode(&label_bytes)?;
             entries.insert(label, uuid);
@@ -156,7 +153,7 @@ mod tests {
         (db, user, lot)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn empty_index() {
         let (db, _user, lot) = setup().await;
         let index = RecordIndex::load(&db, &lot)
@@ -166,7 +163,7 @@ mod tests {
         assert_eq!(0, index.len());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn index_contains_inserted_labels() {
         let (db, _user, mut lot) = setup().await;
         let uuid_a = Record::new(
@@ -193,7 +190,7 @@ mod tests {
         assert_eq!(None, index.find(&"missing".parse::<Label>().unwrap()));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn find_by_name_ignores_extras() {
         let (db, _user, mut lot) = setup().await;
         // Two records stored under the same primary name with different
@@ -247,7 +244,7 @@ mod tests {
         assert!(passwords.contains(&"pw2".to_string()));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn index_then_show_resolves_password() {
         let (db, _user, mut lot) = setup().await;
         Record::new(
@@ -270,7 +267,7 @@ mod tests {
         assert_eq!("s3cret", record.password().to_string());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn for_loop_iteration() {
         let (db, _user, mut lot) = setup().await;
         Record::new(
@@ -379,7 +376,7 @@ mod tests {
         out
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn search_literal_name() {
         let (db, lot) = seed_search_lot().await;
         let index = RecordIndex::load(&db, &lot).await.unwrap();
@@ -387,7 +384,7 @@ mod tests {
         assert_eq!(search_labels(&index, &q), vec!["nix@example.com"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn search_regex_name() {
         // Every `*.com` domain record but not `.org` or the simple label.
         let (db, lot) = seed_search_lot().await;
@@ -399,7 +396,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn search_extras_only() {
         // Both example.com accounts share a url.
         let (db, lot) = seed_search_lot().await;
@@ -411,7 +408,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn search_regex_name_and_extras_and_semantics() {
         // Regex covers three records; the extras filter narrows to the one
         // at other.com.
@@ -421,7 +418,7 @@ mod tests {
         assert_eq!(search_labels(&index, &q), vec!["nix@other.com"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn search_regex_key_presence() {
         // Only the simple label carries a `note` key.
         let (db, lot) = seed_search_lot().await;
@@ -430,7 +427,7 @@ mod tests {
         assert_eq!(search_labels(&index, &q), vec!["github"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn search_regex_key_eq_value() {
         // "Some key matches ^u with value https://example.com" catches the
         // two example.com accounts (their `url` extra) but nothing else.
@@ -443,7 +440,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn search_regex_key_regex_value() {
         // Any url-ish key with a value that's an https .com URL. Excludes
         // bob@company.org (no url) and the `tag=work` case, but hits both
@@ -462,7 +459,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn search_match_all() {
         let (db, lot) = seed_search_lot().await;
         let index = RecordIndex::load(&db, &lot).await.unwrap();
@@ -470,7 +467,7 @@ mod tests {
         assert_eq!(index.search(&q).count(), 5);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn search_no_matches() {
         let (db, lot) = seed_search_lot().await;
         let index = RecordIndex::load(&db, &lot).await.unwrap();
@@ -478,7 +475,7 @@ mod tests {
         assert!(index.search(&q).next().is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn deleted_record_absent_from_fresh_index() {
         let (db, _user, mut lot) = setup().await;
         let record = Record::new(

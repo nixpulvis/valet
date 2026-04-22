@@ -48,7 +48,10 @@ use backend::{Active, Backend};
 /// similar limit on the addon side.
 const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
-#[tokio::main(flavor = "current_thread")]
+// Multi-thread so the `valet` library's storgit work can use
+// `tokio::task::block_in_place` (panics on a current_thread runtime)
+// to offload sync git+fs work off the async path.
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     valet::logging::init();
     let backend = match backend::build().await {

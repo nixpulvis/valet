@@ -103,6 +103,7 @@ impl Storage {
         Parts {
             parent: self.parent.clone(),
             modules: HashMap::new(),
+            fetcher: None,
         }
     }
 }

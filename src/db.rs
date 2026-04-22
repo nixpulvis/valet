@@ -23,6 +23,7 @@ pub fn default_url() -> String {
     default_path().to_string_lossy().into_owned()
 }
 
+#[derive(Clone)]
 pub struct Database(DatabaseConnection);
 
 impl Database {

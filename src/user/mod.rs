@@ -231,7 +231,7 @@ mod tests {
         assert!(duration > Duration::from_millis(200));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn register_load() {
         let db = Database::new("sqlite://:memory:")
             .await
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(user, loaded);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn lots() {
         let db = Database::new("sqlite://:memory:")
             .await
@@ -270,7 +270,7 @@ mod tests {
         assert_eq!(lots, vec![lot_a, lot_b]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn list() {
         let db = Database::new("sqlite://:memory:")
             .await

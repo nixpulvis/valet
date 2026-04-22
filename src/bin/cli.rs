@@ -538,9 +538,6 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
     println!("Importing {total} records into {lot_name}...");
     let mut put = 0usize;
     let result = Record::save_many(db, lot, &records, |ev| match ev {
-        SaveProgress::LoadedRecords => {
-            println!("Loaded existing records");
-        }
         SaveProgress::OpenedStore => {
             println!("Opened store");
         }

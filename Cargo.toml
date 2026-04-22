@@ -38,6 +38,11 @@ name = "valet"
 path = "src/bin/cli.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "profile_put"
+path = "src/bin/profile_put.rs"
+required-features = ["cli"]
+
 [features]
 default = ["cli"]
 
@@ -51,7 +56,7 @@ logging = ["dep:tracing-subscriber"]
 # Enables the SQLite database layer (`db` module, CRUD operations on
 # `User`/`Lot`/`Record`, and the `prelude` convenience re-exports).
 # Without this feature the crate is a pure encryption/data library.
-db = ["dep:sqlx", "dep:sea-orm", "dep:url", "dep:storgit"]
+db = ["dep:sqlx", "dep:sea-orm", "dep:url", "dep:storgit", "dep:tokio"]
 
 # Expose the SeaORM entity modules as `pub` instead of `pub(crate)`.
 orm = []

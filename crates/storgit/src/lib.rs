@@ -13,9 +13,11 @@
 //! There is no shared object database: each module owns its own
 //! objects so that a fresh [`Store::open`] can ignore them entirely
 //! and the `index/` cache in the parent gives a working label index
-//! without touching any submodule. Modules are loaded from
-//! [`Parts::modules`] (or via [`Store::load_module`] after open) on
-//! first access.
+//! without touching any submodule. Modules reach the store through
+//! one of three paths, all converging on the same on-disk scratch:
+//! [`Parts::modules`] (handed over at open time), a
+//! [`Parts::fetcher`] consulted on demand for misses, or explicit
+//! [`Store::load_module`] pushes after open.
 //!
 //! Each entry is keyed by an opaque `id` and carries two optional
 //! payloads inside every commit: a `label` (searchable metadata the
@@ -34,11 +36,11 @@
 //! the caller.
 
 use std::borrow::Borrow;
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gix::bstr::{BStr, BString, ByteSlice};
@@ -243,7 +245,16 @@ pub struct Store {
     /// when an operation first touches a given module (and
     /// unconditionally on [`Store::save`], which needs every live
     /// module on disk to bundle).
-    pending_modules: RefCell<HashMap<Id, Vec<u8>>>,
+    /// `Mutex` (rather than `RefCell`) so `Store` is `Sync`. The map is
+    /// only briefly touched inside `ensure_loaded` / `load_module` /
+    /// `delete`, so contention is a non-issue in practice, and `Sync`
+    /// lets async callers hold a `&Store` across `.await` boundaries.
+    pending_modules: Mutex<Modules>,
+    /// Optional lookup consulted by `ensure_loaded` when
+    /// `pending_modules` and the scratch dir both miss. Carries the
+    /// [`Parts::fetcher`] supplied at open time; `None` means the
+    /// caller promised [`Parts::modules`] was exhaustive.
+    fetcher: Option<ModuleFetcher>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,31 +269,75 @@ enum ModuleDirt {
     Deleted,
 }
 
-/// The persisted form of a [`Store`]: two independent parts.
+/// Map from entry [`Id`] to the bytes of that module's tarball.
+pub type Modules = HashMap<Id, Vec<u8>>;
+
+/// Caller-supplied lookup for module bytes. Called by [`Store`] when
+/// an operation first touches an id whose bytes are neither on disk
+/// nor in [`Parts::modules`]. A fetcher is assumed to reflect live
+/// backing storage at call time.
 ///
-/// - [`Parts::parent`] is the parent bare repo, full self-contained
-///   (its own objects, the gitlink tree, `.gitmodules`, the `index/`
-///   label cache).
-/// - [`Parts::modules`] maps each entry [`Id`] to its submodule's bare
-///   repo tarball. Each module is a full self-contained bare repo
-///   with its own object database.
+/// Return values:
+/// - `Ok(Some(bytes))` - module exists, here are its tarball bytes.
+/// - `Ok(None)` - no such module in backing storage. If the id is
+///   live in the parent's gitlink set, this surfaces as an error
+///   (the caller's backing store has diverged from the parent);
+///   otherwise the id is treated as fresh.
+/// - `Err(e)` - lookup itself failed; the op fails with
+///   [`Error::Fetch`].
+pub type ModuleFetcher = Arc<
+    dyn Fn(&Id) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync + 'static>>
+        + Send
+        + Sync,
+>;
+
+/// The persisted form of a [`Store`].
 ///
-/// Feed this to [`Store::open`] to reconstruct a store. Empty tarballs
-/// mean "treat as fresh", and the first [`Store::snapshot`] will emit
-/// the newly-initialised state so the caller can persist it. Modules
-/// passed in `Parts::modules` are stashed for lazy untar on first
-/// access; pass an empty map and feed bytes in via
-/// [`Store::load_module`] for true row-by-row lazy loading.
-#[derive(Debug, Clone, Default)]
+/// Feed this to [`Store::open`] to reconstruct a store. An empty
+/// `parent` means "fresh store"; the first [`Store::snapshot`] will
+/// emit the newly-initialised state so the caller can persist it.
+///
+/// The presence or absence of [`Parts::fetcher`] decides whether the
+/// resulting store is lazy:
+///
+/// - No fetcher: the caller promises [`Parts::modules`] lists every
+///   live module. A miss for a live id at `ensure_loaded` time is an
+///   error; a miss for an unknown id is treated as fresh.
+/// - With a fetcher: [`Parts::modules`] is a prewarm cache consulted
+///   first; misses fall through to the fetcher, whose answer is
+///   authoritative.
 pub struct Parts {
-    /// Tarball of the parent bare repo. Empty means "fresh store"; the
-    /// first [`Store::snapshot`] will emit a freshly-initialised
-    /// parent.
+    /// Tarball of the parent bare repo.
     pub parent: Vec<u8>,
-    /// Tarball of each submodule bare repo, keyed by entry [`Id`].
-    /// Each is a full bare repo carrying its own data, label, and
-    /// commit objects.
-    pub modules: HashMap<Id, Vec<u8>>,
+    /// Tarball of each submodule bare repo the caller has in hand,
+    /// keyed by entry [`Id`]. With no fetcher, this is the complete
+    /// set of live modules; with a fetcher, it's an optional prewarm
+    /// cache consulted before the fetcher.
+    pub modules: Modules,
+    /// Optional backing-store lookup. See [`ModuleFetcher`].
+    pub fetcher: Option<ModuleFetcher>,
+}
+
+impl std::fmt::Debug for Parts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parts")
+            .field("parent_bytes", &self.parent.len())
+            .field("modules", &self.modules.keys().collect::<Vec<_>>())
+            .field("fetcher", &self.fetcher.as_ref().map(|_| "..").unwrap_or("None"))
+            .finish()
+    }
+}
+
+impl Default for Parts {
+    /// A fresh, empty [`Parts`] with no fetcher. Equivalent to
+    /// `Parts { parent: Vec::new(), modules: Modules::new(), fetcher: None }`.
+    fn default() -> Self {
+        Parts {
+            parent: Vec::new(),
+            modules: Modules::new(),
+            fetcher: None,
+        }
+    }
 }
 
 impl Parts {
@@ -311,8 +366,8 @@ impl Parts {
 }
 
 impl From<Snapshot> for Parts {
-    /// Build a fresh [`Parts`] by calling [`Parts::apply`] on an empty one with
-    /// `snap`.
+    /// Build a fresh [`Parts`] (no fetcher) by calling [`Parts::apply`]
+    /// on an empty one with `snap`.
     ///
     /// Use this only when the snapshot is known to describe the entire store,
     /// not a delta against something already persisted. In practice that means
@@ -403,7 +458,7 @@ impl Store {
         }
 
         // Modules are stashed for lazy untar; see `ensure_loaded`.
-        let pending_modules = RefCell::new(parts.modules);
+        let pending_modules = Mutex::new(parts.modules);
 
         let (gitlinks, label_cache) = if dirty_parent {
             (BTreeMap::new(), BTreeMap::new())
@@ -419,6 +474,7 @@ impl Store {
             label_cache,
             gitlinks_dirty: false,
             pending_modules,
+            fetcher: parts.fetcher,
         })
     }
 
@@ -473,7 +529,8 @@ impl Store {
             gitlinks,
             label_cache,
             gitlinks_dirty: false,
-            pending_modules: RefCell::new(HashMap::new()),
+            pending_modules: Mutex::new(Modules::new()),
+            fetcher: None,
         })
     }
 
@@ -636,7 +693,7 @@ impl Store {
         }
         // Drop any pending bytes too: don't accidentally resurrect
         // a deleted entry on the next ensure_loaded.
-        self.pending_modules.borrow_mut().remove(id);
+        self.pending_modules.lock().unwrap().remove(id);
         if self.gitlinks.remove(id).is_some() {
             self.label_cache.remove(id);
             self.gitlinks_dirty = true;
@@ -678,31 +735,51 @@ impl Store {
     /// — `get`, `history`, `put`, `archive` — will untar these bytes
     /// to the scratch dir on first access.
     ///
-    /// Use this when modules are stored separately from the parent
-    /// (e.g. one row per module in SQLite) and you don't want to load
-    /// every module up front. Combine with [`Store::open`] given an
-    /// empty [`Parts::modules`]: the resulting store has a working
-    /// label index from the parent alone, and modules are fetched on
-    /// demand as the caller hands them in.
+    /// Use this as an explicit push when neither [`Parts::modules`]
+    /// nor a [`Parts::fetcher`] fits: e.g. the caller just decoded a
+    /// module out of band and wants it resident without re-entering
+    /// the fetcher. For persistence layouts that store modules
+    /// separately (one row per module), prefer giving [`Parts`] a
+    /// [`ModuleFetcher`]; `ensure_loaded` will call it on first
+    /// touch.
     pub fn load_module(&mut self, id: Id, bytes: Vec<u8>) {
-        self.pending_modules.get_mut().insert(id, bytes);
+        self.pending_modules.get_mut().unwrap().insert(id, bytes);
     }
 
     /// Ensure `id`'s module is extracted to the scratch dir. If the
     /// dir already exists, no-op. Otherwise consume any pending
-    /// tarball for `id` and untar it. If the id is live in the parent
-    /// (gitlink present) but no bytes are available, return an error
-    /// so the caller knows it needs to call [`Store::load_module`]
-    /// first.
+    /// tarball for `id` and untar it. If nothing is pending, fall back
+    /// to the [`ModuleFetcher`] when one was supplied via
+    /// [`Parts::fetcher`]. If neither path produces bytes and the id
+    /// is live in the parent, return an error so the caller knows the
+    /// backing store has diverged from the parent's gitlink set.
     fn ensure_loaded(&self, id: &Id) -> Result<(), Error> {
         let mod_path = self.module_path(id);
         if mod_path.exists() {
             return Ok(());
         }
-        let bytes = self.pending_modules.borrow_mut().remove(id);
+        let bytes = self.pending_modules.lock().unwrap().remove(id);
         if let Some(bytes) = bytes {
             untar_into(&bytes, &mod_path)?;
             return Ok(());
+        }
+        if let Some(fetcher) = &self.fetcher {
+            match fetcher(id).map_err(Error::Fetch)? {
+                Some(bytes) => {
+                    untar_into(&bytes, &mod_path)?;
+                    return Ok(());
+                }
+                None => {
+                    if self.gitlinks.contains_key(id) {
+                        return Err(Error::Other(format!(
+                            "module {} is live in the parent but fetcher returned None",
+                            id.as_str()
+                        )));
+                    }
+                    // Not live and fetcher has nothing: treat as fresh.
+                    return Ok(());
+                }
+            }
         }
         if self.gitlinks.contains_key(id) {
             return Err(Error::Other(format!(
@@ -1237,6 +1314,8 @@ fn commit_time(commit: &gix::Commit<'_>) -> Result<SystemTime, Error> {
 pub enum Error {
     Io(std::io::Error),
     Git(Box<dyn std::error::Error + Send + Sync + 'static>),
+    /// A [`ModuleFetcher`] returned an error.
+    Fetch(Box<dyn std::error::Error + Send + Sync + 'static>),
     Other(String),
 }
 
@@ -1245,6 +1324,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::Io(e) => write!(f, "io: {e}"),
             Error::Git(e) => write!(f, "git: {e}"),
+            Error::Fetch(e) => write!(f, "fetch: {e}"),
             Error::Other(s) => write!(f, "{s}"),
         }
     }

@@ -24,8 +24,13 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// [`User::key`]: crate::user::User::key
 /// [`Lot::key`]: crate::lot::Lot::key
 /// [aes_gcm_siv]: https://docs.rs/aes-gcm-siv/latest/aes_gcm_siv/
+/// `PhantomData<fn() -> T>` rather than `PhantomData<T>` so `Key<T>`
+/// is unconditionally `Send + Sync`. The phantom is a compile-time
+/// domain tag (`Key<User>` vs `Key<Lot>`) - we never own a `T` - so
+/// inheriting `T`'s auto-traits here would wrongly couple the key's
+/// thread safety to whatever type happens to tag it.
 #[derive(PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
-pub struct Key<T>(AesKey<Aes256GcmSiv>, PhantomData<T>);
+pub struct Key<T>(AesKey<Aes256GcmSiv>, PhantomData<fn() -> T>);
 
 impl<T> Key<T> {
     /// Generate a new random key.

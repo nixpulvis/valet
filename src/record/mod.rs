@@ -6,8 +6,6 @@ use crate::{encrypt, lot::Lot, password::Password, uuid::Uuid};
 use bitcode::{Decode, Encode};
 #[cfg(feature = "db")]
 use sea_orm::{IntoActiveModel, TransactionTrait, entity::prelude::*, sea_query::OnConflict};
-#[cfg(feature = "db")]
-use std::collections::HashMap;
 use std::fmt;
 
 /// One historical revision of a record, produced by [`Record::history`].
@@ -30,20 +28,19 @@ pub struct Revision {
 /// on long bulk imports without polling.
 ///
 /// Events fire in this order:
-/// 1. [`LoadedRecords`](Self::LoadedRecords) after existing `records` rows
-///    for the batch have been fetched from the DB.
-/// 2. [`OpenedStore`](Self::OpenedStore) after the storgit store has been
-///    opened on the lot's current parent + the decrypted existing modules.
-/// 3. [`PutRecord`](Self::PutRecord) per record, as it's staged into the
-///    store.
-/// 4. [`Snapshot`](Self::Snapshot) once, after the single `snapshot()` call.
-/// 5. [`SaveRecord`](Self::SaveRecord) once, after the batched insert of
+/// 1. [`OpenedStore`](Self::OpenedStore) after the lot's storgit store
+///    is ready to accept puts (already live on the lot; this fires
+///    once up front so callers can render a steady baseline).
+/// 2. [`PutRecord`](Self::PutRecord) per record, as it's staged into the
+///    store. Modules missing from storgit's scratch are lazily
+///    decrypted via the lot's fetcher inside `put`.
+/// 3. [`Snapshot`](Self::Snapshot) once, after the single `snapshot()` call.
+/// 4. [`SaveRecord`](Self::SaveRecord) once, after the batched insert of
 ///    every record's ciphertext commits.
-/// 6. [`SaveLot`](Self::SaveLot) once, after the lot's parent tarball is
+/// 5. [`SaveLot`](Self::SaveLot) once, after the lot's parent tarball is
 ///    repersisted. Only fires if the snapshot advanced the parent.
 #[cfg(feature = "db")]
 pub enum SaveProgress<'a> {
-    LoadedRecords,
     OpenedStore,
     PutRecord(&'a Record),
     Snapshot(&'a storgit::Snapshot),
@@ -130,30 +127,68 @@ impl Record {
     }
 
     /// Save this record to the database and return its uuid.
-    ///
-    /// Updates the lot's in-memory parent tarball (`lot.store_bytes`) to
-    /// reflect the new snapshot; callers holding an older `Lot` will see the
-    /// fresh parent after this call returns.
     #[cfg(feature = "db")]
     pub async fn save(&self, db: &Database, lot: &mut Lot) -> Result<Uuid<Self>, Error> {
-        // Fetch any existing module bytes for this record so we append to
-        // the submodule's history rather than starting a fresh one.
-        let existing = self::orm::Entity::find_by_id(self.uuid.to_string())
+        // Integrity check: if a row already exists for this uuid
+        // under a different lot, the INSERT ... ON CONFLICT below
+        // would silently rewrite its lot_uuid and claim it for ours.
+        // Bail cleanly instead.
+        if let Some(existing) = self::orm::Entity::find_by_id(self.uuid.to_string())
             .one(db.connection())
-            .await?;
-        let existing_module = if let Some(model) = existing {
-            if model.lot_uuid != self.lot_uuid.to_string() {
+            .await?
+        {
+            if existing.lot_uuid != self.lot_uuid.to_string() {
                 return Err(Error::LotMismatch {
                     expected: self.lot_uuid.clone(),
-                    actual: Uuid::<Lot>::parse(&model.lot_uuid)?,
+                    actual: Uuid::<Lot>::parse(&existing.lot_uuid)?,
                 });
             }
-            Some(Record::decrypt_module(lot, &self.uuid, &model.module)?)
-        } else {
-            None
+        }
+
+        // Storgit work runs under `block_in_place`: put/snapshot are
+        // synchronous and the fetcher may `Handle::block_on` the DB
+        // for a module miss (append-to-history case), which is only
+        // legal from a blocking-aware context. `put` returns Ok(None)
+        // for a byte-identical no-op; we skip the DB round trip in
+        // that case, trusting Store and records table stay in sync
+        // through this path.
+        let label_bytes = self.label.encode();
+        let data_ciphertext = self
+            .data
+            .encrypt_with_aad(lot.key(), &Record::data_aad(&self.uuid, &self.lot_uuid))?;
+        let data_bytes = data_ciphertext.pack();
+        let storgit_id = Record::storgit_id(&self.uuid);
+        let changed = tokio::task::block_in_place(
+            || -> Result<Option<(Vec<u8>, Option<Vec<u8>>)>, Error> {
+                let commit = lot
+                    .store_mut()
+                    .put(&storgit_id, Some(&label_bytes), Some(&data_bytes))
+                    .map_err(Error::Storgit)?;
+                if commit.is_none() {
+                    return Ok(None);
+                }
+                // `put` returned Ok(Some(_)), so storgit marked the
+                // module dirty; the next snapshot must carry it as
+                // ModuleChange::Changed. Anything else is storgit
+                // violating its own invariant.
+                let snap = lot.store_mut().snapshot().map_err(Error::Storgit)?;
+                let module_bytes = match snap.modules.get(&storgit_id) {
+                    Some(storgit::ModuleChange::Changed(bytes)) => bytes.clone(),
+                    other => unreachable!(
+                        "storgit invariant: snapshot after put(Some) must yield Changed for {}; got {:?}",
+                        storgit_id, other
+                    ),
+                };
+                let aad = Record::module_aad(&self.uuid, lot.uuid());
+                let encrypted = lot.key().encrypt_with_aad(&module_bytes, &aad)?;
+                Ok(Some((encrypted.pack(), snap.parent)))
+            },
+        )?;
+
+        let Some((module_packed, new_parent)) = changed else {
+            return Ok(self.uuid.clone());
         };
 
-        let (module_packed, new_parent) = self.encrypt_module(lot, existing_module)?;
         let model = self::orm::Model {
             uuid: self.uuid.to_string(),
             lot_uuid: self.lot_uuid.to_string(),
@@ -185,10 +220,6 @@ impl Record {
             .await?;
         }
         txn.commit().await?;
-
-        if let Some(parent_bytes) = new_parent {
-            lot.set_store_bytes(parent_bytes);
-        }
 
         Ok(self.uuid.clone())
     }
@@ -225,18 +256,15 @@ impl Record {
             }
         }
 
-        // Fetch existing modules so we append to their history rather than
-        // starting a fresh one.
+        // Integrity check: no row may claim any of these uuids under
+        // a different lot. Scanning up front is cheaper than failing
+        // part-way through the storgit work.
         let uuid_strs: Vec<String> = records.iter().map(|r| r.uuid.to_string()).collect();
         let existing_models = self::orm::Entity::find()
             .filter(self::orm::Column::Uuid.is_in(uuid_strs))
             .all(db.connection())
             .await?;
-        on_progress(SaveProgress::LoadedRecords);
-
-        let mut modules: HashMap<storgit::Id, Vec<u8>> = HashMap::new();
-        for model in existing_models {
-            let uuid = Uuid::<Self>::parse(&model.uuid)?;
+        for model in &existing_models {
             let model_lot_uuid = Uuid::<Lot>::parse(&model.lot_uuid)?;
             if &model_lot_uuid != lot.uuid() {
                 return Err(Error::LotMismatch {
@@ -244,58 +272,75 @@ impl Record {
                     actual: model_lot_uuid,
                 });
             }
-            let bytes = Record::decrypt_module(lot, &uuid, &model.module)?;
-            modules.insert(Record::storgit_id(&uuid), bytes);
         }
-
-        let mut store = storgit::Store::open(storgit::Parts {
-            parent: lot.store_bytes().to_vec(),
-            modules,
-        })
-        .map_err(Error::Storgit)?;
         on_progress(SaveProgress::OpenedStore);
 
+        // Encrypt each record's data outside `block_in_place` so the
+        // sync section does only storgit work.
+        struct Prepared {
+            uuid: Uuid<Record>,
+            storgit_id: storgit::Id,
+            label_bytes: Vec<u8>,
+            data_bytes: Vec<u8>,
+        }
+        let mut prepared = Vec::with_capacity(records.len());
         for record in records {
-            let id = Record::storgit_id(&record.uuid);
-            let label_bytes = record.label.encode();
-            let data_cipher = record
+            let data_ciphertext = record
                 .data
                 .encrypt_with_aad(lot.key(), &Record::data_aad(&record.uuid, &record.lot_uuid))?;
-            let data_bytes = data_cipher.pack();
-            store
-                .put(&id, Some(&label_bytes), Some(&data_bytes))
-                .map_err(Error::Storgit)?;
-            on_progress(SaveProgress::PutRecord(record));
+            prepared.push(Prepared {
+                uuid: record.uuid.clone(),
+                storgit_id: Record::storgit_id(&record.uuid),
+                label_bytes: record.label.encode(),
+                data_bytes: data_ciphertext.pack(),
+            });
         }
 
-        let snap = store.snapshot().map_err(Error::Storgit)?;
-        on_progress(SaveProgress::Snapshot(&snap));
-
-        let mut active_models = Vec::with_capacity(records.len());
-        for record in records {
-            let id = Record::storgit_id(&record.uuid);
-            let module_bytes = match snap.modules.get(&id) {
-                Some(storgit::ModuleChange::Changed(bytes)) => bytes.clone(),
-                _ => {
-                    return Err(Error::Storgit(storgit::Error::Other(
-                        "storgit snapshot missing module for put".into(),
-                    )));
+        // One snapshot for the whole batch. Misses for existing
+        // modules go through the fetcher (decrypt under lot key); a
+        // byte-identical put returns Ok(None) and contributes no
+        // dirty module to the snapshot, so we skip persisting it.
+        let (active_models, new_parent) = tokio::task::block_in_place(
+            || -> Result<(Vec<self::orm::ActiveModel>, Option<Vec<u8>>), Error> {
+                for (rec, p) in records.iter().zip(&prepared) {
+                    lot.store_mut()
+                        .put(&p.storgit_id, Some(&p.label_bytes), Some(&p.data_bytes))
+                        .map_err(Error::Storgit)?;
+                    on_progress(SaveProgress::PutRecord(rec));
                 }
-            };
-            let aad = Record::module_aad(&record.uuid, lot.uuid());
-            let encrypted = lot.key().encrypt_with_aad(&module_bytes, &aad)?;
-            active_models.push(
-                self::orm::Model {
-                    uuid: record.uuid.to_string(),
-                    lot_uuid: record.lot_uuid.to_string(),
-                    module: encrypted.pack(),
-                }
-                .into_active_model(),
-            );
-        }
+                let snap = lot.store_mut().snapshot().map_err(Error::Storgit)?;
+                on_progress(SaveProgress::Snapshot(&snap));
 
-        let store_packed = snap
-            .parent
+                let mut active_models = Vec::with_capacity(records.len());
+                for p in &prepared {
+                    let Some(change) = snap.modules.get(&p.storgit_id) else {
+                        // Byte-identical put; nothing to persist for
+                        // this record.
+                        continue;
+                    };
+                    let module_bytes = match change {
+                        storgit::ModuleChange::Changed(bytes) => bytes,
+                        other => unreachable!(
+                            "storgit invariant: snapshot after put must yield Changed for {}; got {:?}",
+                            p.storgit_id, other
+                        ),
+                    };
+                    let aad = Record::module_aad(&p.uuid, lot.uuid());
+                    let encrypted = lot.key().encrypt_with_aad(module_bytes, &aad)?;
+                    active_models.push(
+                        self::orm::Model {
+                            uuid: p.uuid.to_string(),
+                            lot_uuid: lot.uuid().to_string(),
+                            module: encrypted.pack(),
+                        }
+                        .into_active_model(),
+                    );
+                }
+                Ok((active_models, snap.parent))
+            },
+        )?;
+
+        let store_packed = new_parent
             .as_ref()
             .map(|bytes| lot.encrypt_store(bytes))
             .transpose()?;
@@ -304,10 +349,12 @@ impl Record {
             .update_columns([self::orm::Column::LotUuid, self::orm::Column::Module])
             .to_owned();
         let txn = db.connection().begin().await?;
-        self::orm::Entity::insert_many(active_models)
-            .on_conflict(on_conflict)
-            .exec(&txn)
-            .await?;
+        if !active_models.is_empty() {
+            self::orm::Entity::insert_many(active_models)
+                .on_conflict(on_conflict)
+                .exec(&txn)
+                .await?;
+        }
         if let Some(store_packed) = store_packed {
             crate::lot::orm::Entity::update(crate::lot::orm::ActiveModel {
                 uuid: sea_orm::ActiveValue::Unchanged(lot.uuid().to_string()),
@@ -319,9 +366,8 @@ impl Record {
         txn.commit().await?;
         on_progress(SaveProgress::SaveRecord);
 
-        if let Some(parent_bytes) = snap.parent {
-            on_progress(SaveProgress::SaveLot); // Was saved by the txn.commit
-            lot.set_store_bytes(parent_bytes);
+        if new_parent.is_some() {
+            on_progress(SaveProgress::SaveLot);
         }
 
         Ok(records.iter().map(|r| r.uuid.clone()).collect())
@@ -336,6 +382,8 @@ impl Record {
     pub async fn delete(&self, db: &Database, lot: &mut Lot) -> Result<(), Error> {
         let id = Record::storgit_id(&self.uuid);
 
+        // Integrity check before we touch storgit: if the row
+        // belongs to a different lot, don't archive in our store.
         let Some(model) = self::orm::Entity::find_by_id(self.uuid.to_string())
             .one(db.connection())
             .await?
@@ -348,23 +396,20 @@ impl Record {
                 actual: Uuid::<Lot>::parse(&model.lot_uuid)?,
             });
         }
-        let module_bytes = Record::decrypt_module(lot, &self.uuid, &model.module)?;
-        let mut modules = HashMap::new();
-        modules.insert(id.clone(), module_bytes);
 
-        let mut store = storgit::Store::open(storgit::Parts {
-            parent: lot.store_bytes().to_vec(),
-            modules,
-        })
-        .map_err(Error::Storgit)?;
-        store.archive(&id).map_err(Error::Storgit)?;
-        let snap = store.snapshot().map_err(Error::Storgit)?;
+        // archive() needs the module on disk; storgit's fetcher will
+        // pull it in on the ensure_loaded path inside archive. Wrap
+        // in block_in_place for the fetcher's Handle::block_on.
+        let new_parent = tokio::task::block_in_place(|| -> Result<Option<Vec<u8>>, Error> {
+            lot.store_mut().archive(&id).map_err(Error::Storgit)?;
+            let snap = lot.store_mut().snapshot().map_err(Error::Storgit)?;
+            Ok(snap.parent)
+        })?;
 
         // Atomic: dropping the records row and advancing lots.store must
         // land together, or on next load the parent's gitlink set disagrees
         // with the live rows.
-        let store_packed = snap
-            .parent
+        let store_packed = new_parent
             .as_ref()
             .map(|bytes| lot.encrypt_store(bytes))
             .transpose()?;
@@ -382,10 +427,6 @@ impl Record {
         }
         txn.commit().await?;
 
-        if let Some(parent_bytes) = snap.parent {
-            lot.set_store_bytes(parent_bytes);
-        }
-
         Ok(())
     }
 
@@ -398,6 +439,8 @@ impl Record {
     /// searching should go through [`RecordIndex`] instead.
     #[cfg(feature = "db")]
     pub async fn show(db: &Database, lot: &Lot, uuid: &Uuid<Self>) -> Result<Option<Self>, Error> {
+        // Lot check: return None rather than decode a record that
+        // doesn't belong to this lot (don't leak cross-lot state).
         let Some(model) = self::orm::Entity::find_by_id(uuid.to_string())
             .one(db.connection())
             .await?
@@ -409,18 +452,13 @@ impl Record {
             return Ok(None);
         }
 
-        let module_bytes = Record::decrypt_module(lot, uuid, &model.module)?;
-
-        let mut store = storgit::Store::open(storgit::Parts {
-            parent: lot.store_bytes().to_vec(),
-            modules: HashMap::new(),
-        })
-        .map_err(Error::Storgit)?;
+        // storgit's get consults the parent's gitlink set and opens
+        // the module tree; ensure_loaded invokes the fetcher for
+        // misses, which Handle::block_on's the DB. Hence
+        // block_in_place.
         let id = Record::storgit_id(uuid);
-        store.load_module(id.clone(), module_bytes);
-        let entry = store
-            .get(&id)
-            .map_err(Error::Storgit)?
+        let entry = tokio::task::block_in_place(|| lot.store().get(&id)).map_err(Error::Storgit)?;
+        let entry = entry
             .ok_or_else(|| Error::Storgit(storgit::Error::Other("entry missing".into())))?;
 
         let label_bytes = entry
@@ -431,9 +469,12 @@ impl Record {
             .ok_or_else(|| Error::Storgit(storgit::Error::Other("entry has no data".into())))?;
 
         let label = Label::decode(&label_bytes)?;
-        let data_cipher = Encrypted::unpack(&data_bytes);
-        let data =
-            Data::decrypt_with_aad(&data_cipher, lot.key(), &Record::data_aad(uuid, &lot_uuid))?;
+        let data_ciphertext = Encrypted::unpack(&data_bytes);
+        let data = Data::decrypt_with_aad(
+            &data_ciphertext,
+            lot.key(),
+            &Record::data_aad(uuid, &lot_uuid),
+        )?;
 
         Ok(Some(Record {
             uuid: uuid.clone(),
@@ -465,17 +506,10 @@ impl Record {
             return Ok(None);
         }
 
-        let module_bytes = Record::decrypt_module(lot, uuid, &model.module)?;
-
-        let mut store = storgit::Store::open(storgit::Parts {
-            parent: lot.store_bytes().to_vec(),
-            modules: HashMap::new(),
-        })
-        .map_err(Error::Storgit)?;
         let id = Record::storgit_id(uuid);
-        store.load_module(id.clone(), module_bytes);
+        let entries =
+            tokio::task::block_in_place(|| lot.store().history(&id)).map_err(Error::Storgit)?;
 
-        let entries = store.history(&id).map_err(Error::Storgit)?;
         let data_aad = Record::data_aad(uuid, &lot_uuid);
         let mut revisions = Vec::with_capacity(entries.len());
         for entry in entries {
@@ -496,137 +530,6 @@ impl Record {
         Ok(Some(revisions))
     }
 
-    /// Load every record in a lot with full decryption. Used internally for
-    /// lot-key rotation; external consumers should use [`RecordIndex`] +
-    /// [`Record::show`].
-    #[cfg(feature = "db")]
-    pub(crate) async fn load_all(db: &Database, lot: &Lot) -> Result<Vec<Self>, Error> {
-        let models = self::orm::Entity::find()
-            .filter(self::orm::Column::LotUuid.eq(lot.uuid().to_string()))
-            .all(db.connection())
-            .await?;
-
-        let mut modules: HashMap<storgit::Id, Vec<u8>> = HashMap::new();
-        let mut uuids: Vec<Uuid<Self>> = Vec::with_capacity(models.len());
-        for model in &models {
-            let uuid = Uuid::<Self>::parse(&model.uuid)?;
-            let module_bytes = Record::decrypt_module(lot, &uuid, &model.module)?;
-            modules.insert(Record::storgit_id(&uuid), module_bytes);
-            uuids.push(uuid);
-        }
-
-        let store = storgit::Store::open(storgit::Parts {
-            parent: lot.store_bytes().to_vec(),
-            modules,
-        })
-        .map_err(Error::Storgit)?;
-
-        let mut records = Vec::with_capacity(uuids.len());
-        for uuid in uuids {
-            let id = Record::storgit_id(&uuid);
-            let entry = store
-                .get(&id)
-                .map_err(Error::Storgit)?
-                .ok_or_else(|| Error::Storgit(storgit::Error::Other("entry missing".into())))?;
-            let label_bytes = entry.label.ok_or_else(|| {
-                Error::Storgit(storgit::Error::Other("entry has no label".into()))
-            })?;
-            let data_bytes = entry
-                .data
-                .ok_or_else(|| Error::Storgit(storgit::Error::Other("entry has no data".into())))?;
-            let label = Label::decode(&label_bytes)?;
-            let data_cipher = Encrypted::unpack(&data_bytes);
-            let data = Data::decrypt_with_aad(
-                &data_cipher,
-                lot.key(),
-                &Record::data_aad(&uuid, lot.uuid()),
-            )?;
-            records.push(Record {
-                uuid,
-                lot_uuid: lot.uuid().clone(),
-                label,
-                data,
-            });
-        }
-        Ok(records)
-    }
-
-    /// Fold this record's current `label` + `data` into `lot`'s storgit
-    /// store, encrypt the resulting submodule tarball under the lot key
-    /// with the module-scoped AAD, and return the packed
-    /// `nonce || ciphertext` ready for the `records.module` column.
-    ///
-    /// Pass `existing_module` as the decrypted module tarball from the
-    /// prior `records.module` row if one exists, so history is extended
-    /// rather than replaced. Returns the new parent tarball alongside the
-    /// encrypted module when the snapshot updated the parent; the caller
-    /// is responsible for encrypting that with [`Lot::encrypt_store`] and
-    /// writing `lots.store`.
-    #[cfg(feature = "db")]
-    pub(crate) fn encrypt_module(
-        &self,
-        lot: &Lot,
-        existing_module: Option<Vec<u8>>,
-    ) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
-        let id = Record::storgit_id(&self.uuid);
-
-        let mut modules: HashMap<storgit::Id, Vec<u8>> = HashMap::new();
-        if let Some(bytes) = existing_module {
-            modules.insert(id.clone(), bytes);
-        }
-
-        let mut store = storgit::Store::open(storgit::Parts {
-            parent: lot.store_bytes().to_vec(),
-            modules,
-        })
-        .map_err(Error::Storgit)?;
-
-        let label_bytes = self.label.encode();
-        let data_cipher = self
-            .data
-            .encrypt_with_aad(lot.key(), &Record::data_aad(&self.uuid, &self.lot_uuid))?;
-        let data_bytes = data_cipher.pack();
-        store
-            .put(&id, Some(&label_bytes), Some(&data_bytes))
-            .map_err(Error::Storgit)?;
-
-        let snap = store.snapshot().map_err(Error::Storgit)?;
-        // We just called `put`, which marks the module dirty; storgit must
-        // return `Changed(bytes)` for `id` on the next snapshot. Anything
-        // else is a storgit invariant violation, not a caller-visible
-        // error. TODO: switch to `unreachable!` or a dedicated Error
-        // variant instead of smuggling this through `Error::Storgit(Other)`.
-        let module_bytes = match snap.modules.get(&id) {
-            Some(storgit::ModuleChange::Changed(bytes)) => bytes.clone(),
-            _ => {
-                return Err(Error::Storgit(storgit::Error::Other(
-                    "storgit snapshot missing module for put".into(),
-                )));
-            }
-        };
-
-        let aad = Record::module_aad(&self.uuid, lot.uuid());
-        let encrypted = lot.key().encrypt_with_aad(&module_bytes, &aad)?;
-        Ok((encrypted.pack(), snap.parent))
-    }
-
-    /// Decrypt a packed `records.module` blob back to the storgit submodule
-    /// tarball bytes. Inverse of the encryption step inside
-    /// [`Record::encrypt_module`]. Associated (not `&self`) so that callers
-    /// like [`Record::show`] and [`Record::load_all`], which have only a
-    /// record uuid before decryption, can use the same path as `save` /
-    /// `delete` (which pass `&self.uuid`).
-    #[cfg(feature = "db")]
-    pub(crate) fn decrypt_module(
-        lot: &Lot,
-        record_uuid: &Uuid<Record>,
-        packed: &[u8],
-    ) -> Result<Vec<u8>, Error> {
-        let aad = Record::module_aad(record_uuid, lot.uuid());
-        Ok(lot
-            .key()
-            .decrypt_with_aad(&Encrypted::unpack(packed), &aad)?)
-    }
 }
 
 impl PartialEq for Record {
@@ -752,7 +655,7 @@ mod tests {
     }
 
     #[cfg(feature = "db")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn show_roundtrip() {
         let db = Database::new("sqlite://:memory:")
             .await
@@ -781,7 +684,7 @@ mod tests {
     }
 
     #[cfg(feature = "db")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn show_wrong_lot_returns_none() {
         let db = Database::new("sqlite://:memory:")
             .await
@@ -812,7 +715,7 @@ mod tests {
     }
 
     #[cfg(feature = "db")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete() {
         let db = Database::new("sqlite://:memory:")
             .await
@@ -846,7 +749,7 @@ mod tests {
     }
 
     #[cfg(feature = "db")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn save_many_roundtrip() {
         let db = Database::new("sqlite://:memory:")
             .await
@@ -858,7 +761,6 @@ mod tests {
             .expect("failed to register user");
         let mut lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        let parent_before = lot.store_bytes().to_vec();
 
         let records = vec![
             Record::new(
@@ -881,7 +783,6 @@ mod tests {
         let mut events: Vec<&'static str> = Vec::new();
         let uuids = Record::save_many(&db, &mut lot, &records, |ev| {
             events.push(match ev {
-                SaveProgress::LoadedRecords => "loaded",
                 SaveProgress::OpenedStore => "opened",
                 SaveProgress::PutRecord(_) => "put",
                 SaveProgress::Snapshot(_) => "snap",
@@ -894,13 +795,8 @@ mod tests {
         assert_eq!(uuids.len(), records.len());
         assert_eq!(
             events,
-            vec![
-                "loaded", "opened", "put", "put", "put", "snap", "save_r", "save_l"
-            ]
+            vec!["opened", "put", "put", "put", "snap", "save_r", "save_l"]
         );
-
-        // Lot parent tarball must advance so the new gitlinks are persisted.
-        assert_ne!(lot.store_bytes(), parent_before.as_slice());
 
         for (record, uuid) in records.iter().zip(uuids.iter()) {
             assert_eq!(uuid, record.uuid());
@@ -934,7 +830,7 @@ mod tests {
     }
 
     #[cfg(feature = "db")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn save_many_empty_is_noop() {
         let db = Database::new("sqlite://:memory:")
             .await
@@ -946,16 +842,14 @@ mod tests {
             .expect("failed to register user");
         let mut lot = Lot::new("lot a");
         lot.save(&db, &user).await.expect("failed to save lot");
-        let parent_before = lot.store_bytes().to_vec();
         let uuids = Record::save_many(&db, &mut lot, &[], |_| {})
             .await
             .expect("failed to save_many");
         assert!(uuids.is_empty());
-        assert_eq!(lot.store_bytes(), parent_before.as_slice());
     }
 
     #[cfg(feature = "db")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn save_many_rejects_foreign_lot() {
         let db = Database::new("sqlite://:memory:")
             .await

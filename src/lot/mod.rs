@@ -17,6 +17,7 @@ use sea_orm::{
     entity::prelude::*,
 };
 use std::fmt;
+use std::sync::Arc;
 
 pub const DEFAULT_LOT: &'static str = "main";
 
@@ -40,29 +41,45 @@ pub const DEFAULT_LOT: &'static str = "main";
 /// |--------|-----------------------------------|-----------------------------------|
 /// | `Ka`   | `= Decrypt_A(tvuZQ1XS, 6jLC3aP9)` | `= Decrypt_B(dWPiZfO9, oQ/2Y845)` |
 /// | `Kb`   | `= Decrypt_A(LyZJM8GA, SCW2EWjc)` | N/A                               |
-#[derive(PartialEq, Eq)]
 pub struct Lot {
     uuid: Uuid<Self>,
     name: String,
-    key: Key<Self>,
-    /// Decrypted storgit parent tarball bytes for this lot. An empty vec means
-    /// "fresh store"; `storgit::Store::open` treats that as the signal to
-    /// initialise a new parent on first snapshot.
-    ///
-    /// Kept in memory so `Record::save` / `Record::delete` can round-trip
-    /// through `Store::open` / `Store::snapshot` without re-reading and
-    /// re-decrypting `lots.store` for every operation. Writes update this
-    /// field to reflect the snapshot just persisted.
-    store: Vec<u8>,
+    /// Shared so the fetcher closure installed on [`Lot::store`] can
+    /// hold an [`Arc`] clone of the same live key - no byte copy of
+    /// the secret, and one authoritative zeroize on final drop.
+    key: Arc<Key<Self>>,
+    /// Live storgit store for this lot. Opened once on
+    /// [`Lot::decrypt_and_build`] (with a fetcher that decrypts
+    /// `records.module` rows on demand under this lot's key) or
+    /// initialised fresh on [`Lot::new`]. Reused across every record
+    /// op against this lot so we pay the parent untar and gix open
+    /// costs once per session instead of once per op.
+    #[cfg(feature = "db")]
+    store: storgit::Store,
 }
+
+impl PartialEq for Lot {
+    fn eq(&self, other: &Self) -> bool {
+        // Store identity is uuid + name + key. The live storgit handle
+        // carries session-scoped state (scratch dir, dirty tracking)
+        // that is not part of the lot's persisted identity.
+        self.uuid == other.uuid && self.name == other.name && self.key == other.key
+    }
+}
+impl Eq for Lot {}
 
 impl Lot {
     pub fn new(name: &str) -> Self {
         Lot {
             uuid: Uuid::now(),
             name: name.into(),
-            key: Key::generate(),
-            store: Vec::new(),
+            key: Arc::new(Key::generate()),
+            // TODO: plumb a fallible ctor so the scratch TempDir
+            // failure path doesn't panic - exhausting inodes or
+            // $TMPDIR being unwritable shouldn't kill the process,
+            // but Lot::new has no Error return today.
+            #[cfg(feature = "db")]
+            store: storgit::Store::new().expect("fresh storgit store"),
         }
     }
 
@@ -99,18 +116,72 @@ impl Lot {
         [b"s".as_slice(), uuid.to_uuid().as_bytes()].concat()
     }
 
-    /// The decrypted storgit parent tarball bytes for this lot. Empty for a
-    /// fresh lot that has never had a record written.
+    /// Immutable access to this lot's live storgit store. Use for
+    /// read-only operations: [`storgit::Store::get`],
+    /// [`storgit::Store::list_labels`], [`storgit::Store::history`].
+    /// On a miss the installed fetcher (see [`Lot::make_fetcher`])
+    /// will decrypt the relevant `records.module` row, so callers
+    /// don't need to push bytes in ahead of time.
     #[cfg(feature = "db")]
-    pub(crate) fn store_bytes(&self) -> &[u8] {
+    pub(crate) fn store(&self) -> &storgit::Store {
         &self.store
     }
 
-    /// Replace the in-memory parent tarball after a storgit snapshot has been
-    /// persisted to `lots.store`.
+    /// Mutable access to this lot's live storgit store. Use for
+    /// mutating operations: [`storgit::Store::put`],
+    /// [`storgit::Store::archive`], [`storgit::Store::snapshot`].
     #[cfg(feature = "db")]
-    pub(crate) fn set_store_bytes(&mut self, bytes: Vec<u8>) {
-        self.store = bytes;
+    pub(crate) fn store_mut(&mut self) -> &mut storgit::Store {
+        &mut self.store
+    }
+
+    /// Build a [`storgit::ModuleFetcher`] that resolves module bytes
+    /// for `lot_uuid` by looking them up in `records` under the given
+    /// lot key. The fetcher is sync (storgit's interface is sync), so
+    /// it bridges to the async DB via [`tokio::runtime::Handle::block_on`].
+    /// Callers must therefore invoke any storgit op that may trigger
+    /// it from inside [`tokio::task::spawn_blocking`] (or
+    /// [`tokio::task::block_in_place`]); calling from a plain async
+    /// context panics when `block_on` executes.
+    ///
+    /// The query filters on `lot_uuid`, so a record uuid claimed by a
+    /// different lot simply doesn't appear - the fetcher returns
+    /// `Ok(None)` and storgit's usual "live in parent / no backing
+    /// bytes" check surfaces the inconsistency if it matters.
+    #[cfg(feature = "db")]
+    fn make_fetcher(
+        db: Database,
+        lot_key: Arc<Key<Lot>>,
+        lot_uuid: Uuid<Lot>,
+    ) -> storgit::ModuleFetcher {
+        Arc::new(move |id: &storgit::Id| {
+            let record_uuid = Uuid::<Record>::parse(id.as_str()).map_err(|e| {
+                Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>
+            })?;
+            let handle = tokio::runtime::Handle::current();
+            let lot_uuid_str = lot_uuid.to_string();
+            let model = handle
+                .block_on(async {
+                    record::orm::Entity::find()
+                        .filter(record::orm::Column::Uuid.eq(record_uuid.to_string()))
+                        .filter(record::orm::Column::LotUuid.eq(lot_uuid_str))
+                        .one(db.connection())
+                        .await
+                })
+                .map_err(|e| {
+                    Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>
+                })?;
+            let Some(model) = model else {
+                return Ok(None);
+            };
+            let aad = Record::module_aad(&record_uuid, &lot_uuid);
+            let bytes = lot_key
+                .decrypt_with_aad(&Encrypted::unpack(&model.module), &aad)
+                .map_err(|e| {
+                    Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>
+                })?;
+            Ok(Some(bytes))
+        })
     }
 
     /// Load the label-to-uuid index for this lot.
@@ -123,24 +194,41 @@ impl Lot {
         RecordIndex::load(db, self).await.map_err(Into::into)
     }
 
-    /// Save this lot to the database, detecting and handling key rotation.
+    /// Persist this lot and its binding to `user`.
     ///
-    /// Writes the `lots` row (uuid + encrypted parent tarball), then the
-    /// per-user `user_lots` row binding `user` to this lot. If the lot key
-    /// has changed since the last save, all records are re-encrypted with
-    /// the new key before the updated key is stored.
+    /// Upserts the `lots` row (uuid + encrypted parent tarball) when the
+    /// live store has a dirty parent to flush, then writes or updates the
+    /// per-user `user_lots` row binding `user` to this lot under the
+    /// user's key. Only the lot name is mutable on an existing
+    /// `user_lots` row; lot-key rotation is not supported.
     #[cfg(feature = "db")]
     pub async fn save(&mut self, db: &Database, user: &User) -> Result<Uuid<Self>, Error> {
         let uuid = self.uuid.to_string();
-        let initial_store = self.encrypt_store(&self.store)?;
-        let active = self::orm::ActiveModel {
-            uuid: Unchanged(uuid.clone()),
-            store: Set(initial_store),
-        };
-        self::orm::Entity::insert(active)
-            .on_conflict_do_nothing()
-            .exec(db.connection())
-            .await?;
+        // Persist whatever parent state the store currently has. A
+        // fresh store snapshots an empty-parent tarball (dirty on
+        // open); a loaded store with no mutations returns None and
+        // we skip the write. We upsert on conflict so a dirty parent
+        // flushed through here overwrites the existing row rather
+        // than being discarded.
+        if let Some(parent_bytes) = self
+            .store
+            .snapshot()
+            .map_err(|e| Error::Record(record::Error::Storgit(e)))?
+            .parent
+        {
+            let initial_store = self.encrypt_store(&parent_bytes)?;
+            let active = self::orm::ActiveModel {
+                uuid: Unchanged(uuid.clone()),
+                store: Set(initial_store),
+            };
+            let on_conflict = sea_orm::sea_query::OnConflict::column(self::orm::Column::Uuid)
+                .update_column(self::orm::Column::Store)
+                .to_owned();
+            self::orm::Entity::insert(active)
+                .on_conflict(on_conflict)
+                .exec(db.connection())
+                .await?;
+        }
 
         // Load existing user_lot once to detect changes.
         let existing_ul =
@@ -164,85 +252,24 @@ impl Lot {
                     .await?;
             }
             Some(existing) => {
-                let name_changed = existing.name != self.name;
-
-                // Detect key change by comparing the stored key with current self.key.
-                // If the current key is different, we re-encrypt all of the records in
-                // this lot under the new lot key.
+                // Only name changes are supported for existing rows.
                 //
-                // TODO: A mechanism for sharing the new lot key with other users will
-                // be needed, similarly to how we need a way to share a lot in the first
-                // place.
-                let existing_encrypted = Encrypted {
-                    data: existing.data.clone(),
-                    nonce: existing.nonce.clone(),
-                };
-                let existing_key_bytes = user.key().decrypt_with_aad(&existing_encrypted, &aad)?;
-                let key_changed = existing_key_bytes != self.key.as_bytes();
-
-                let mut active = existing.into_active_model();
-
-                if name_changed {
+                // TODO: lot-key rotation. Needs to re-encrypt the
+                // parent tarball and every records.module row under
+                // the new key, coordinate that with any other users
+                // sharing the lot, and survive a crash mid-rotation.
+                // The previous implementation did none of those
+                // well, so it was removed rather than left as a
+                // footgun.
+                if existing.name != self.name {
+                    let mut active = existing.into_active_model();
                     active.name = Set(self.name.clone());
-                }
-
-                if key_changed {
-                    let encrypted = user.key().encrypt_with_aad(self.key.as_bytes(), &aad)?;
-                    active.data = Set(encrypted.data);
-                    active.nonce = Set(encrypted.nonce);
-
-                    self.reencrypt_records(db, &existing_key_bytes).await?;
-                }
-
-                if name_changed || key_changed {
                     active.update(db.connection()).await?;
                 }
             }
         }
 
         Ok(self.uuid.clone())
-    }
-
-    #[cfg(feature = "db")]
-    async fn reencrypt_records(
-        &mut self,
-        db: &Database,
-        existing_key_bytes: &[u8],
-    ) -> Result<(), Error> {
-        let old_key = Key::from_bytes(&existing_key_bytes);
-        let old_lot = Lot {
-            uuid: self.uuid.clone(),
-            name: self.name.clone(),
-            key: old_key,
-            store: self.store.clone(),
-        };
-        let records = Record::load_all(db, &old_lot).await?;
-        // Wipe the old storgit state: the existing parent tarball and every
-        // module tarball were encrypted under the old key, and save has no
-        // cheap way to re-wrap them. Clear the in-memory parent and the
-        // `records` rows so each `save` below rebuilds a fresh history
-        // under the new key. This does drop per-record commit history; the
-        // plan explicitly trades that for the simpler re-key path.
-        self.store = Vec::new();
-        record::orm::Entity::delete_many()
-            .filter(record::orm::Column::LotUuid.eq(self.uuid.to_string()))
-            .exec(db.connection())
-            .await?;
-        // No records left to drive a snapshot, so rewrite `lots.store` here
-        // under the new key (empty parent).
-        if records.is_empty() {
-            let store_packed = self.encrypt_store(&self.store)?;
-            self::orm::Entity::update(self::orm::ActiveModel {
-                uuid: Unchanged(self.uuid.to_string()),
-                store: Set(store_packed),
-            })
-            .exec(db.connection())
-            .await?;
-        }
-        for record in &records {
-            record.save(db, self).await?;
-        }
-        Ok(())
     }
 
     /// Load a user's lot by name.
@@ -258,7 +285,7 @@ impl Lot {
             .one(db.connection())
             .await?
         {
-            let lot = Self::decrypt_and_build(&user, model, ul)?;
+            let lot = Self::decrypt_and_build(db, &user, model, ul)?;
             Ok(Some(lot))
         } else {
             Ok(None)
@@ -278,7 +305,7 @@ impl Lot {
                 .one(db.connection())
                 .await?
             {
-                let lot = Self::decrypt_and_build(&user, model, ul)?;
+                let lot = Self::decrypt_and_build(db, &user, model, ul)?;
                 lots.push(lot);
             }
         }
@@ -296,6 +323,7 @@ impl Lot {
 
     #[cfg(feature = "db")]
     fn decrypt_and_build(
+        db: &Database,
         user: &User,
         model: self::orm::Model,
         ul: self::orm::user_lots::Model,
@@ -307,15 +335,26 @@ impl Lot {
         };
         let aad = Lot::user_lot_aad(user.username(), &uuid);
         let key_bytes = user.key().decrypt_with_aad(&encrypted, &aad)?;
-        let key = Key::<Lot>::from_bytes(&key_bytes);
-        let mut lot = Lot {
+        let key = Arc::new(Key::<Lot>::from_bytes(&key_bytes));
+
+        // Decrypt the parent tarball under the (just-derived) lot key.
+        let store_aad = Lot::store_aad(&uuid);
+        let parent_bytes = key.decrypt_with_aad(&Encrypted::unpack(&model.store), &store_aad)?;
+
+        let fetcher = Lot::make_fetcher(db.clone(), key.clone(), uuid.clone());
+        let store = storgit::Store::open(storgit::Parts {
+            parent: parent_bytes,
+            modules: storgit::Modules::new(),
+            fetcher: Some(fetcher),
+        })
+        .map_err(|e| Error::Record(record::Error::Storgit(e)))?;
+
+        Ok(Lot {
             uuid,
             name: ul.name,
             key,
-            store: Vec::new(),
-        };
-        lot.store = lot.decrypt_store_bytes(&model.store)?;
-        Ok(lot)
+            store,
+        })
     }
 
     /// Encrypt the storgit parent tarball under this lot's key with the
@@ -327,14 +366,6 @@ impl Lot {
         Ok(encrypted.pack())
     }
 
-    /// Inverse of [`Lot::encrypt_store`]. Round-trips an empty parent through
-    /// an encrypt/decrypt pair.
-    #[cfg(feature = "db")]
-    pub(crate) fn decrypt_store_bytes(&self, packed: &[u8]) -> Result<Vec<u8>, encrypt::Error> {
-        let aad = Lot::store_aad(&self.uuid);
-        let encrypted = Encrypted::unpack(packed);
-        self.key.decrypt_with_aad(&encrypted, &aad)
-    }
 }
 
 impl fmt::Debug for Lot {
@@ -409,7 +440,7 @@ mod tests {
         assert_eq!(36, lot.uuid.to_string().len());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn create_load() {
         let db = Database::new("sqlite://:memory:")
             .await
@@ -451,7 +482,7 @@ mod tests {
         assert_eq!(labels_a, labels_b);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn create_load_all() {
         let db = Database::new("sqlite://:memory:")
             .await
@@ -488,7 +519,7 @@ mod tests {
         assert_eq!(lots, vec![lot_a, lot_b]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn user_lot() {
         let db = Database::new("sqlite://:memory:")
             .await
@@ -504,51 +535,7 @@ mod tests {
         assert_eq!(lot.key().as_bytes(), lot_key.as_bytes());
     }
 
-    #[tokio::test]
-    async fn user_lot_update() {
-        let db = Database::new("sqlite://:memory:")
-            .await
-            .expect("failed to create database");
-        let user = User::new("nixpulvis", "password".try_into().unwrap())
-            .expect("failed to make user")
-            .register(&db)
-            .await
-            .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
-        lot.save(&db, &user).await.expect("failed to save lot");
-        let record_uuid = Record::new(
-            &lot,
-            "a".parse::<Label>().unwrap(),
-            Data::new("1".try_into().unwrap()),
-        )
-        .save(&db, &mut lot)
-        .await
-        .expect("failed to save record");
-        let lot_key_a = get_user_lot_key(&db, &user, &lot).await;
-        lot.key = Key::<Lot>::generate();
-        // Update lot key, user_lot, and re-encrypt all records.
-        lot.save(&db, &user).await.expect("failed to save lot");
-        let lot_key_b = get_user_lot_key(&db, &user, &lot).await;
-        assert_ne!(lot_key_a.as_bytes(), lot_key_b.as_bytes());
-        // Ensure the records got re-encrypted and we can still access them.
-        let lot = Lot::load(&db, lot.name(), &user)
-            .await
-            .expect("failed to load lot")
-            .expect("no lot");
-        let index = lot.index(&db).await.expect("failed to load index");
-        assert_eq!(1, index.len());
-        assert_eq!(
-            Some(&record_uuid),
-            index.find(&"a".parse::<Label>().unwrap()),
-        );
-        let record = Record::show(&db, &lot, &record_uuid)
-            .await
-            .expect("failed to show record")
-            .expect("record missing");
-        assert_eq!("1", record.password().to_string());
-    }
-
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete() {
         let db = Database::new("sqlite://:memory:")
             .await

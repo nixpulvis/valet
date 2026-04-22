@@ -164,7 +164,13 @@ unsafe fn borrow<'a>(client: *mut ValetdClient) -> Result<&'a ValetdClient, FfiC
 }
 
 fn new_runtime() -> io::Result<Runtime> {
-    tokio::runtime::Builder::new_current_thread()
+    // Multi-thread so callers can invoke valet's storgit work, which
+    // uses `tokio::task::block_in_place` internally for the DB-backed
+    // fetcher. `block_in_place` panics on a `current_thread` runtime.
+    // A small worker count keeps the cost low for the FFI use case
+    // (one in-process call at a time).
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
 }

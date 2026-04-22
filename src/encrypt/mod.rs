@@ -59,6 +59,21 @@ pub enum Error {
     Decompression(io::Error),
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::KeyDerivation(s) => write!(f, "key derivation: {s}"),
+            Error::Encryption(e) => write!(f, "encryption: {e}"),
+            Error::Decryption(e) => write!(f, "decryption: {e}"),
+            Error::Decoding(e) => write!(f, "decoding: {e}"),
+            Error::Compression(e) => write!(f, "compression: {e}"),
+            Error::Decompression(e) => write!(f, "decompression: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
 mod key;
 mod stash;
 pub use self::key::Key;

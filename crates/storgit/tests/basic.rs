@@ -1,11 +1,12 @@
-use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-use storgit::{CommitId, Entry, Id, IdError, ModuleChange, Parts, Store};
+use storgit::{CommitId, Entry, Id, IdError, ModuleChange, Modules, Parts, Store};
 
 fn empty() -> Parts {
     Parts {
         parent: Vec::new(),
-        modules: HashMap::new(),
+        modules: Modules::new(),
+        fetcher: None,
     }
 }
 
@@ -762,4 +763,122 @@ fn gitmodules_parses_as_git_submodule_config() {
         .string_by("submodule", Some("user@host.com".into()), "url")
         .expect("email url");
     assert_eq!(email_url.as_ref(), "../modules/user@host.com.git");
+}
+
+// --- fetcher / lazy loading --------------------------------------------
+
+/// Build a realistic backing store (one parent tarball plus one bytes
+/// blob per module) from an eager store.
+fn snapshot_backing(entries: &[(&str, &[u8])]) -> (Vec<u8>, Modules) {
+    let mut store = Store::open(empty()).unwrap();
+    for (name, data) in entries {
+        store.put(&id(name), Some(b"label"), Some(data)).unwrap();
+    }
+    let mut parts = empty();
+    parts.apply(store.snapshot().unwrap());
+    (parts.parent, parts.modules)
+}
+
+#[test]
+fn fetcher_is_consulted_on_miss_and_result_round_trips() {
+    let (parent, modules) = snapshot_backing(&[("alpha", b"hello")]);
+
+    let backing = Arc::new(modules);
+    let calls: Arc<Mutex<Vec<Id>>> = Arc::new(Mutex::new(Vec::new()));
+    let (backing_for_fetch, calls_for_fetch) = (backing.clone(), calls.clone());
+
+    let parts = Parts {
+        parent,
+        modules: Modules::new(),
+        fetcher: Some(Arc::new(move |id: &Id| {
+            calls_for_fetch.lock().unwrap().push(id.clone());
+            Ok(backing_for_fetch.get(id).cloned())
+        })),
+    };
+    let store = Store::open(parts).unwrap();
+    assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"hello"[..]));
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &[id("alpha")],
+        "fetcher is consulted exactly once for a miss",
+    );
+}
+
+#[test]
+fn fetcher_prewarm_short_circuits_lookup() {
+    // When a module is supplied in `modules`, the fetcher must not be
+    // consulted for it: prewarm is the hot-cache for exactly this.
+    let (parent, modules) = snapshot_backing(&[("alpha", b"hi")]);
+    let calls: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+    let calls_for_fetch = calls.clone();
+    let parts = Parts {
+        parent,
+        modules,
+        fetcher: Some(Arc::new(move |_id: &Id| {
+            *calls_for_fetch.lock().unwrap() += 1;
+            Ok(None)
+        })),
+    };
+    let store = Store::open(parts).unwrap();
+    assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"hi"[..]));
+    assert_eq!(
+        *calls.lock().unwrap(),
+        0,
+        "prewarmed id must not reach the fetcher",
+    );
+}
+
+#[test]
+fn fetcher_ok_none_for_live_id_surfaces_as_error() {
+    // The parent says `alpha` is live, but the fetcher claims the
+    // backing store has no bytes for it - that's an inconsistency and
+    // storgit should not silently treat it as fresh.
+    let (parent, _) = snapshot_backing(&[("alpha", b"hi")]);
+    let parts = Parts {
+        parent,
+        modules: Modules::new(),
+        fetcher: Some(Arc::new(|_id: &Id| Ok(None))),
+    };
+    let store = Store::open(parts).unwrap();
+    let err = store
+        .get(&id("alpha"))
+        .expect_err("live id with no backing bytes must error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("alpha") && msg.contains("None"),
+        "error should name the id and the None-answer cause; got: {msg}",
+    );
+}
+
+#[test]
+fn fetcher_ok_none_for_unknown_id_is_fresh() {
+    // No parent, no prewarm, no entry for this id in the backing
+    // store: `put` must create a fresh module.
+    let parts = Parts {
+        parent: Vec::new(),
+        modules: Modules::new(),
+        fetcher: Some(Arc::new(|_id: &Id| Ok(None))),
+    };
+    let mut store = Store::open(parts).unwrap();
+    store.put(&id("fresh"), None, Some(b"v1")).unwrap();
+    assert_eq!(get_data(&store, "fresh").as_deref(), Some(&b"v1"[..]));
+}
+
+#[test]
+fn fetcher_error_propagates_as_error_fetch() {
+    let (parent, _) = snapshot_backing(&[("alpha", b"hi")]);
+    let parts = Parts {
+        parent,
+        modules: Modules::new(),
+        fetcher: Some(Arc::new(|_id: &Id| Err("db unreachable".into()))),
+    };
+    let store = Store::open(parts).unwrap();
+    let err = store
+        .get(&id("alpha"))
+        .expect_err("fetcher error must propagate");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("fetch") && msg.contains("db unreachable"),
+        "error should carry the fetch source; got: {msg}",
+    );
 }
