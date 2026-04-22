@@ -48,6 +48,20 @@ pub enum SaveProgress<'a> {
     SaveLot,
 }
 
+/// What [`Record::save`] returns from the `block_in_place` closure
+/// when it commits a single record: `(module_bytes, parent_bytes)`.
+#[cfg(feature = "db")]
+type SaveSingle = Option<(Vec<u8>, Option<Vec<u8>>)>;
+
+/// What [`Record::save_many`] returns from the `block_in_place`
+/// closure: `(active_models, changed_ids, new_parent)`.
+#[cfg(feature = "db")]
+type SaveBatch = (
+    Vec<self::orm::ActiveModel>,
+    std::collections::HashSet<storgit::Id>,
+    Option<Vec<u8>>,
+);
+
 #[derive(Encode, Decode)]
 pub struct Record {
     pub(crate) uuid: Uuid<Self>,
@@ -139,13 +153,12 @@ impl Record {
         if let Some(existing) = self::orm::Entity::find_by_id(self.uuid.to_string())
             .one(db.connection())
             .await?
+            && existing.lot_uuid != self.lot_uuid.to_string()
         {
-            if existing.lot_uuid != self.lot_uuid.to_string() {
-                return Err(Error::LotMismatch {
-                    expected: self.lot_uuid.clone(),
-                    actual: Uuid::<Lot>::parse(&existing.lot_uuid)?,
-                });
-            }
+            return Err(Error::LotMismatch {
+                expected: self.lot_uuid.clone(),
+                actual: Uuid::<Lot>::parse(&existing.lot_uuid)?,
+            });
         }
 
         // Storgit work runs under `block_in_place`: put/snapshot are
@@ -161,32 +174,30 @@ impl Record {
             .encrypt_with_aad(lot.key(), &Record::data_aad(&self.uuid, &self.lot_uuid))?;
         let data_bytes = data_ciphertext.pack();
         let storgit_id = Record::storgit_id(&self.uuid);
-        let changed = tokio::task::block_in_place(
-            || -> Result<Option<(Vec<u8>, Option<Vec<u8>>)>, Error> {
-                let commit = lot
-                    .store_mut()
-                    .put(&storgit_id, Some(&label_bytes), Some(&data_bytes))
-                    .map_err(Error::Storgit)?;
-                if commit.is_none() {
-                    return Ok(None);
-                }
-                // `put` returned Ok(Some(_)), so storgit marked the
-                // module dirty; the next snapshot must carry it as
-                // ModuleChange::Changed. Anything else is storgit
-                // violating its own invariant.
-                let snap = lot.store_mut().snapshot().map_err(Error::Storgit)?;
-                let module_bytes = match snap.modules.get(&storgit_id) {
-                    Some(storgit::ModuleChange::Changed(bytes)) => bytes.clone(),
-                    other => unreachable!(
-                        "storgit invariant: snapshot after put(Some) must yield Changed for {}; got {:?}",
-                        storgit_id, other
-                    ),
-                };
-                let aad = Record::module_aad(&self.uuid, lot.uuid());
-                let encrypted = lot.key().encrypt_with_aad(&module_bytes, &aad)?;
-                Ok(Some((encrypted.pack(), snap.parent)))
-            },
-        )?;
+        let changed = tokio::task::block_in_place(|| -> Result<SaveSingle, Error> {
+            let commit = lot
+                .store_mut()
+                .put(&storgit_id, Some(&label_bytes), Some(&data_bytes))
+                .map_err(Error::Storgit)?;
+            if commit.is_none() {
+                return Ok(None);
+            }
+            // `put` returned Ok(Some(_)), so storgit marked the
+            // module dirty; the next snapshot must carry it as
+            // ModuleChange::Changed. Anything else is storgit
+            // violating its own invariant.
+            let snap = lot.store_mut().snapshot().map_err(Error::Storgit)?;
+            let module_bytes = match snap.modules.get(&storgit_id) {
+                Some(storgit::ModuleChange::Changed(bytes)) => bytes.clone(),
+                other => unreachable!(
+                    "storgit invariant: snapshot after put(Some) must yield Changed for {}; got {:?}",
+                    storgit_id, other
+                ),
+            };
+            let aad = Record::module_aad(&self.uuid, lot.uuid());
+            let encrypted = lot.key().encrypt_with_aad(&module_bytes, &aad)?;
+            Ok(Some((encrypted.pack(), snap.parent)))
+        })?;
 
         let Some((module_packed, new_parent)) = changed else {
             return Ok(self.uuid.clone());
@@ -224,7 +235,8 @@ impl Record {
         }
         txn.commit().await?;
 
-        lot.index_mut().insert(self.label.clone(), self.uuid.clone());
+        lot.index_mut()
+            .insert(self.label.clone(), self.uuid.clone());
 
         Ok(self.uuid.clone())
     }
@@ -319,14 +331,7 @@ impl Record {
         // byte-identical put returns Ok(None) and contributes no
         // dirty module to the snapshot, so we skip persisting it.
         let (active_models, changed_ids, new_parent) = tokio::task::block_in_place(
-            || -> Result<
-                (
-                    Vec<self::orm::ActiveModel>,
-                    std::collections::HashSet<storgit::Id>,
-                    Option<Vec<u8>>,
-                ),
-                Error,
-            > {
+            || -> Result<SaveBatch, Error> {
                 for (rec, p) in records.iter().zip(&prepared) {
                     lot.store_mut()
                         .put(&p.storgit_id, Some(&p.label_bytes), Some(&p.data_bytes))
@@ -499,8 +504,8 @@ impl Record {
         // block_in_place.
         let id = Record::storgit_id(uuid);
         let entry = tokio::task::block_in_place(|| lot.store().get(&id)).map_err(Error::Storgit)?;
-        let entry = entry
-            .ok_or_else(|| Error::Storgit(storgit::Error::Other("entry missing".into())))?;
+        let entry =
+            entry.ok_or_else(|| Error::Storgit(storgit::Error::Other("entry missing".into())))?;
 
         let label_bytes = entry
             .label
@@ -570,7 +575,6 @@ impl Record {
         }
         Ok(Some(revisions))
     }
-
 }
 
 impl PartialEq for Record {

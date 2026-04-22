@@ -19,7 +19,7 @@ use sea_orm::{
 use std::fmt;
 use std::sync::Arc;
 
-pub const DEFAULT_LOT: &'static str = "main";
+pub const DEFAULT_LOT: &str = "main";
 
 /// An encrypted collection of secrets.
 ///
@@ -163,9 +163,8 @@ impl Lot {
         lot_uuid: Uuid<Lot>,
     ) -> storgit::ModuleFetcher {
         Arc::new(move |id: &storgit::Id| {
-            let record_uuid = Uuid::<Record>::parse(id.as_str()).map_err(|e| {
-                Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>
-            })?;
+            let record_uuid = Uuid::<Record>::parse(id.as_str())
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>)?;
             let handle = tokio::runtime::Handle::current();
             let lot_uuid_str = lot_uuid.to_string();
             let model = handle
@@ -176,18 +175,14 @@ impl Lot {
                         .one(db.connection())
                         .await
                 })
-                .map_err(|e| {
-                    Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>
-                })?;
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>)?;
             let Some(model) = model else {
                 return Ok(None);
             };
             let aad = Record::module_aad(&record_uuid, &lot_uuid);
             let bytes = lot_key
                 .decrypt_with_aad(&Encrypted::unpack(&model.module), &aad)
-                .map_err(|e| {
-                    Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>
-                })?;
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>)?;
             Ok(Some(bytes))
         })
     }
@@ -305,7 +300,7 @@ impl Lot {
             .one(db.connection())
             .await?
         {
-            let lot = Self::decrypt_and_build(db, &user, model, ul)?;
+            let lot = Self::decrypt_and_build(db, user, model, ul)?;
             Ok(Some(lot))
         } else {
             Ok(None)
@@ -325,7 +320,7 @@ impl Lot {
                 .one(db.connection())
                 .await?
             {
-                let lot = Self::decrypt_and_build(db, &user, model, ul)?;
+                let lot = Self::decrypt_and_build(db, user, model, ul)?;
                 lots.push(lot);
             }
         }
@@ -390,7 +385,6 @@ impl Lot {
         let encrypted = self.key.encrypt_with_aad(parent_bytes, &aad)?;
         Ok(encrypted.pack())
     }
-
 }
 
 impl fmt::Debug for Lot {
@@ -454,6 +448,7 @@ pub(crate) mod orm;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "db")]
     use crate::{
         db::Database,
         record::{Data, Label},
@@ -465,6 +460,7 @@ mod tests {
         assert_eq!(36, lot.uuid.to_string().len());
     }
 
+    #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn create_load() {
         let db = Database::new("sqlite://:memory:")
@@ -505,6 +501,7 @@ mod tests {
         assert_eq!(labels_a, labels_b);
     }
 
+    #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn create_load_all() {
         let db = Database::new("sqlite://:memory:")
@@ -542,6 +539,7 @@ mod tests {
         assert_eq!(lots, vec![lot_a, lot_b]);
     }
 
+    #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn user_lot() {
         let db = Database::new("sqlite://:memory:")
@@ -558,6 +556,7 @@ mod tests {
         assert_eq!(lot.key().as_bytes(), lot_key.as_bytes());
     }
 
+    #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn delete() {
         let db = Database::new("sqlite://:memory:")
@@ -584,16 +583,16 @@ mod tests {
             .await
             .expect("failed to load lots");
         assert!(lots.is_empty());
-        let user_lot =
-            self::orm::user_lots::Entity::find_by_id((user.username().to_owned(), uuid))
-                .one(db.connection())
-                .await
-                .expect("failed to load user_lot");
+        let user_lot = self::orm::user_lots::Entity::find_by_id((user.username().to_owned(), uuid))
+            .one(db.connection())
+            .await
+            .expect("failed to load user_lot");
         assert!(user_lot.is_none());
     }
 
     /// Returns the lot key for a given user/lot as decrypted from the
     /// user_lots table.
+    #[cfg(feature = "db")]
     async fn get_user_lot_key(db: &Database, user: &User, lot: &Lot) -> Key<Lot> {
         let ul = self::orm::user_lots::Entity::find_by_id((
             user.username().to_owned(),

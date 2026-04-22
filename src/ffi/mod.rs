@@ -29,6 +29,7 @@ pub const VALET_FFI_ERR_IO: i32 = 3;
 pub const VALET_FFI_ERR_PROTOCOL: i32 = 4;
 pub const VALET_FFI_ERR_PASSWORD_TOO_LONG: i32 = 5;
 pub const VALET_FFI_ERR_NOT_FOUND: i32 = 6;
+pub const VALET_FFI_ERR_INVALID_ARG: i32 = 7;
 
 /* ---------- Shared data types ---------- */
 
@@ -129,9 +130,7 @@ fn flatten_label(label: &Label) -> String {
 /// plus the uuid of the record it identifies. `extras` is the flat
 /// projection of [`Label::extra`](crate::record::Label::extra). `username`
 /// is [`Label::username`] promoted to its own field so callers don't have
-/// to re-derive it; a null `ValetStr` means "no username for this label"
-/// (either `Label::username` returned `None`, or the underlying string
-/// was empty, since [`ValetStr::from_bytes`] collapses both to null).
+/// to re-derive it; a null [`ValetStr`] means "no username for this label".
 #[repr(C)]
 pub struct ValetRecordIndexEntry {
     pub uuid: ValetStr,
@@ -220,6 +219,12 @@ impl ValetStrList {
 }
 
 /// Frees a [`ValetStrList`] previously returned by any Valet FFI entry point.
+///
+/// # Safety
+///
+/// `list` must be a value previously returned by a Valet FFI entry
+/// point (or the zero-initialized null sentinel). The fields must not
+/// have been freed already; after this call they must not be used.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn valet_ffi_str_list_free(list: ValetStrList) {
     if list.items.is_null() || list.count == 0 {
@@ -331,6 +336,13 @@ pub fn report<E: FfiError>(result: Result<(), E>) -> i32 {
 
 /// Returns the thread-local last error message set by the most recent failing
 /// FFI call, or `NULL` if none.
+///
+/// # Safety
+///
+/// The returned pointer is either null or borrows from a thread-local
+/// buffer that lives until the next FFI call on this thread; callers
+/// must either read it immediately or copy the bytes out before
+/// issuing another FFI call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn valet_ffi_last_error() -> *const c_char {
     LAST_ERROR.with(|slot| {
@@ -343,6 +355,12 @@ pub unsafe extern "C" fn valet_ffi_last_error() -> *const c_char {
 
 /// Frees a [`ValetRecordIndex`] previously returned by any Valet FFI entry
 /// point. Safe to call with a zero-initialized value.
+///
+/// # Safety
+///
+/// `index` must be either zero-initialized (null sentinel) or a value
+/// previously returned by a Valet FFI entry point whose fields have
+/// not been freed already.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn valet_ffi_record_index_free(index: ValetRecordIndex) {
     if index.entries.is_null() || index.count == 0 {
@@ -355,6 +373,11 @@ pub unsafe extern "C" fn valet_ffi_record_index_free(index: ValetRecordIndex) {
 }
 
 /// Frees a [`ValetRecord`] previously returned by any Valet FFI entry point.
+///
+/// # Safety
+///
+/// `record` must be a value previously returned by a Valet FFI entry
+/// point whose fields have not been freed already.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn valet_ffi_record_free(record: ValetRecord) {
     unsafe { record.free() };

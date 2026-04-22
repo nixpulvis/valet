@@ -10,8 +10,8 @@ fn empty() -> Parts {
     }
 }
 
-/// Shorthand for building an [`Id`] in-test. Panics on invalid input —
-/// tests only pass known-good strings, and a bad id is a bug in the
+/// Shorthand for building an [`Id`] in-test. Panics on invalid input.
+/// Tests only pass known-good strings, and a bad id is a bug in the
 /// test, not behaviour we want to silently ignore.
 fn id(s: &str) -> Id {
     Id::new(s).unwrap()
@@ -391,7 +391,7 @@ fn parent_ref_is_not_updated_between_puts_without_snapshot() {
     // Deferred parent materialisation: a batch of N puts produces
     // exactly one parent commit on the next snapshot, regardless of
     // how many puts went in. We verify by inspecting parent.git after
-    // a snapshot — only one parent commit + tree should be present
+    // a snapshot; only one parent commit + tree should be present
     // (plus the .gitmodules blob), not N.
     let mut store = Store::open(empty()).unwrap();
     for i in 0..10 {

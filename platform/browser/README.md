@@ -13,14 +13,14 @@ principle, though install paths and manifest details differ.
 Most of the tree is portable WebExtensions code. The pieces that are
 actually Firefox-only, and would need alternatives for another browser:
 
-1. **Native-host install paths** in `xtask/src/main.rs` (`native_messaging_dir`)
-   point at the Mozilla-specific directories
+1. **Native-host install paths** in `Makefile` (`NM_DIR`) point at the
+   Mozilla-specific directories
    (`~/Library/Application Support/Mozilla/NativeMessagingHosts` on macOS,
    `~/.mozilla/native-messaging-hosts` on Linux). Chromium-family browsers
    use per-browser directories (e.g. `…/Google/Chrome/NativeMessagingHosts`).
-2. **Native-host manifest template** (`native-host/com.nixpulvis.valet.json.template`)
-   uses Firefox's `allowed_extensions` field with the Gecko add-on ID.
-   Chromium uses `allowed_origins: ["chrome-extension://<id>/"]`.
+2. **Native-host manifest** (inlined in `Makefile`) uses Firefox's
+   `allowed_extensions` field with the Gecko add-on ID. Chromium uses
+   `allowed_origins: ["chrome-extension://<id>/"]`.
 3. **Extension `manifest.json`**: the `browser_specific_settings.gecko.id`
    field is Gecko-only, and the `background` entry uses `scripts` + module
    loading. Chromium MV3 requires `background.service_worker`, and service
@@ -31,25 +31,23 @@ actually Firefox-only, and would need alternatives for another browser:
    + "Load unpacked".
 
 Everything else is the same across browsers: `browser.*` WebExtensions
-API use, the native-messaging wire format, the Yew popup, and the
-`valetd` RPC shape. For multi-browser support the natural shape is a
-`--target firefox|chrome` flag on the xtask that selects (1) and (2) and
-templates (3) from per-browser manifest variants.
+API use, the native-messaging wire format, the Yew popup, and the RPC
+shape. For multi-browser support the natural shape is a
+`TARGET=firefox|chrome` variable on the Makefile that selects (1) and
+(2) and templates (3) from per-browser manifest variants.
 
 ## Architecture
 
-The extension has three main pieces:
+The extension has two WASM pieces plus the `valetd` binary on the host:
 
 ```
 popup (Yew/WASM)
 <- sendMessage ->
 background (WASM)
 <- native messaging ->
-native-host shim (valet-native-host)
-<- Unix socket ->
-valetd daemon
-<- SQL ->
-valet SQLite DB
+valetd (native-messaging transport)
+<- SQLite / Unix socket ->
+valet vault
 ```
 
 - **Popup** (`src/popup/`): a [Yew](https://yew.rs) single-page app rendered
@@ -57,53 +55,57 @@ valet SQLite DB
   and credential creation. Communicates with the background script via
   `browser.runtime.sendMessage`.
 
-- **Background script** (`src/background/`): runs as a persistent service
-  worker. Opens a native messaging port to the native host and multiplexes
-  RPC calls from the popup.
+- **Background script** (`src/background/`): opens a native-messaging port
+  to `valetd` and multiplexes typed RPC calls from the popup through it.
+  Uses `Client<NativeMessage>` from the main `valet` crate; the same
+  `Handler` surface the native clients (CLI, GUI, FFI) use.
 
-- **Native-host shim** (`native-host/`): a stateless Rust binary
-  (`valet-native-host`) that the browser launches via the WebExtensions
-  native messaging API. Speaks the 4-byte-length-prefixed JSON wire format
-  on stdin/stdout and forwards each request to the `valetd` daemon over a
-  Unix socket. Auto-spawns a sibling `valetd` binary the first time the
-  socket is absent. Holds no state of its own.
+- **`valetd` daemon** (top-level `src/bin/valetd/`): when the browser
+  launches it with piped stdio, `valetd` auto-selects its
+  native-messaging transport. `VALET_BACKEND` picks what fields each
+  request:
 
-- **`valetd` daemon** (`../../valetd/`): owns the database and the
-  unlocked-user cache. Persists across shim restarts and serves other
-  platforms (macOS AutoFill) from the same socket. An idle-timeout reaper
-  (5 min) clears cached keys automatically.
+  - `embedded` (default when no socket is live): `valetd` opens its own
+    SQLite handle and serves requests in-process. The spawned process
+    lives only as long as the browser keeps the port open; per-user key
+    caches die with it.
+  - `socket`: relay each frame to a long-lived
+    `valetd --transport=socket` running elsewhere. Use this when macOS
+    AutoFill and the browser need to share one unlocked session.
 
 ### Wire format
 
-The JSON frame between background and native host:
+WebExtensions frames stdio with a 4-byte little-endian length prefix,
+then a JSON envelope. The envelope carries a base64-encoded bitcode
+payload so the typed Rust schema crosses the wire unchanged:
 
 ```json
-{ "id": 1, "method": "unlock", "params": { "username": "...", "password": "..." } }
+{ "id": 1, "request": "<base64-bitcode-Request>" }
 ```
 
-The successful `result` field is a base64-encoded bitcode blob of a
-`valetd::Response`. The popup decodes it in WASM by depending on `valetd`
-with `default-features = false` (wire-types only) and calling
-`Response::decode_base64`, so both halves share exactly one wire schema.
-An unsuccessful call sets an `error` string instead.
+Reply:
 
-### RPC methods
+```json
+{ "backend": "embedded",
+  "payload": { "Ok": { "id": 1, "data": "<base64-bitcode-Response>" } } }
+```
 
-| Method | Params | `Response` variant |
-|--------|--------|--------------------|
-| `status` | — | `Users(Vec<String>)` (unlocked users) |
-| `list_users` | — | `Users(Vec<String>)` (all registered) |
-| `unlock` | `username`, `password` | `Ok` |
-| `lock` | `username` | `Ok` |
-| `lock_all` | — | `Ok` |
-| `find_records` | `username`, `lot`, `domain` | `Index(Vec<(Uuid<Record>, Label)>)` |
-| `get_record` | `username`, `lot`, `record_uuid` | `Record(Record)` |
-| `create_record` | `username`, `lot`, `label`, `password`, `extra?` | `Record(Record)` |
-| `generate_record` | `username`, `lot`, `label` | `Record(Record)` |
+or on failure:
 
-`find_records` returns only label-and-uuid pairs; the actual password is
-decrypted on demand by `get_record` when the user clicks *Copy*, so no
-password material crosses the socket unless it's about to be used.
+```json
+{ "backend": "embedded", "payload": { "Err": "<message>" } }
+```
+
+The `id` correlates each reply to its request so the background script
+can route out-of-order replies back to waiting popup callers. `backend`
+tags which transport actually served the call so logs can tell
+embedded-mode vs. socket-relay traffic apart.
+
+`Request` / `Response` are the same enums the socket transport speaks;
+both halves of the wire import them from
+`valet::protocol::message`. See `src/protocol/impls/native_msg.rs` for
+the envelope types (`NativeRequest`, `NativeReply`, `NativePayload`)
+and `src/protocol/message.rs` for the message enums.
 
 ## Prerequisites
 
@@ -117,29 +119,32 @@ password material crosses the socket unless it's about to be used.
 
 ### 1. Build the WASM package
 
-```sh
-wasm-pack build --target web platform/browser
-```
-
-This produces the `pkg/` directory that the extension loads at runtime.
-
-### 2. Build and install the native host
+From the repo root:
 
 ```sh
-cargo browser-xtask install-native-host
+make browser
 ```
 
-This builds `valet-native-host` and `valetd` in release mode and writes a
-native messaging manifest to the OS-appropriate Firefox location:
+(or `make -C platform/browser` directly). This produces the `pkg/`
+directory that the extension loads at runtime.
+
+### 2. Build and register the native host
+
+```sh
+make install-browser
+```
+
+This rebuilds the WASM package, builds `valetd`, and writes a
+native-messaging manifest pointing at that binary:
 
 - **macOS:** `~/Library/Application Support/Mozilla/NativeMessagingHosts/com.nixpulvis.valet.json`
 - **Linux:** `~/.mozilla/native-messaging-hosts/com.nixpulvis.valet.json`
 - **Windows:** TODO
 
-The shim looks for `valetd` next to its own executable; both land in the
-same `target/<profile>/` directory by default. Set `VALET_DB` or
-`VALET_SOCKET` in your shell environment before launching the browser if
-you want to use non-default paths.
+Pass `RELEASE=1` to either target for an optimized build. Set
+`VALET_DB`, `VALET_SOCKET`, or `VALET_BACKEND` in your shell environment
+before launching the browser to override the defaults; the spawned
+`valetd` inherits its env.
 
 ### 3. Load the extension
 
@@ -161,11 +166,15 @@ The `--dev` flag includes debug assertions and TRACE-level logging to the
 browser console (visible in the extension's background page inspector and the
 popup's dev tools).
 
-Rebuild the native host or daemon after Rust changes:
+Rebuild `valetd` after Rust changes:
 
 ```sh
-cargo build -p valet-native-host -p valetd
+cargo build --bin valetd
 ```
+
+After rebuilding, reload the extension (`about:debugging` → *Reload*) so
+the background script reopens the native-messaging port against the
+fresh binary.
 
 ## Crate structure
 
@@ -175,22 +184,17 @@ platform/browser/
   manifest.json         # MV3 extension manifest
   popup.html / popup.js # Extension popup entry point
   background.js         # Background script entry point
-  xtask/                # cargo browser-xtask (install-native-host, etc.)
+  Makefile              # default: build WASM; `install` also builds valetd and writes the native-messaging manifest
   src/
     lib.rs              # wasm_bindgen exports
-    logging.rs          # tracing → browser console
+    logging.rs          # tracing -> browser console
     background/
       mod.rs            # start_background()
       externs.rs        # FFI bindings to browser.runtime.*
-      port.rs           # Native messaging port, RPC multiplexing
+      port.rs           # Client<NativeMessage> wrapper + RPC routing
     popup/
       mod.rs            # start_popup(), Yew renderer
       app.rs            # Yew components (LockView, UnlockedView)
       browser.rs        # FFI bindings to browser.tabs.*, clipboard
-      rpc.rs            # Typed RPC wrappers (list_users, unlock, etc.)
-  native-host/
-    Cargo.toml          # valet-native-host (bin only)
-    src/
-      main.rs           # Native messaging host binary (stdio <-> Unix socket)
-    com.nixpulvis.valet.json.template
+    rpc.rs              # Typed RPC wrappers over Client<NativeMessage>
 ```

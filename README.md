@@ -4,9 +4,9 @@ Valet is a local-first, multi-user password manager. The core library handles
 encryption (AES-GCM-SIV + Argon2 key derivation), and multiple clients consume
 it:
 
-- **CLI** (`src/bin/cli.rs`) — Clap-based REPL for registering users, managing
+- **CLI** (`src/bin/cli.rs`): Clap-based REPL for registering users, managing
   lots, and storing/retrieving secrets from the terminal.
-- **GUI** (`src/bin/gui/`) — Native desktop app built with egui/eframe (behind
+- **GUI** (`src/bin/gui/`): Native desktop app built with egui/eframe (behind
   the `gui` feature flag).
 - **Browser extension** (`platform/browser/`): browser popup that matches
   credentials to the active tab's domain, with a native messaging host for

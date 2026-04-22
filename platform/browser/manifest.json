@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Valet",
   "version": "0.0.2",
-  "description": "Valet password manager — access your secrets from the browser.",
+  "description": "Valet password manager. Access your secrets from the browser.",
 
   "browser_specific_settings": {
     "gecko": {

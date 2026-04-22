@@ -2,11 +2,12 @@ use crate::util::button_width;
 use eframe::egui;
 use egui_inbox::UiInbox;
 use std::sync::Arc;
-use tokio::{runtime::Runtime, sync::Mutex};
+use tokio::runtime::Runtime;
+use valet::Handler;
 use valet::{
-    Lot, Record,
-    db::Database,
+    Record,
     password::Password,
+    protocol::{Client, embedded::Embedded},
     record::{Label, LabelName},
     uuid::Uuid,
 };
@@ -19,8 +20,8 @@ enum PasswordEvent {
 pub struct RecordRow<'a> {
     label: &'a Label,
     record_uuid: &'a Uuid<Record>,
-    lot: Arc<Mutex<Lot>>,
-    db: &'a Arc<Database>,
+    username: String,
+    client: &'a Arc<Client<Embedded>>,
     rt: &'a Runtime,
 }
 
@@ -28,15 +29,15 @@ impl<'a> RecordRow<'a> {
     pub fn new(
         label: &'a Label,
         record_uuid: &'a Uuid<Record>,
-        lot: Arc<Mutex<Lot>>,
-        db: &'a Arc<Database>,
+        username: String,
+        client: &'a Arc<Client<Embedded>>,
         rt: &'a Runtime,
     ) -> Self {
         Self {
             label,
             record_uuid,
-            lot,
-            db,
+            username,
+            client,
             rt,
         }
     }
@@ -142,8 +143,8 @@ impl egui::Widget for RecordRow<'_> {
                 {
                     spawn_fetch(
                         self.rt,
-                        self.db.clone(),
-                        self.lot.clone(),
+                        self.client.clone(),
+                        self.username.clone(),
                         self.record_uuid.clone(),
                         pw_inbox.sender(),
                         PasswordEvent::Copy,
@@ -191,8 +192,8 @@ impl egui::Widget for RecordRow<'_> {
                                 } else {
                                     spawn_fetch(
                                         self.rt,
-                                        self.db.clone(),
-                                        self.lot.clone(),
+                                        self.client.clone(),
+                                        self.username.clone(),
                                         self.record_uuid.clone(),
                                         pw_inbox.sender(),
                                         PasswordEvent::Show,
@@ -219,23 +220,18 @@ impl egui::Widget for RecordRow<'_> {
 
 fn spawn_fetch(
     rt: &Runtime,
-    db: Arc<Database>,
-    lot: Arc<Mutex<Lot>>,
+    client: Arc<Client<Embedded>>,
+    username: String,
     record_uuid: Uuid<Record>,
     tx: egui_inbox::UiInboxSender<PasswordEvent>,
     wrap: fn(Password) -> PasswordEvent,
 ) {
     rt.spawn(async move {
-        let lot = lot.lock().await;
         // TODO: surface these errors in the UI instead of stderr.
-        let record = match Record::show(&db, &lot, &record_uuid).await {
-            Ok(Some(record)) => record,
-            Ok(None) => {
-                eprintln!("record {record_uuid} no longer exists");
-                return;
-            }
+        let record = match client.fetch(username, record_uuid.clone()).await {
+            Ok(record) => record,
             Err(e) => {
-                eprintln!("failed to load record: {e:?}");
+                eprintln!("failed to load record {record_uuid}: {e}");
                 return;
             }
         };

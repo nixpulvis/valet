@@ -44,7 +44,7 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
     }
 
     /// Safari routes here when `provideCredentialWithoutUserInteraction`
-    /// returns `userInteractionRequired` — i.e. the daemon is locked. The
+    /// returns `userInteractionRequired` (i.e. the daemon is locked). The
     /// user already picked a specific credential from Safari's inline
     /// popup, so we show the unlock prompt, then fill that exact record
     /// directly. No list view in between.

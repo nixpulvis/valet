@@ -1,2 +1,2 @@
 [alias]
-browser-xtask = "run --package xtask --"
+docs = "doc --all-features --no-deps"

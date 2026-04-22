@@ -1,17 +1,9 @@
 # Top-level build driver. Delegates to cargo for the workspace and to
-# per-platform make / xtask commands for the native integrations.
+# per-platform make targets for the native integrations.
 
-CARGO ?= cargo
+include Makefile.common
 
-# Default to debug builds. Set RELEASE=1 to build release everywhere.
-RELEASE ?=
-ifeq ($(RELEASE),1)
-RELEASE_FLAG := --release
-else
-RELEASE_FLAG :=
-endif
-
-.PHONY: all workspace app browser macos clean
+.PHONY: all workspace app browser macos clean docs
 .PHONY: install-browser install-macos
 
 all: workspace browser macos
@@ -26,12 +18,12 @@ app:
 
 # Browser extension WASM package.
 browser:
-	$(CARGO) browser-xtask build-wasm $(RELEASE_FLAG)
+	$(MAKE) -C platform/browser $(if $(RELEASE),RELEASE=$(RELEASE))
 
-# Build native-host shim + valetd and register the browser's native
-# messaging manifest so the extension can talk to the daemon.
+# Build valetd and register the browser's native-messaging manifest so
+# the extension can talk to it.
 install-browser:
-	$(CARGO) browser-xtask build-install $(RELEASE_FLAG)
+	$(MAKE) -C platform/browser install $(if $(RELEASE),RELEASE=$(RELEASE))
 
 # macOS AutoFill credential provider extension. Its own Makefile handles
 # codesigning and bundle layout; forward variables via the environment.
@@ -45,3 +37,9 @@ install-macos:
 clean:
 	$(CARGO) clean
 	$(MAKE) -C platform/macos clean
+
+# Rustdoc for the workspace. Delegates to the `cargo docs` alias in
+# .cargo/config.toml, which pins --all-features --no-deps so every
+# intra-doc link resolves.
+docs:
+	$(CARGO) docs

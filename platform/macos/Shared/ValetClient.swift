@@ -1,5 +1,5 @@
 import Foundation
-import Valetd
+import Valet
 
 /// Password-free view of a record, mirroring Rust's `RecordIndex` entry.
 /// This is what `list` returns; use `fetch` to materialize the password.
@@ -34,7 +34,7 @@ public final class ValetClient: @unchecked Sendable {
     }
 
     deinit {
-        valetd_ffi_client_free(handle)
+        valet_ffi_client_free(handle)
     }
 
     /// App Group identifier shared by the host app and the AutoFill
@@ -43,7 +43,7 @@ public final class ValetClient: @unchecked Sendable {
     /// reach under the same path, so the Unix socket has to live inside it.
     public static let appGroup = "group.com.nixpulvis.valet"
 
-    /// On-disk path the Swift side hands to `valetd_ffi_client_connect`.
+    /// On-disk path the Swift side hands to `valet_ffi_client_new_socket`.
     /// Also the path the daemon must be started with (`VALET_SOCKET=...`)
     /// so both endpoints agree. Throws when the group container has not
     /// been provisioned (first launch before any entitled process ran), so
@@ -62,12 +62,27 @@ public final class ValetClient: @unchecked Sendable {
 
     public static func `default`() throws -> ValetClient {
         var ptr: OpaquePointer?
-        #if VALETD_FFI_STUB
-        try check(valetd_ffi_client_new_stub(&ptr))
+        #if VALET_FFI_PROTOCOL_EMBEDDED
+        try dbPath().withCString { try check(valet_ffi_client_new_embedded($0, &ptr)) }
         #else
-        try socketPath().withCString { try check(valetd_ffi_client_connect($0, &ptr)) }
+        try socketPath().withCString { try check(valet_ffi_client_new_socket($0, &ptr)) }
         #endif
         return ValetClient(handle: ptr!)
+    }
+
+    /// SQLite database path for `valet_ffi_client_new_embedded`. Lives
+    /// inside the same App Group container as the socket so the host
+    /// app and the sandboxed extension share one DB.
+    public static func dbPath() throws -> String {
+        guard let url = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroup
+        ) else {
+            throw ValetError(
+                code: -1,
+                message: "App Group container \(appGroup) is not provisioned; check entitlements"
+            )
+        }
+        return url.appendingPathComponent("valet.sqlite").path
     }
 
     /// Currently-unlocked usernames (daemon cache). Empty if the daemon is
@@ -75,7 +90,7 @@ public final class ValetClient: @unchecked Sendable {
     public func status() async throws -> [String] {
         try await Task.detached(priority: .userInitiated) { [handle] in
             var list = ValetStrList(items: nil, count: 0)
-            try check(valetd_ffi_client_status(handle, &list))
+            try check(valet_ffi_client_status(handle, &list))
             defer { valet_ffi_str_list_free(list) }
             return unpackStrings(list)
         }.value
@@ -85,7 +100,7 @@ public final class ValetClient: @unchecked Sendable {
     public func listUsers() async throws -> [String] {
         try await Task.detached(priority: .userInitiated) { [handle] in
             var list = ValetStrList(items: nil, count: 0)
-            try check(valetd_ffi_client_list_users(handle, &list))
+            try check(valet_ffi_client_list_users(handle, &list))
             defer { valet_ffi_str_list_free(list) }
             return unpackStrings(list)
         }.value
@@ -99,7 +114,7 @@ public final class ValetClient: @unchecked Sendable {
             try username.withCString { userPtr in
                 try password.withCString { pwPtr in
                     let pwLen = UInt(password.utf8.count)
-                    try check(valetd_ffi_client_unlock(handle, userPtr, pwPtr, pwLen))
+                    try check(valet_ffi_client_unlock(handle, userPtr, pwPtr, pwLen))
                 }
             }
         }.value
@@ -114,7 +129,7 @@ public final class ValetClient: @unchecked Sendable {
             var index = ValetRecordIndex(entries: nil, count: 0)
             try username.withCString { userPtr in
                 try queries.withCStrings { pointers, lengths in
-                    try check(valetd_ffi_client_list(
+                    try check(valet_ffi_client_list(
                         handle, userPtr, pointers, lengths, UInt(queries.count), &index
                     ))
                 }
@@ -141,7 +156,7 @@ public final class ValetClient: @unchecked Sendable {
             try username.withCString { userPtr in
                 try lot.withCString { lotPtr in
                     try domain.withCString { domainPtr in
-                        try check(valetd_ffi_client_find_records(
+                        try check(valet_ffi_client_find_records(
                             handle, userPtr, lotPtr, domainPtr,
                             UInt(domain.utf8.count), &index
                         ))
@@ -165,7 +180,7 @@ public final class ValetClient: @unchecked Sendable {
                         extras_count: 0,
                         password: ValetStr(ptr: nil, len: 0)
                     )
-                    try check(valetd_ffi_client_fetch(
+                    try check(valet_ffi_client_fetch(
                         handle, userPtr, uuidPtr, UInt(uuid.utf8.count), &record
                     ))
                     defer { valet_ffi_record_free(record) }

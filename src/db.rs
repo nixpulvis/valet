@@ -34,12 +34,13 @@ impl Database {
         // sqlx errors out even with mode=rwc.
         if let Ok(parsed) = Url::parse(&url) {
             let path = parsed.path();
-            if !path.is_empty() && path != "/" && path != "/:memory:" {
-                if let Some(parent) = std::path::Path::new(path).parent() {
-                    if !parent.as_os_str().is_empty() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                }
+            if !path.is_empty()
+                && path != "/"
+                && path != "/:memory:"
+                && let Some(parent) = std::path::Path::new(path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                let _ = std::fs::create_dir_all(parent);
             }
         }
 
@@ -48,7 +49,7 @@ impl Database {
         sqlx::migrate!("./migrations")
             .run(&pool)
             .await
-            .map_err(|e| sqlx::Error::from(e))?;
+            .map_err(sqlx::Error::from)?;
 
         // Convert to a sea-orm connection backed by the same pool.
         let db = sea_orm::SqlxSqliteConnector::from_sqlx_sqlite_pool(pool);

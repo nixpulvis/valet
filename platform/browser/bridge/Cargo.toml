@@ -1,8 +1,0 @@
-[package]
-name = "valet-browser-bridge"
-version = "0.1.0"
-edition = "2024"
-description = "Shared native-messaging envelope types between the browser WASM and the native-host shim."
-
-[dependencies]
-serde = { version = "1", features = ["derive"] }

@@ -44,13 +44,22 @@ pub fn generate_header(name: &str) {
         .expect("failed to read valet-build cbindgen.toml");
     config.include_guard = Some(format!("{}_H", name.to_uppercase()));
 
-    // Map each crate's `stub` Cargo feature to a matching header macro so the
-    // Swift side can `#if <NAME>_FFI_STUB` without a second configuration
-    // channel.
-    let stub_macro = format!("{}_FFI_STUB", name.to_uppercase());
-    config
-        .defines
-        .insert("feature = stub".to_string(), stub_macro);
+    // Map each protocol Cargo feature to a matching header macro so
+    // the Swift side can `#if <NAME>_FFI_PROTOCOL_EMBEDDED` (etc.)
+    // without a second configuration channel.
+    let upper = name.to_uppercase();
+    config.defines.insert(
+        "feature = protocol-embedded".to_string(),
+        format!("{upper}_FFI_PROTOCOL_EMBEDDED"),
+    );
+    config.defines.insert(
+        "feature = protocol-socket".to_string(),
+        format!("{upper}_FFI_PROTOCOL_SOCKET"),
+    );
+    config.defines.insert(
+        "feature = protocol-native-msg-server".to_string(),
+        format!("{upper}_FFI_PROTOCOL_NATIVE_MSG"),
+    );
 
     match cbindgen::Builder::new()
         .with_crate(&crate_dir)
