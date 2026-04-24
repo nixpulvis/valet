@@ -11,12 +11,11 @@ use gix::objs::{
     Tree,
     tree::{Entry as TreeEntry, EntryKind},
 };
-use tempfile::TempDir;
 
 use crate::entry::{CommitId, Entry};
 use crate::error::Error;
 use crate::git::{
-    drop_loose_object, init_bare_on_branch, module_ref_path, read_ref_file, write_commit,
+    BRANCH, drop_loose_object, init_bare_on_branch, module_ref_path, read_ref_file, write_commit,
     write_ref_file,
 };
 use crate::id::Id;
@@ -180,12 +179,14 @@ enum ModuleDirt {
     Deleted,
 }
 
-/// The submodule-layout storgit implementation. Owns a scratch
-/// [`TempDir`] containing the parent bare repo and any modules that
-/// have been loaded. Dropping the layout without calling
-/// [`Store::<SubmoduleLayout>::snapshot`] discards uncommitted state.
+/// The submodule-layout storgit implementation. Backed by a
+/// directory at `path` containing `parent.git/` (a bare parent
+/// repo) and `modules/<id>.git/` (one bare submodule per entry).
+/// Dropping the layout without calling
+/// [`Store::<SubmoduleLayout>::snapshot`] discards uncommitted
+/// in-memory state but leaves the on-disk repo intact.
 pub struct SubmoduleLayout {
-    scratch: TempDir,
+    path: PathBuf,
     dirty_parent: bool,
     dirty_modules: HashMap<Id, ModuleDirt>,
     gitlinks: BTreeMap<Id, gix::ObjectId>,
@@ -197,12 +198,11 @@ pub struct SubmoduleLayout {
 
 impl SubmoduleLayout {
     fn parent_path(&self) -> PathBuf {
-        self.scratch.path().join(PARENT_DIR)
+        self.path.join(PARENT_DIR)
     }
 
     fn module_path(&self, id: &Id) -> PathBuf {
-        self.scratch
-            .path()
+        self.path
             .join(MODULES_DIR)
             .join(format!("{}.git", id.as_str()))
     }
@@ -362,6 +362,56 @@ impl SubmoduleLayout {
 }
 
 impl Layout for SubmoduleLayout {
+    fn new(path: PathBuf) -> Result<Self, Error> {
+        if path.exists() {
+            return Err(Error::Other(format!(
+                "submodule new: path {path:?} already exists"
+            )));
+        }
+        std::fs::create_dir(&path)?;
+        std::fs::create_dir(path.join(MODULES_DIR))?;
+        init_bare_on_branch(&path.join(PARENT_DIR))?;
+        Ok(SubmoduleLayout {
+            path,
+            dirty_parent: true,
+            dirty_modules: HashMap::new(),
+            gitlinks: BTreeMap::new(),
+            label_cache: BTreeMap::new(),
+            gitlinks_dirty: false,
+            pending_modules: Mutex::new(Modules::new()),
+            fetcher: None,
+        })
+    }
+
+    fn open(path: PathBuf) -> Result<Self, Error> {
+        validate_submodule_repo(&path)?;
+        let parent_path = path.join(PARENT_DIR);
+        let modules_path = path.join(MODULES_DIR);
+        if !modules_path.exists() {
+            std::fs::create_dir(&modules_path)?;
+        }
+        let (gitlinks, label_cache) = load_parent_state(&parent_path)?;
+        Ok(SubmoduleLayout {
+            path,
+            dirty_parent: false,
+            dirty_modules: HashMap::new(),
+            gitlinks,
+            label_cache,
+            gitlinks_dirty: false,
+            pending_modules: Mutex::new(Modules::new()),
+            fetcher: None,
+        })
+    }
+
+    fn save(&mut self) -> Result<Vec<u8>, Error> {
+        self.flush_parent()?;
+        let live: Vec<Id> = self.gitlinks.keys().cloned().collect();
+        for id in &live {
+            self.ensure_loaded(id)?;
+        }
+        tar_dir(&self.path)
+    }
+
     fn put(
         &mut self,
         id: &Id,
@@ -469,48 +519,98 @@ impl Layout for SubmoduleLayout {
     }
 }
 
+impl Drop for SubmoduleLayout {
+    /// Materialise any pending parent commit to disk. Per-module
+    /// commits are already persistent (every `put` writes the commit
+    /// and updates the module's ref before returning), so only the
+    /// gitlink-set / label-cache batched in memory needs flushing.
+    ///
+    /// Errors are swallowed -- Drop can't surface them. Callers who
+    /// need error-handling should call `snapshot` or `save`
+    /// explicitly.
+    fn drop(&mut self) {
+        let _ = self.flush_parent();
+    }
+}
+
+/// Sanity-check that `path` holds a valid submodule-layout storgit
+/// repo: a directory containing `parent.git/` as a bare repo whose
+/// HEAD points to storgit's branch. `modules/` may or may not exist
+/// yet (it's created on demand), so its presence is not required.
+fn validate_submodule_repo(path: &std::path::Path) -> Result<(), Error> {
+    if !path.is_dir() {
+        return Err(Error::Other(format!(
+            "submodule open: {path:?} is not a directory"
+        )));
+    }
+    let parent_path = path.join(PARENT_DIR);
+    if !parent_path.is_dir() {
+        return Err(Error::Other(format!(
+            "submodule open: {parent_path:?} does not exist"
+        )));
+    }
+    gix::open(&parent_path).map_err(|e| {
+        Error::Other(format!(
+            "submodule open: {parent_path:?} is not a git repo: {e}"
+        ))
+    })?;
+    let head_raw = std::fs::read_to_string(parent_path.join("HEAD"))
+        .map_err(|e| Error::Other(format!("submodule open: cannot read HEAD: {e}")))?;
+    let head_trimmed = head_raw.trim();
+    let expected = format!("ref: {BRANCH}");
+    if head_trimmed != expected {
+        return Err(Error::Other(format!(
+            "submodule open: HEAD must be {expected:?}; got {head_trimmed:?}"
+        )));
+    }
+    Ok(())
+}
+
 // --- Submodule-layout-specific inherent methods on Store<SubmoduleLayout> ---
 
 impl Store<SubmoduleLayout> {
-    /// Create a fresh, empty submodule-layout store. Shorthand for
-    /// `Store::open(Parts::default())`.
-    pub fn new() -> Result<Self, Error> {
-        Self::open(Parts::default())
-    }
-
-    /// Open a submodule-layout store from its persisted [`Parts`].
-    /// Pass [`Parts::default`] to create a fresh, empty store.
-    pub fn open(parts: Parts) -> Result<Self, Error> {
-        let scratch = tempfile::Builder::new().prefix("storgit-").tempdir()?;
-        std::fs::create_dir_all(scratch.path().join(MODULES_DIR))?;
-
-        let dirty_parent = parts.parent.is_empty();
-        if dirty_parent {
-            init_bare_on_branch(&scratch.path().join(PARENT_DIR))?;
-        } else {
-            untar_into(&parts.parent, &scratch.path().join(PARENT_DIR))?;
+    /// Fold [`Parts`] into an opened submodule-layout store.
+    ///
+    /// - `parts.parent`: if non-empty, untarred into `parent.git`,
+    ///   replacing whatever `open` produced. Requires the existing
+    ///   parent to be empty (freshly initialised). TODO: once
+    ///   merging lands (see PLAN-MERGE.md), allow applying parent
+    ///   bytes onto an existing non-empty parent by merging.
+    /// - `parts.modules`: inserted into the pending-modules cache;
+    ///   each id's tarball is untarred on first touch.
+    /// - `parts.fetcher`: installed, replacing any prior fetcher.
+    pub fn with_parts(mut self, parts: Parts) -> Result<Self, Error> {
+        if !parts.parent.is_empty() {
+            // TODO: merge parts.parent with the on-disk parent when
+            // the latter already has history. For now, require the
+            // on-disk parent to be freshly init'd (dirty_parent is
+            // the in-memory signal for that state).
+            if !self.layout.dirty_parent {
+                return Err(Error::Other(
+                    "with_parts: parts.parent is non-empty but the store's parent.git already \
+                     has state; merging is not yet implemented".into(),
+                ));
+            }
+            let parent_path = self.layout.parent_path();
+            if parent_path.exists() {
+                std::fs::remove_dir_all(&parent_path)?;
+            }
+            untar_into(&parts.parent, &parent_path)?;
+            let (gitlinks, label_cache) = load_parent_state(&parent_path)?;
+            self.layout.gitlinks = gitlinks;
+            self.layout.label_cache = label_cache;
+            self.layout.dirty_parent = false;
         }
-
-        let pending_modules = Mutex::new(parts.modules);
-
-        let (gitlinks, label_cache) = if dirty_parent {
-            (BTreeMap::new(), BTreeMap::new())
-        } else {
-            load_parent_state(&scratch.path().join(PARENT_DIR))?
-        };
-
-        Ok(Store {
-            layout: SubmoduleLayout {
-                scratch,
-                dirty_parent,
-                dirty_modules: HashMap::new(),
-                gitlinks,
-                label_cache,
-                gitlinks_dirty: false,
-                pending_modules,
-                fetcher: parts.fetcher,
-            },
-        })
+        {
+            let pending = self.layout.pending_modules.get_mut().unwrap();
+            for (id, bytes) in parts.modules {
+                pending.insert(id, bytes);
+            }
+        }
+        if parts.fetcher.is_some() {
+            self.layout.fetcher = parts.fetcher;
+        }
+        Ok(self)
     }
 
     /// Re-tar everything touched since the previous snapshot (or since
@@ -539,54 +639,9 @@ impl Store<SubmoduleLayout> {
         Ok(snap)
     }
 
-    /// Inverse of [`Store::<SubmoduleLayout>::save`]: reconstruct a
-    /// store from a tarball previously produced by `save`. Passing an
-    /// empty slice is *not* supported here; use
-    /// [`Store::<SubmoduleLayout>::open`] with an empty [`Parts`] for a
-    /// fresh store.
-    pub fn load(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.is_empty() {
-            return Err(Error::Other(
-                "Store::load requires a non-empty tarball; use Store::open for a fresh store"
-                    .into(),
-            ));
-        }
-        let scratch = tempfile::Builder::new().prefix("storgit-").tempdir()?;
-        untar_into(bytes, scratch.path())?;
-        if !scratch.path().join(PARENT_DIR).exists() {
-            return Err(Error::Other("tarball missing parent.git directory".into()));
-        }
-        std::fs::create_dir_all(scratch.path().join(MODULES_DIR))?;
-        let (gitlinks, label_cache) = load_parent_state(&scratch.path().join(PARENT_DIR))?;
-        Ok(Store {
-            layout: SubmoduleLayout {
-                scratch,
-                dirty_parent: false,
-                dirty_modules: HashMap::new(),
-                gitlinks,
-                label_cache,
-                gitlinks_dirty: false,
-                pending_modules: Mutex::new(Modules::new()),
-                fetcher: None,
-            },
-        })
-    }
-
-    /// Bundle the entire store into a single self-contained tarball.
-    /// Force-loads every live module so the returned tarball is
-    /// self-consistent.
-    pub fn save(&mut self) -> Result<Vec<u8>, Error> {
-        self.layout.flush_parent()?;
-        let live: Vec<Id> = self.layout.gitlinks.keys().cloned().collect();
-        for id in &live {
-            self.layout.ensure_loaded(id)?;
-        }
-        tar_dir(self.layout.scratch.path())
-    }
-
     /// Make `bytes` (a previously-persisted module tarball) available
     /// to the store under `id`. The next operation that touches `id`
-    /// will untar these bytes to the scratch dir on first access.
+    /// will untar these bytes into the store's path on first access.
     pub fn load_module(&mut self, id: Id, bytes: Vec<u8>) {
         self.layout
             .pending_modules

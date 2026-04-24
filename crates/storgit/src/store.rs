@@ -3,6 +3,8 @@
 //! [`Store::<SubmoduleLayout>::open`] / [`Store::<SubmoduleLayout>::snapshot`])
 //! via inherent impls in each layout's module.
 
+use std::path::PathBuf;
+
 use crate::entry::{CommitId, Entry};
 use crate::error::Error;
 use crate::id::Id;
@@ -17,6 +19,36 @@ pub struct Store<L: Layout = SubmoduleLayout> {
 }
 
 impl<L: Layout> Store<L> {
+    /// Initialise a fresh storgit repo at `path` for this layout.
+    /// See [`Layout::new`].
+    pub fn new(path: PathBuf) -> Result<Self, Error> {
+        Ok(Store {
+            layout: L::new(path)?,
+        })
+    }
+
+    /// Open an existing storgit repo at `path` for this layout.
+    /// See [`Layout::open`].
+    pub fn open(path: PathBuf) -> Result<Self, Error> {
+        Ok(Store {
+            layout: L::open(path)?,
+        })
+    }
+
+    /// Bundle the store into a single self-contained tarball.
+    /// See [`Layout::save`].
+    pub fn save(&mut self) -> Result<Vec<u8>, Error> {
+        self.layout.save()
+    }
+
+    /// Untar `bytes` into `path` and open the resulting repo.
+    /// See [`Layout::load`].
+    pub fn load(bytes: &[u8], path: PathBuf) -> Result<Self, Error> {
+        Ok(Store {
+            layout: L::load(bytes, path)?,
+        })
+    }
+
     /// Write a new version of entry `id` whose commit tree carries the
     /// given `label` and/or `data`. See [`Layout::put`] for the full
     /// contract around `None` slots, no-op detection, and the rejection

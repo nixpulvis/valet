@@ -8,8 +8,9 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::{get_data, mkid, put_data};
-use storgit::layout::submodule::{Modules, Parts};
+use storgit::layout::submodule::{Modules, Parts, SubmoduleLayout};
 use storgit::{Id, ModuleChange, Store};
+use tempfile::TempDir;
 
 fn empty() -> Parts {
     Parts {
@@ -19,35 +20,74 @@ fn empty() -> Parts {
     }
 }
 
+/// Fresh, empty submodule-layout store under a newly-allocated
+/// scratch dir. TempDir is returned so the caller keeps it alive
+/// for the test's scope.
+fn fresh() -> (TempDir, Store<SubmoduleLayout>) {
+    let scratch = tempfile::Builder::new()
+        .prefix("storgit-")
+        .tempdir()
+        .unwrap();
+    let path = scratch.path().join("repo");
+    let store = Store::<SubmoduleLayout>::new(path).unwrap();
+    (scratch, store)
+}
+
+/// Fresh store under a new scratch dir with `parts` applied via the
+/// builder. Equivalent to the old `Store::open(parts)` flow.
+fn open_with(parts: Parts) -> (TempDir, Store<SubmoduleLayout>) {
+    let scratch = tempfile::Builder::new()
+        .prefix("storgit-")
+        .tempdir()
+        .unwrap();
+    let path = scratch.path().join("repo");
+    let store = Store::<SubmoduleLayout>::new(path)
+        .unwrap()
+        .with_parts(parts)
+        .unwrap();
+    (scratch, store)
+}
+
+/// Rehydrate a store from a `save()` tarball under a fresh scratch dir.
+fn load_bytes(bytes: &[u8]) -> (TempDir, Store<SubmoduleLayout>) {
+    let scratch = tempfile::Builder::new()
+        .prefix("storgit-")
+        .tempdir()
+        .unwrap();
+    let path = scratch.path().join("repo");
+    let store = Store::<SubmoduleLayout>::load(bytes, path).unwrap();
+    (scratch, store)
+}
+
 #[test]
 fn open_empty_roundtrips() {
-    let mut store = Store::open(empty()).expect("open empty");
+    let (_tmp, mut store) = fresh();
     let snap = store.snapshot().expect("snapshot");
     assert!(snap.parent.is_some(), "fresh store must publish its parent");
     assert!(snap.modules.is_empty());
     let mut parts = empty();
     parts.apply(snap);
-    Store::open(parts).expect("reopen");
+    let (_tmp2, _reopened) = open_with(parts);
 }
 
 #[test]
 fn put_roundtrips_through_parts() {
     let mut parts = empty();
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"hello");
     parts.apply(store.snapshot().unwrap());
-    let reopened = Store::open(parts).unwrap();
+    let (_tmp2, reopened) = open_with(parts);
     assert_eq!(get_data(&reopened, "alpha").as_deref(), Some(&b"hello"[..]));
 }
 
 #[test]
 fn history_survives_parts_roundtrip() {
     let mut parts = empty();
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"v1");
     put_data(&mut store, "alpha", b"v2");
     parts.apply(store.snapshot().unwrap());
-    let reopened = Store::open(parts).unwrap();
+    let (_tmp2, reopened) = open_with(parts);
     let history = reopened.history(&mkid("alpha")).unwrap();
     let payloads: Vec<Option<&[u8]>> = history.iter().map(|e| e.data.as_deref()).collect();
     assert_eq!(payloads, vec![Some(&b"v2"[..]), Some(&b"v1"[..])]);
@@ -56,7 +96,7 @@ fn history_survives_parts_roundtrip() {
 #[test]
 fn snapshot_only_reports_touched_modules() {
     // Writing one entry must not mark any other entry's tarball as dirty.
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"1");
     put_data(&mut store, "beta", b"1");
     let _first = store.snapshot().unwrap();
@@ -72,7 +112,7 @@ fn snapshot_only_reports_touched_modules() {
 
 #[test]
 fn snapshot_is_empty_when_nothing_changed() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"1");
     let _first = store.snapshot().unwrap();
     let second = store.snapshot().unwrap();
@@ -82,13 +122,13 @@ fn snapshot_is_empty_when_nothing_changed() {
 
 #[test]
 fn save_load_roundtrips_all_state() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"a1");
     put_data(&mut store, "alpha", b"a2");
     put_data(&mut store, "beta", b"b1");
     let bytes = store.save().unwrap();
 
-    let reloaded = Store::load(&bytes).unwrap();
+    let (_tmp2, reloaded) = load_bytes(&bytes);
     let mut ids = reloaded.list().unwrap();
     ids.sort();
     assert_eq!(ids, vec![mkid("alpha"), mkid("beta")]);
@@ -100,7 +140,7 @@ fn save_load_roundtrips_all_state() {
 
 #[test]
 fn save_is_nondestructive() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"1");
     let _bytes = store.save().unwrap();
     put_data(&mut store, "beta", b"2");
@@ -112,13 +152,13 @@ fn save_is_nondestructive() {
 #[test]
 fn save_bundles_every_module_even_ones_not_touched_since_last_snapshot() {
     // snapshot() reports incremental deltas; save() is the full bundle.
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"a");
     put_data(&mut store, "beta", b"b");
     let _drain_dirty = store.snapshot().unwrap();
     let bytes = store.save().unwrap();
 
-    let reloaded = Store::load(&bytes).unwrap();
+    let (_tmp2, reloaded) = load_bytes(&bytes);
     assert_eq!(get_data(&reloaded, "alpha").as_deref(), Some(&b"a"[..]));
     assert_eq!(get_data(&reloaded, "beta").as_deref(), Some(&b"b"[..]));
 }
@@ -126,7 +166,7 @@ fn save_bundles_every_module_even_ones_not_touched_since_last_snapshot() {
 #[test]
 fn delete_emits_module_deletion_in_snapshot() {
     let mut parts = empty();
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"1");
     parts.apply(store.snapshot().unwrap());
     assert!(parts.modules.contains_key(&mkid("alpha")));
@@ -142,7 +182,7 @@ fn delete_emits_module_deletion_in_snapshot() {
 
 #[test]
 fn fresh_module_stays_under_1kb_on_disk() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"payload");
     let bytes = store.save().unwrap();
 
@@ -177,7 +217,7 @@ fn dir_size(path: &std::path::Path) -> std::io::Result<u64> {
 #[test]
 fn parent_objects_stay_bounded_after_many_puts() {
     const N: usize = 50;
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     for i in 0..N {
         store
             .put(
@@ -221,7 +261,7 @@ fn count_loose_objects(objects_root: &std::path::Path) -> usize {
 
 #[test]
 fn parent_history_is_squashed_to_one_commit() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     for i in 0..50 {
         put_data(&mut store, &format!("entry-{i:04}"), b"x");
     }
@@ -241,16 +281,16 @@ fn parent_history_is_squashed_to_one_commit() {
 
 #[test]
 fn parts_from_first_snapshot_can_be_reopened() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"hi");
     let parts: Parts = store.snapshot().unwrap().into();
-    let reopened = Store::open(parts).unwrap();
+    let (_tmp2, reopened) = open_with(parts);
     assert_eq!(get_data(&reopened, "alpha").as_deref(), Some(&b"hi"[..]));
 }
 
 #[test]
 fn parent_ref_is_not_updated_between_puts_without_snapshot() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     for i in 0..10 {
         put_data(&mut store, &format!("entry-{i:04}"), b"x");
     }
@@ -271,12 +311,12 @@ fn parent_ref_is_not_updated_between_puts_without_snapshot() {
 #[test]
 fn parts_apply_merges_successive_snapshots() {
     let mut parts = empty();
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"1");
     parts.apply(store.snapshot().unwrap());
     put_data(&mut store, "beta", b"2");
     parts.apply(store.snapshot().unwrap());
-    let reopened = Store::open(parts).unwrap();
+    let (_tmp2, reopened) = open_with(parts);
     let mut ids = reopened.list().unwrap();
     ids.sort();
     assert_eq!(ids, vec![mkid("alpha"), mkid("beta")]);
@@ -285,13 +325,13 @@ fn parts_apply_merges_successive_snapshots() {
 #[test]
 fn label_cache_survives_parts_roundtrip() {
     let mut parts = empty();
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     store
         .put(&mkid("alpha"), Some(b"label"), Some(b"data"))
         .unwrap();
     parts.apply(store.snapshot().unwrap());
 
-    let reopened = Store::open(parts).unwrap();
+    let (_tmp2, reopened) = open_with(parts);
     assert_eq!(reopened.label(&mkid("alpha")), Some(&b"label"[..]));
     assert_eq!(
         reopened.list_labels(),
@@ -311,7 +351,7 @@ fn extract_to_tmp(bytes: &[u8]) -> tempfile::TempDir {
 
 #[test]
 fn gitmodules_blob_appears_in_parent_tree_after_put() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"x");
     put_data(&mut store, "beta", b"y");
     let bytes = store.save().unwrap();
@@ -336,7 +376,7 @@ fn gitmodules_blob_appears_in_parent_tree_after_put() {
 
 #[test]
 fn gitmodules_omitted_when_no_live_entries() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     let bytes = store.save().unwrap();
 
     let tmp = extract_to_tmp(&bytes);
@@ -347,7 +387,7 @@ fn gitmodules_omitted_when_no_live_entries() {
 
 #[test]
 fn gitmodules_updates_when_entry_is_archived() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "keep", b"x");
     put_data(&mut store, "drop", b"y");
     store.archive(&mkid("drop")).unwrap();
@@ -369,7 +409,7 @@ fn gitmodules_updates_when_entry_is_archived() {
 
 #[test]
 fn gitmodules_parses_as_git_submodule_config() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"x");
     put_data(&mut store, "user@host.com", b"y");
     let bytes = store.save().unwrap();
@@ -403,7 +443,7 @@ fn gitmodules_parses_as_git_submodule_config() {
 // -- fetcher / lazy loading --------------------------------------------
 
 fn snapshot_backing(entries: &[(&str, &[u8])]) -> (Vec<u8>, Modules) {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     for (name, data) in entries {
         store.put(&mkid(name), Some(b"label"), Some(data)).unwrap();
     }
@@ -428,7 +468,7 @@ fn fetcher_is_consulted_on_miss_and_result_round_trips() {
             Ok(backing_for_fetch.get(id).cloned())
         })),
     };
-    let store = Store::open(parts).unwrap();
+    let (_tmp, store) = open_with(parts);
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"hello"[..]));
     assert_eq!(
         calls.lock().unwrap().as_slice(),
@@ -450,7 +490,7 @@ fn fetcher_prewarm_short_circuits_lookup() {
             Ok(None)
         })),
     };
-    let store = Store::open(parts).unwrap();
+    let (_tmp, store) = open_with(parts);
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"hi"[..]));
     assert_eq!(
         *calls.lock().unwrap(),
@@ -467,7 +507,7 @@ fn fetcher_ok_none_for_live_id_surfaces_as_error() {
         modules: Modules::new(),
         fetcher: Some(Arc::new(|_id: &Id| Ok(None))),
     };
-    let store = Store::open(parts).unwrap();
+    let (_tmp, store) = open_with(parts);
     let err = store
         .get(&mkid("alpha"))
         .expect_err("live id with no backing bytes must error");
@@ -485,7 +525,7 @@ fn fetcher_ok_none_for_unknown_id_is_fresh() {
         modules: Modules::new(),
         fetcher: Some(Arc::new(|_id: &Id| Ok(None))),
     };
-    let mut store = Store::open(parts).unwrap();
+    let (_tmp, mut store) = open_with(parts);
     store.put(&mkid("fresh"), None, Some(b"v1")).unwrap();
     assert_eq!(get_data(&store, "fresh").as_deref(), Some(&b"v1"[..]));
 }
@@ -498,7 +538,7 @@ fn fetcher_error_propagates_as_error_fetch() {
         modules: Modules::new(),
         fetcher: Some(Arc::new(|_id: &Id| Err("db unreachable".into()))),
     };
-    let store = Store::open(parts).unwrap();
+    let (_tmp, store) = open_with(parts);
     let err = store
         .get(&mkid("alpha"))
         .expect_err("fetcher error must propagate");
@@ -514,7 +554,7 @@ fn delete_drops_entry_and_history() {
     // Hard-delete erases the submodule's history entirely -- a
     // submodule-only property since subdir can't cheaply rewrite a
     // shared ref.
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "gone", b"bye");
     store.delete(&mkid("gone")).unwrap();
     assert!(store.list().unwrap().is_empty());
@@ -524,7 +564,7 @@ fn delete_drops_entry_and_history() {
 
 #[test]
 fn re_put_after_delete_starts_fresh_history() {
-    let mut store = Store::open(empty()).unwrap();
+    let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"v1");
     store.delete(&mkid("alpha")).unwrap();
     put_data(&mut store, "alpha", b"v2");
@@ -535,7 +575,7 @@ fn re_put_after_delete_starts_fresh_history() {
 
 #[test]
 fn new_submodule_store_is_usable() {
-    let mut store = Store::new().unwrap();
+    let (_tmp, mut store) = fresh();
     assert!(store.list().unwrap().is_empty());
     put_data(&mut store, "alpha", b"x");
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"x"[..]));

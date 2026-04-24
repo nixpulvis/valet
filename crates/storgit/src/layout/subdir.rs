@@ -4,45 +4,44 @@
 //! shared commit graph rather than isolated submodule refs.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use gix::bstr::{BStr, BString, ByteSlice};
 use gix::objs::{
     Tree,
     tree::{Entry as TreeEntry, EntryKind},
 };
-use tempfile::TempDir;
 
 use crate::entry::{CommitId, Entry};
 use crate::error::Error;
-use crate::git::{decode_tree, init_bare_on_branch, module_ref_path, read_ref_file, write_commit, write_ref_file};
+use crate::git::{
+    BRANCH, decode_tree, init_bare_on_branch, module_ref_path, read_ref_file, write_commit,
+    write_ref_file,
+};
 use crate::id::Id;
 use crate::layout::Layout;
 use crate::module::{DATA_FILE, LABEL_FILE};
-use crate::store::Store;
+use crate::tarball::tar_dir;
 
 /// Subtree name inside the repo's root tree that holds every entry.
 const RECORDS_DIR: &str = "records";
 
-/// The subdir-layout storgit implementation. Owns a scratch
-/// [`TempDir`] containing one bare repo. Records live at
-/// `records/<id>/{data,label}` in that repo's tree; a single shared
-/// ref (`refs/heads/main`) advances with every write.
+/// The subdir-layout storgit implementation. Backed by a single bare
+/// repo at `path`. Records live at `records/<id>/{data,label}` in
+/// that repo's tree; a single shared ref (`refs/heads/main`) advances
+/// with every write.
 pub struct SubdirLayout {
-    scratch: TempDir,
+    path: PathBuf,
     label_cache: BTreeMap<Id, Vec<u8>>,
 }
 
 impl SubdirLayout {
-    fn repo_path(&self) -> std::path::PathBuf {
-        self.scratch.path().to_path_buf()
-    }
-
     fn open_repo(&self) -> Result<gix::Repository, Error> {
-        Ok(gix::open(self.repo_path())?)
+        Ok(gix::open(&self.path)?)
     }
 
     fn head_commit(&self, _repo: &gix::Repository) -> Result<Option<gix::ObjectId>, Error> {
-        read_ref_file(&module_ref_path(&self.repo_path()))
+        read_ref_file(&module_ref_path(&self.path))
     }
 
     /// Tree oid of `records/<id>/` at the given root tree, if any.
@@ -112,6 +111,34 @@ fn subtree_entry(
 }
 
 impl Layout for SubdirLayout {
+    fn new(path: PathBuf) -> Result<Self, Error> {
+        if path.exists() {
+            return Err(Error::Other(format!(
+                "subdir new: path {path:?} already exists"
+            )));
+        }
+        std::fs::create_dir(&path)?;
+        init_bare_on_branch(&path)?;
+        Ok(SubdirLayout {
+            path,
+            label_cache: BTreeMap::new(),
+        })
+    }
+
+    fn open(path: PathBuf) -> Result<Self, Error> {
+        validate_subdir_repo(&path)?;
+        let mut layout = SubdirLayout {
+            path,
+            label_cache: BTreeMap::new(),
+        };
+        layout.rebuild_label_cache()?;
+        Ok(layout)
+    }
+
+    fn save(&mut self) -> Result<Vec<u8>, Error> {
+        tar_dir(&self.path)
+    }
+
     fn put(
         &mut self,
         id: &Id,
@@ -197,7 +224,7 @@ impl Layout for SubdirLayout {
             prior_commit.into_iter().collect(),
             "put",
         )?;
-        write_ref_file(&module_ref_path(&self.repo_path()), commit_id)?;
+        write_ref_file(&module_ref_path(&self.path), commit_id)?;
 
         match label {
             Some(bytes) if !bytes.is_empty() => {
@@ -240,7 +267,7 @@ impl Layout for SubdirLayout {
         let records_tree_id = write_records_tree(&repo, Some(roid), id, None)?;
         let root_tree_id = write_root_tree(&repo, Some(prior_root_tree_id), records_tree_id)?;
         let commit_id = write_commit(&repo, root_tree_id, vec![prior_commit], "archive")?;
-        write_ref_file(&module_ref_path(&self.repo_path()), commit_id)?;
+        write_ref_file(&module_ref_path(&self.path), commit_id)?;
         self.label_cache.remove(id);
         Ok(())
     }
@@ -419,19 +446,39 @@ fn read_subdir_entry_at(
     })
 }
 
-// --- Subdir-layout-specific inherent methods on Store<SubdirLayout> ---
-
-impl Store<SubdirLayout> {
-    /// Create a fresh, empty subdir-layout store under a scratch
-    /// [`TempDir`]. The store lives until the handle is dropped.
-    pub fn open_subdir() -> Result<Self, Error> {
-        let scratch = tempfile::Builder::new().prefix("storgit-").tempdir()?;
-        init_bare_on_branch(scratch.path())?;
-        let mut layout = SubdirLayout {
-            scratch,
-            label_cache: BTreeMap::new(),
-        };
-        layout.rebuild_label_cache()?;
-        Ok(Store { layout })
+/// Sanity-check that `path` holds a valid subdir-layout storgit
+/// repo: a bare repo whose HEAD points to storgit's branch and
+/// whose root tree (if any commit exists) contains no gitlinks
+/// (which would signal a submodule-layout repo).
+fn validate_subdir_repo(path: &Path) -> Result<(), Error> {
+    let repo = gix::open(path).map_err(|e| {
+        Error::Other(format!(
+            "storgit subdir open: path {path:?} is not a git repo: {e}"
+        ))
+    })?;
+    let head_raw = std::fs::read_to_string(path.join("HEAD"))
+        .map_err(|e| Error::Other(format!("storgit subdir open: cannot read HEAD: {e}")))?;
+    let head_trimmed = head_raw.trim();
+    let expected = format!("ref: {BRANCH}");
+    if head_trimmed != expected {
+        return Err(Error::Other(format!(
+            "storgit subdir open: HEAD must be {expected:?}; got {head_trimmed:?}"
+        )));
     }
+    if let Some(commit_oid) = read_ref_file(&module_ref_path(path))? {
+        let commit = repo.find_object(commit_oid)?.into_commit();
+        let tree_id = commit.decode()?.tree();
+        let tree = decode_tree(&repo, tree_id)?;
+        for entry in tree.entries {
+            if matches!(entry.mode.kind(), EntryKind::Commit) {
+                return Err(Error::Other(format!(
+                    "storgit subdir open: {path:?} looks like a submodule-layout storgit repo (gitlinks in root tree)"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
+
+// Subdir layout's new/open/save/load all live on the Layout trait;
+// no Store<SubdirLayout> inherent methods are needed.

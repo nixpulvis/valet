@@ -5,10 +5,10 @@
 
 mod common;
 
-use common::{mkid, put_data};
-use storgit::Store;
+use common::{Handle, mkid, put_data};
+use storgit::layout::subdir::SubdirLayout;
 
-fn open() -> Store<storgit::layout::subdir::SubdirLayout> {
+fn open() -> Handle<SubdirLayout> {
     common::make_subdir_store()
 }
 
