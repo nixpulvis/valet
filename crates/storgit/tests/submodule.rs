@@ -509,7 +509,10 @@ fn snapshot_backing(entries: &[(&str, &[u8])]) -> (Vec<u8>, Modules) {
 #[test]
 fn fetcher_is_consulted_on_miss_and_result_round_trips() {
     let (parent, modules) = snapshot_backing(&[("alpha", b"hello")]);
-    let parts = Parts { parent, modules: Modules::new() };
+    let parts = Parts {
+        parent,
+        modules: Modules::new(),
+    };
     let (_tmp, store, backing) = open_with_fetcher(parts);
     backing.extend(modules);
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"hello"[..]));
@@ -535,7 +538,10 @@ fn fetcher_prewarm_short_circuits_lookup() {
 #[test]
 fn fetcher_ok_none_for_live_id_surfaces_as_error() {
     let (parent, _) = snapshot_backing(&[("alpha", b"hi")]);
-    let parts = Parts { parent, modules: Modules::new() };
+    let parts = Parts {
+        parent,
+        modules: Modules::new(),
+    };
     let (_tmp, store, _backing) = open_with_fetcher(parts);
     let err = store
         .get(&mkid("alpha"))
@@ -557,7 +563,10 @@ fn fetcher_ok_none_for_unknown_id_is_fresh() {
 #[test]
 fn fetcher_error_propagates_as_error_fetch() {
     let (parent, _) = snapshot_backing(&[("alpha", b"hi")]);
-    let parts = Parts { parent, modules: Modules::new() };
+    let parts = Parts {
+        parent,
+        modules: Modules::new(),
+    };
     let scratch = tempfile::Builder::new()
         .prefix("storgit-")
         .tempdir()

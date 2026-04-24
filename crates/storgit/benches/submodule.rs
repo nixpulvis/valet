@@ -1,30 +1,28 @@
-//! Submodule-layout-specific benches: persistence envelopes
-//! ([`Parts`] / [`Snapshot`]), save/load bundling, and workloads
-//! that exercise the lazy-load path via `load_module`.
+//! Submodule-layout-specific benches: persistence envelopes ([`Parts`] /
+//! [`Snapshot`]), save/load bundling, and workloads that exercise the lazy-load
+//! path via `load_module`.
 //!
 //! Layout-agnostic benches (put / get / n_put_fresh) live in
 //! `benches/generic.rs` where they run against both layouts.
 //!
 //! ## Timing gotcha
 //!
-//! Routines here use `iter_batched` and always **return** the
-//! `Store` instead of letting it drop at end-of-closure. Criterion
-//! collects the returned values into a `Vec` and drops them after
-//! the timed section ends; if we instead discarded the store inside
-//! the closure, [`tempfile::TempDir`]'s `Drop` would run inside the
-//! timed window and charge the tear-down cost (walking and
-//! unlinking a parent bare repo plus N submodule bare repos) to the
-//! routine.
+//! Routines here use `iter_batched` and always **return** the `Store` instead
+//! of letting it drop at end-of-closure. Criterion collects the returned values
+//! into a `Vec` and drops them after the timed section ends; if we instead
+//! discarded the store inside the closure, [`tempfile::TempDir`]'s `Drop` would
+//! run inside the timed window and charge the tear-down cost (walking and
+//! unlinking a parent bare repo plus N submodule bare repos) to the routine.
 
 mod common;
 
 use std::collections::HashMap;
 
-use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{Throughput, criterion_group, criterion_main};
 use storgit::layout::submodule::{ModuleChange, Parts, Snapshot};
 use storgit::{Id, Store, SubmoduleLayout};
 
-use common::{Handle, MEASUREMENT_TIME, SCALING_NS, entry_id, new_id};
+use common::{Handle, entry_id, new_id};
 
 /// In memory persistence layer: one byte blob per module plus the parent.
 #[derive(Clone, Default)]
@@ -61,11 +59,7 @@ impl Storage {
 /// Build a fresh store at a newly-allocated scratch path and apply
 /// `parts`. The `Handle` carries the scratch TempDir for lifetime
 /// management.
-fn open_with_parts(parts: Parts) -> Handle<SubmoduleLayout> {
-    let scratch = tempfile::Builder::new()
-        .prefix("storgit-bench-")
-        .tempdir()
-        .unwrap();
+fn new_with_parts(parts: Parts, scratch: tempfile::TempDir) -> Handle<SubmoduleLayout> {
     let path = scratch.path().join("repo");
     let store = Store::<SubmoduleLayout>::new(path)
         .unwrap()
@@ -77,11 +71,12 @@ fn open_with_parts(parts: Parts) -> Handle<SubmoduleLayout> {
     }
 }
 
+fn new_with_parts_tmp(parts: Parts) -> Handle<SubmoduleLayout> {
+    new_with_parts(parts, tempdir())
+}
+
 fn load_bytes(bytes: &[u8]) -> Handle<SubmoduleLayout> {
-    let scratch = tempfile::Builder::new()
-        .prefix("storgit-bench-")
-        .tempdir()
-        .unwrap();
+    let scratch = tempdir();
     let path = scratch.path().join("repo");
     let store = Store::<SubmoduleLayout>::load(bytes, path).unwrap();
     Handle {
@@ -90,7 +85,14 @@ fn load_bytes(bytes: &[u8]) -> Handle<SubmoduleLayout> {
     }
 }
 
-fn build_storage_with(n: usize) -> Storage {
+fn tempdir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("storgit-bench-")
+        .tempdir()
+        .unwrap()
+}
+
+fn build_storage(n: usize) -> Storage {
     let mut h = common::fresh::<SubmoduleLayout>();
     for i in 0..n {
         h.store
@@ -102,44 +104,26 @@ fn build_storage_with(n: usize) -> Storage {
     storage
 }
 
-fn build_storage() -> Storage {
-    build_storage_with(common::CORPUS_SIZE)
-}
-
 fn build_blob(n: usize) -> Vec<u8> {
-    let mut h = common::fresh::<SubmoduleLayout>();
-    for i in 0..n {
-        h.store
-            .put(&entry_id(i), Some(b"label"), Some(b"payload"))
-            .expect("populate put");
-    }
-    h.store.save().expect("save")
+    let storage = build_storage(n);
+    let parts = Parts {
+        parent: storage.parent,
+        modules: storage.modules,
+    };
+    new_with_parts_tmp(parts).store.save().expect("save")
 }
 
-fn bench_open(c: &mut Criterion) {
-    let mut group = c.benchmark_group("open");
-    group.sample_size(10);
-    group.measurement_time(MEASUREMENT_TIME);
-    for &n in SCALING_NS {
-        let storage = build_storage_with(n);
-        group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(n), &storage, |b, storage| {
-            b.iter_batched(
-                || storage.metadata_only_parts(),
-                open_with_parts,
-                BatchSize::LargeInput,
-            );
-        });
-    }
-    group.finish();
-}
+bench!(bench_new_with_parts,
+    seed: |n| build_storage(n),
+    throughput: |n, _s| Throughput::Elements(n as u64),
+    setup: |storage, _n| (storage.metadata_only_parts(), tempdir()),
+    body: |(parts, path)| new_with_parts(parts, path),
+    layouts<L>: [SubmoduleLayout],
+);
 
-fn bench_lazy_get(c: &mut Criterion) {
-    let mut group = c.benchmark_group("lazy_get");
-    group.sample_size(10);
-    group.measurement_time(MEASUREMENT_TIME);
-    let storage = build_storage();
-    for &n in SCALING_NS {
+bench!(bench_lazy_get,
+    seed: |n| {
+        let storage = build_storage(common::CORPUS_SIZE);
         let pairs: Vec<(Id, Vec<u8>)> = (0..n)
             .map(|i| {
                 let id = entry_id(i % common::CORPUS_SIZE);
@@ -147,143 +131,96 @@ fn bench_lazy_get(c: &mut Criterion) {
                 (id, bytes)
             })
             .collect();
-        group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter_batched(
-                || (open_with_parts(storage.metadata_only_parts()), pairs.clone()),
-                |(mut h, pairs)| {
-                    for (id, bytes) in pairs {
-                        h.store.load_module(id.clone(), bytes);
-                        let _entry = h.store.get(&id).expect("get").expect("live");
-                    }
-                    h
-                },
-                BatchSize::LargeInput,
-            );
-        });
-    }
-    group.finish();
-}
+        (storage, pairs)
+    },
+    throughput: |n, _s| Throughput::Elements(n as u64),
+    setup: |(storage, pairs), _n| {
+        (new_with_parts_tmp(storage.metadata_only_parts()), pairs.clone())
+    },
+    body: |(mut h, pairs)| {
+        for (id, bytes) in pairs {
+            h.store.load_module(id.clone(), bytes);
+            let _entry = h.store.get(&id).expect("get").expect("live");
+        }
+        h
+    },
+    layouts<L>: [SubmoduleLayout],
+);
 
-fn bench_snapshot(c: &mut Criterion) {
-    let mut group = c.benchmark_group("snapshot");
-    group.sample_size(10);
-    group.measurement_time(MEASUREMENT_TIME);
-    let storage = build_storage();
-    for &n in SCALING_NS {
-        group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
-            b.iter_batched(
-                || {
-                    let mut h = open_with_parts(storage.metadata_only_parts());
-                    for i in 0..n {
-                        h.store
-                            .put(&new_id(i), Some(b"label"), Some(b"payload"))
-                            .unwrap();
-                    }
-                    h
-                },
-                |mut h| {
-                    let _ = h.store.snapshot().unwrap();
-                    h
-                },
-                BatchSize::LargeInput,
-            );
-        });
-    }
-    group.finish();
-}
+bench!(bench_snapshot,
+    seed: |_n| build_storage(common::CORPUS_SIZE),
+    throughput: |n, _s| Throughput::Elements(n as u64),
+    setup: |storage, n| {
+        let mut h = new_with_parts_tmp(storage.metadata_only_parts());
+        for i in 0..n {
+            h.store
+                .put(&new_id(i), Some(b"label"), Some(b"payload"))
+                .unwrap();
+        }
+        h
+    },
+    body: |mut h| {
+        let _ = h.store.snapshot().unwrap();
+        h
+    },
+    layouts<L>: [SubmoduleLayout],
+);
 
-fn bench_n_put_1_snapshot(c: &mut Criterion) {
-    let mut group = c.benchmark_group("n_put_1_snapshot");
-    group.sample_size(10);
-    group.measurement_time(MEASUREMENT_TIME);
-    for &n in SCALING_NS {
-        group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
-            b.iter_batched(
-                common::fresh::<SubmoduleLayout>,
-                |mut h| {
-                    for i in 0..n {
-                        h.store
-                            .put(&entry_id(i), Some(b"label"), Some(b"payload"))
-                            .unwrap();
-                    }
-                    let _ = h.store.snapshot().unwrap();
-                    h
-                },
-                BatchSize::LargeInput,
-            );
-        });
-    }
-    group.finish();
-}
+bench!(bench_n_put_1_snapshot,
+    setup: common::fresh(),
+    throughput: |n| Throughput::Elements(n as u64),
+    |h, n| {
+        for i in 0..n {
+            h.store
+                .put(&entry_id(i), Some(b"label"), Some(b"payload"))
+                .unwrap();
+        }
+        let _ = h.store.snapshot().unwrap();
+    },
+    layouts<L>: [SubmoduleLayout],
+);
 
-fn bench_n_put_n_snapshot(c: &mut Criterion) {
-    let mut group = c.benchmark_group("n_put_n_snapshot");
-    group.sample_size(10);
-    group.measurement_time(MEASUREMENT_TIME);
-    for &n in SCALING_NS {
-        group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
-            b.iter_batched(
-                common::fresh::<SubmoduleLayout>,
-                |mut h| {
-                    for i in 0..n {
-                        h.store
-                            .put(&entry_id(i), Some(b"label"), Some(b"payload"))
-                            .unwrap();
-                        let _ = h.store.snapshot().unwrap();
-                    }
-                    h
-                },
-                BatchSize::LargeInput,
-            );
-        });
-    }
-    group.finish();
-}
+bench!(bench_n_put_n_snapshot,
+    setup: common::fresh(),
+    throughput: |n| Throughput::Elements(n as u64),
+    |h, n| {
+        for i in 0..n {
+            h.store
+                .put(&entry_id(i), Some(b"label"), Some(b"payload"))
+                .unwrap();
+            let _ = h.store.snapshot().unwrap();
+        }
+    },
+    layouts<L>: [SubmoduleLayout],
+);
 
-fn bench_load(c: &mut Criterion) {
-    let mut group = c.benchmark_group("load");
-    group.sample_size(10);
-    group.measurement_time(MEASUREMENT_TIME);
-    for &n in SCALING_NS {
-        let blob = build_blob(n);
-        group.throughput(Throughput::Bytes(blob.len() as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(n), &blob, |b, blob| {
-            b.iter_batched(
-                || blob.clone(),
-                |bytes| load_bytes(&bytes),
-                BatchSize::LargeInput,
-            );
-        });
-    }
-    group.finish();
-}
+bench!(bench_load,
+    seed: |n| build_blob(n),
+    throughput: |_n, blob| Throughput::Bytes(blob.len() as u64),
+    setup: |blob, _n| blob.clone(),
+    body: |bytes| load_bytes(&bytes),
+    flat_threshold: 50,
+    layouts<L>: [SubmoduleLayout],
+);
 
-fn bench_save(c: &mut Criterion) {
-    let mut group = c.benchmark_group("save");
-    group.sample_size(10);
-    group.measurement_time(MEASUREMENT_TIME);
-    for &n in SCALING_NS {
-        group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
-            let mut h = common::fresh::<SubmoduleLayout>();
-            for i in 0..n {
-                h.store
-                    .put(&entry_id(i), Some(b"label"), Some(b"payload"))
-                    .unwrap();
-            }
-            b.iter(|| h.store.save().unwrap());
-        });
-    }
-    group.finish();
-}
+bench!(bench_save,
+    seed: |n| {
+        let mut h = common::fresh::<SubmoduleLayout>();
+        for i in 0..n {
+            h.store
+                .put(&entry_id(i), Some(b"label"), Some(b"payload"))
+                .unwrap();
+        }
+        h
+    },
+    throughput: |n, _s| Throughput::Elements(n as u64),
+    body: |h| h.store.save().unwrap(),
+    layouts<L>: [SubmoduleLayout],
+);
 
 criterion_group!(
     benches,
-    bench_open,
+    bench_new_with_parts,
     bench_lazy_get,
     bench_snapshot,
     bench_n_put_1_snapshot,

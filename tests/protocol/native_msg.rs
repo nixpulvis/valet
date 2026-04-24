@@ -16,8 +16,8 @@ use crate::common::envelope;
 use crate::common::stub::{STUB_LOT, STUB_USER, StubHandler};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use valet::protocol::native_msg::MAX_SIZE;
 use valet::protocol::message::{Request, Response};
+use valet::protocol::native_msg::MAX_SIZE;
 
 /// Round-trip a `Request::Status` through the native-messaging server
 /// and decode the inner `Response::Users` from the reply payload.

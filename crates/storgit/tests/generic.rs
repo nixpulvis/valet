@@ -1,6 +1,6 @@
 //! Tests exercising the layout-agnostic [`storgit::Store`] surface.
 //! Each test body lives here and is instantiated once per concrete
-//! layout via `generic_test!`, which expands into a module named
+//! layout via `store_test!`, which expands into a module named
 //! after the test holding two `#[test]` fns: `submodule` and
 //! `subdir`. In test output they read as
 //! `put_then_get_returns_latest::submodule` / `::subdir`.
@@ -8,9 +8,12 @@
 mod common;
 
 use common::{get_data, mkid, put_data};
-use storgit::{CommitId, Entry, Id, id};
+use storgit::layout::Layout;
+use storgit::layout::subdir::SubdirLayout;
+use storgit::layout::submodule::SubmoduleLayout;
+use storgit::{CommitId, Entry, Id, Store, id};
 
-macro_rules! generic_test {
+macro_rules! store_test {
     ($name:ident, |$store:ident| $body:block) => {
         mod $name {
             use super::*;
@@ -32,17 +35,17 @@ macro_rules! generic_test {
     };
 }
 
-generic_test!(put_then_get_returns_latest, |store| {
+store_test!(put_then_get_returns_latest, |store| {
     put_data(&mut store, "alpha", b"one");
     put_data(&mut store, "alpha", b"two");
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"two"[..]));
 });
 
-generic_test!(get_missing_entry_returns_none, |store| {
+store_test!(get_missing_entry_returns_none, |store| {
     assert!(store.get(&mkid("nope")).unwrap().is_none());
 });
 
-generic_test!(history_returns_all_versions_newest_first, |store| {
+store_test!(history_returns_all_versions_newest_first, |store| {
     put_data(&mut store, "alpha", b"v1");
     put_data(&mut store, "alpha", b"v2");
     put_data(&mut store, "alpha", b"v3");
@@ -54,7 +57,7 @@ generic_test!(history_returns_all_versions_newest_first, |store| {
     );
 });
 
-generic_test!(list_names_live_entries, |store| {
+store_test!(list_names_live_entries, |store| {
     put_data(&mut store, "a", b"x");
     put_data(&mut store, "b", b"y");
     let mut ids = store.list().unwrap();
@@ -62,7 +65,7 @@ generic_test!(list_names_live_entries, |store| {
     assert_eq!(ids, vec![mkid("a"), mkid("b")]);
 });
 
-generic_test!(archive_removes_from_list_but_history_survives, |store| {
+store_test!(archive_removes_from_list_but_history_survives, |store| {
     put_data(&mut store, "gone", b"bye");
     store.archive(&mkid("gone")).unwrap();
     assert!(store.list().unwrap().is_empty());
@@ -74,7 +77,7 @@ generic_test!(archive_removes_from_list_but_history_survives, |store| {
     assert_eq!(history[1].data.as_deref(), Some(&b"bye"[..]));
 });
 
-generic_test!(re_put_after_archive_continues_history, |store| {
+store_test!(re_put_after_archive_continues_history, |store| {
     put_data(&mut store, "alpha", b"v1");
     store.archive(&mkid("alpha")).unwrap();
     put_data(&mut store, "alpha", b"v2");
@@ -87,7 +90,7 @@ generic_test!(re_put_after_archive_continues_history, |store| {
     );
 });
 
-generic_test!(
+store_test!(
     put_returns_matching_commit_id_for_latest_history_entry,
     |store| {
         let commit: CommitId = store
@@ -99,22 +102,22 @@ generic_test!(
     }
 );
 
-generic_test!(empty_payload_roundtrips, |store| {
+store_test!(empty_payload_roundtrips, |store| {
     put_data(&mut store, "alpha", b"");
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b""[..]));
 });
 
-generic_test!(new_store_is_empty_and_writable, |store| {
+store_test!(new_store_is_empty_and_writable, |store| {
     assert!(store.list().unwrap().is_empty());
     put_data(&mut store, "alpha", b"x");
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"x"[..]));
 });
 
-generic_test!(put_rejects_both_sides_none, |store| {
+store_test!(put_rejects_both_sides_none, |store| {
     assert!(store.put(&mkid("alpha"), None, None).is_err());
 });
 
-generic_test!(put_label_and_data_roundtrips, |store| {
+store_test!(put_label_and_data_roundtrips, |store| {
     store
         .put(&mkid("alpha"), Some(b"label"), Some(b"payload"))
         .unwrap();
@@ -123,7 +126,7 @@ generic_test!(put_label_and_data_roundtrips, |store| {
     assert_eq!(entry.data.as_deref(), Some(&b"payload"[..]));
 });
 
-generic_test!(put_none_slot_carries_prior_blob_forward, |store| {
+store_test!(put_none_slot_carries_prior_blob_forward, |store| {
     store.put(&mkid("alpha"), None, Some(b"payload")).unwrap();
     store.put(&mkid("alpha"), Some(b"label"), None).unwrap();
 
@@ -143,7 +146,7 @@ generic_test!(put_none_slot_carries_prior_blob_forward, |store| {
     assert_eq!(history[1].label, None);
 });
 
-generic_test!(put_label_only_is_noop_when_label_matches_prior, |store| {
+store_test!(put_label_only_is_noop_when_label_matches_prior, |store| {
     store
         .put(&mkid("alpha"), Some(b"label"), Some(b"payload"))
         .unwrap();
@@ -157,7 +160,7 @@ generic_test!(put_label_only_is_noop_when_label_matches_prior, |store| {
     assert_eq!(store.history(&mkid("alpha")).unwrap().len(), 1);
 });
 
-generic_test!(put_none_on_fresh_entry_omits_slot, |store| {
+store_test!(put_none_on_fresh_entry_omits_slot, |store| {
     store.put(&mkid("alpha"), Some(b"label"), None).unwrap();
     let entry = store.get(&mkid("alpha")).unwrap().expect("live entry");
     assert_eq!(entry.label.as_deref(), Some(&b"label"[..]));
@@ -167,7 +170,7 @@ generic_test!(put_none_on_fresh_entry_omits_slot, |store| {
     );
 });
 
-generic_test!(put_is_noop_when_tree_matches_head, |store| {
+store_test!(put_is_noop_when_tree_matches_head, |store| {
     assert!(
         store
             .put(&mkid("alpha"), Some(b"m"), Some(b"x"))
@@ -189,7 +192,7 @@ generic_test!(put_is_noop_when_tree_matches_head, |store| {
     );
 });
 
-generic_test!(label_cache_surfaces_via_label_and_list_labels, |store| {
+store_test!(label_cache_surfaces_via_label_and_list_labels, |store| {
     store
         .put(&mkid("a"), Some(b"label-a"), Some(b"d1"))
         .unwrap();
@@ -215,7 +218,7 @@ generic_test!(label_cache_surfaces_via_label_and_list_labels, |store| {
     );
 });
 
-generic_test!(empty_label_is_not_indexed_but_still_in_history, |store| {
+store_test!(empty_label_is_not_indexed_but_still_in_history, |store| {
     store.put(&mkid("alpha"), Some(b""), Some(b"data")).unwrap();
     assert_eq!(
         store.label(&mkid("alpha")),
@@ -232,7 +235,7 @@ generic_test!(empty_label_is_not_indexed_but_still_in_history, |store| {
     );
 });
 
-generic_test!(archive_clears_label_from_cache, |store| {
+store_test!(archive_clears_label_from_cache, |store| {
     store
         .put(&mkid("alpha"), Some(b"label"), Some(b"data"))
         .unwrap();
@@ -240,6 +243,137 @@ generic_test!(archive_clears_label_from_cache, |store| {
     store.archive(&mkid("alpha")).unwrap();
     assert_eq!(store.label(&mkid("alpha")), None);
     assert!(store.list_labels().is_empty());
+});
+
+// -- new / open / save / load (layout-agnostic trait methods) ----------
+//
+// Bodies are parameterised over `L: Layout` and instantiated per layout
+// via `directory_test!`. Each body receives a fresh scratch TempDir
+// (kept alive for the test's scope) and builds the Store itself, so
+// paths can outlive the Store (needed for drop-then-open scenarios).
+
+macro_rules! directory_test {
+    ($name:ident, |$tmp:ident| $body:block) => {
+        mod $name {
+            use super::*;
+
+            fn run<L: Layout>() {
+                let $tmp = tempfile::Builder::new()
+                    .prefix("storgit-")
+                    .tempdir()
+                    .unwrap();
+                $body
+            }
+
+            #[test]
+            fn submodule() {
+                run::<SubmoduleLayout>();
+            }
+
+            #[test]
+            fn subdir() {
+                run::<SubdirLayout>();
+            }
+        }
+    };
+}
+
+directory_test!(new_rejects_existing_path, |tmp| {
+    let path = tmp.path().join("repo");
+    std::fs::create_dir(&path).unwrap();
+    assert!(
+        Store::<L>::new(path).is_err(),
+        "new must refuse a path that already exists",
+    );
+});
+
+directory_test!(open_reopens_existing_store, |tmp| {
+    let path = tmp.path().join("repo");
+    {
+        let mut store = Store::<L>::new(path.clone()).unwrap();
+        put_data(&mut store, "alpha", b"v1");
+        put_data(&mut store, "alpha", b"v2");
+        put_data(&mut store, "beta", b"b1");
+    }
+    let reopened = Store::<L>::open(path).unwrap();
+    let mut ids = reopened.list().unwrap();
+    ids.sort();
+    assert_eq!(ids, vec![mkid("alpha"), mkid("beta")]);
+    assert_eq!(get_data(&reopened, "alpha").as_deref(), Some(&b"v2"[..]));
+    let history = reopened.history(&mkid("alpha")).unwrap();
+    let payloads: Vec<Option<&[u8]>> = history.iter().map(|e| e.data.as_deref()).collect();
+    assert_eq!(payloads, vec![Some(&b"v2"[..]), Some(&b"v1"[..])]);
+});
+
+directory_test!(open_reopens_label_cache, |tmp| {
+    let path = tmp.path().join("repo");
+    {
+        let mut store = Store::<L>::new(path.clone()).unwrap();
+        store
+            .put(&mkid("alpha"), Some(b"label-a"), Some(b"data-a"))
+            .unwrap();
+        store
+            .put(&mkid("beta"), Some(b"label-b"), Some(b"data-b"))
+            .unwrap();
+    }
+    let reopened = Store::<L>::open(path).unwrap();
+    assert_eq!(reopened.label(&mkid("alpha")), Some(&b"label-a"[..]));
+    let mut labels = reopened.list_labels();
+    labels.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        labels,
+        vec![
+            (mkid("alpha"), b"label-a".to_vec()),
+            (mkid("beta"), b"label-b".to_vec()),
+        ],
+    );
+});
+
+directory_test!(save_load_roundtrips_all_state, |tmp| {
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    let bytes = {
+        let mut store = Store::<L>::new(src).unwrap();
+        put_data(&mut store, "alpha", b"a1");
+        put_data(&mut store, "alpha", b"a2");
+        put_data(&mut store, "beta", b"b1");
+        store.save().unwrap()
+    };
+    let reloaded = Store::<L>::load(&bytes, dst).unwrap();
+    let mut ids = reloaded.list().unwrap();
+    ids.sort();
+    assert_eq!(ids, vec![mkid("alpha"), mkid("beta")]);
+    assert_eq!(get_data(&reloaded, "alpha").as_deref(), Some(&b"a2"[..]));
+    let history = reloaded.history(&mkid("alpha")).unwrap();
+    let payloads: Vec<Option<&[u8]>> = history.iter().map(|e| e.data.as_deref()).collect();
+    assert_eq!(payloads, vec![Some(&b"a2"[..]), Some(&b"a1"[..])]);
+});
+
+directory_test!(save_is_nondestructive, |tmp| {
+    let path = tmp.path().join("repo");
+    let mut store = Store::<L>::new(path).unwrap();
+    put_data(&mut store, "alpha", b"1");
+    let _bytes = store.save().unwrap();
+    put_data(&mut store, "beta", b"2");
+    let mut ids = store.list().unwrap();
+    ids.sort();
+    assert_eq!(ids, vec![mkid("alpha"), mkid("beta")]);
+});
+
+directory_test!(load_rejects_nonempty_target, |tmp| {
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    let bytes = {
+        let mut store = Store::<L>::new(src).unwrap();
+        put_data(&mut store, "alpha", b"x");
+        store.save().unwrap()
+    };
+    std::fs::create_dir(&dst).unwrap();
+    std::fs::write(dst.join("stray"), b"existing").unwrap();
+    assert!(
+        Store::<L>::load(&bytes, dst).is_err(),
+        "load must refuse a non-empty target path",
+    );
 });
 
 // -- Id validation (layout-independent) --------------------------------

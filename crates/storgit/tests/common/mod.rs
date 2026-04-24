@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
 
 use storgit::layout::Layout;
 use storgit::layout::subdir::SubdirLayout;
@@ -33,6 +34,21 @@ pub fn get_data<L: Layout>(store: &Store<L>, id_str: &str) -> Option<Vec<u8>> {
 pub struct Handle<L: Layout> {
     store: Store<L>,
     scratch: Option<tempfile::TempDir>,
+    path: PathBuf,
+}
+
+impl<L: Layout> Handle<L> {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Drop the store but keep the scratch dir alive, and return the
+    /// path the store was rooted at. Useful for testing `Store::open`
+    /// on an already-populated path.
+    pub fn into_path(self) -> (PathBuf, Option<tempfile::TempDir>) {
+        let Handle { path, scratch, .. } = self;
+        (path, scratch)
+    }
 }
 
 impl<L: Layout> Deref for Handle<L> {
@@ -49,27 +65,23 @@ impl<L: Layout> DerefMut for Handle<L> {
 }
 
 pub fn make_submodule_store() -> Handle<SubmoduleLayout> {
-    let scratch = tempfile::Builder::new()
-        .prefix("storgit-")
-        .tempdir()
-        .unwrap();
-    let path = scratch.path().join("repo");
-    let store = Store::<SubmoduleLayout>::new(path).unwrap();
-    Handle {
-        store,
-        scratch: Some(scratch),
-    }
+    make_store::<SubmoduleLayout>()
 }
 
 pub fn make_subdir_store() -> Handle<SubdirLayout> {
+    make_store::<SubdirLayout>()
+}
+
+pub fn make_store<L: Layout>() -> Handle<L> {
     let scratch = tempfile::Builder::new()
         .prefix("storgit-")
         .tempdir()
         .unwrap();
     let path = scratch.path().join("repo");
-    let store = Store::<SubdirLayout>::new(path).unwrap();
+    let store = Store::<L>::new(path.clone()).unwrap();
     Handle {
         store,
         scratch: Some(scratch),
+        path,
     }
 }

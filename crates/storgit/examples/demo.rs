@@ -11,9 +11,8 @@ use storgit::{Id, Store};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scratch = tempfile::Builder::new().prefix("storgit-demo-").tempdir()?;
-    let mut store = Store::<storgit::layout::submodule::SubmoduleLayout>::new(
-        scratch.path().join("repo"),
-    )?;
+    let mut store =
+        Store::<storgit::layout::submodule::SubmoduleLayout>::new(scratch.path().join("repo"))?;
     println!("opened empty store");
 
     let github = Id::new("0194a3c1-1111-7000-8000-000000000001")?;

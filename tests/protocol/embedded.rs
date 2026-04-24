@@ -18,9 +18,9 @@ async fn register_unlock_status() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn register_leaves_user_unlocked() {
+    use valet::Client;
     use valet::db::Database;
     use valet::protocol::embedded::Embedded;
-    use valet::Client;
 
     let db = Database::new("sqlite://:memory:").await.unwrap();
     let client = Client::<Embedded>::new(db);

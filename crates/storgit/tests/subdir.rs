@@ -126,4 +126,3 @@ fn put_is_noop_detection_works_across_interleaved_writes() {
         "identical alpha put is still a no-op even after an intervening beta write",
     );
 }
-
