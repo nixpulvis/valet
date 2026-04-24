@@ -389,11 +389,7 @@ fn label_cache_survives_parts_roundtrip() {
 fn extract_to_tmp(bytes: &[u8]) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     let mut tarball = Vec::new();
-    std::io::copy(
-        &mut snap::read::FrameDecoder::new(bytes),
-        &mut tarball,
-    )
-    .unwrap();
+    std::io::copy(&mut snap::read::FrameDecoder::new(bytes), &mut tarball).unwrap();
     tar::Archive::new(std::io::Cursor::new(tarball))
         .unpack(tmp.path())
         .unwrap();

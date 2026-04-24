@@ -12,8 +12,9 @@
 //! Callers unpack the expected [`Response`] variant with the
 //! [`Response::expect_ok`], [`Response::expect_users`],
 //! [`Response::expect_index`], and [`Response::expect_record`] helpers
-//! defined in `valet::protocol::message`. Those return [`ResponseError`],
-//! which bubbles through `?` into the [`Error`] used here.
+//! defined in `valet::protocol::message`. Those return
+//! [`valet::protocol::message::ResponseError`], which bubbles through
+//! `?` into the [`Error`] used here.
 
 use serde::Deserialize;
 use valet::{

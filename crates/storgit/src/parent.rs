@@ -69,7 +69,8 @@ pub(crate) fn load_parent_state(parent_path: &Path) -> Result<ParentState, Error
 /// that storgit would never have written).
 pub(crate) fn entry_filename_as_id(filename: &BString) -> Result<EntryId, Error> {
     let s = filename.to_string();
-    EntryId::new(s).map_err(|e| Error::Other(format!("corrupt parent tree entry {filename:?}: {e}")))
+    EntryId::new(s)
+        .map_err(|e| Error::Other(format!("corrupt parent tree entry {filename:?}: {e}")))
 }
 
 /// Return the parent repo's current root tree, or `None` if HEAD is

@@ -24,8 +24,8 @@
 use std::path::PathBuf;
 
 use crate::entry::Entry;
-use crate::id::CommitId;
 use crate::error::Error;
+use crate::id::CommitId;
 use crate::id::EntryId;
 use crate::tarball::untar_into;
 

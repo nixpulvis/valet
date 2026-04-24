@@ -60,7 +60,7 @@ type SaveSingle = Option<(Vec<u8>, Option<Vec<u8>>)>;
 #[cfg(feature = "db")]
 type SaveBatch = (
     Vec<self::orm::ActiveModel>,
-    std::collections::HashSet<storgit::Id>,
+    std::collections::HashSet<storgit::EntryId>,
     Option<Vec<u8>>,
 );
 
@@ -134,12 +134,12 @@ impl Record {
         .concat()
     }
 
-    /// Convert a record UUID to the opaque `storgit::Id` used as the entry key
+    /// Convert a record UUID to the opaque `storgit::EntryId` used as the entry key
     /// inside a [`storgit::Store`]. The UUID string form is a valid id: no
     /// forbidden characters, no leading `.`, no `.git` suffix.
     #[cfg(feature = "db")]
-    pub(crate) fn storgit_id(uuid: &Uuid<Self>) -> storgit::Id {
-        storgit::Id::new(uuid.to_string()).expect("uuid string is a valid storgit id")
+    pub(crate) fn storgit_id(uuid: &Uuid<Self>) -> storgit::EntryId {
+        storgit::EntryId::new(uuid.to_string()).expect("uuid string is a valid storgit id")
     }
 
     /// Save this record to the database and return its uuid.
@@ -311,7 +311,7 @@ impl Record {
         // sync section does only storgit work.
         struct Prepared {
             uuid: Uuid<Record>,
-            storgit_id: storgit::Id,
+            storgit_id: storgit::EntryId,
             label_bytes: Vec<u8>,
             data_bytes: Vec<u8>,
         }

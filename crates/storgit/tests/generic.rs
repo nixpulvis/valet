@@ -400,8 +400,14 @@ fn id_rejects_control_chars() {
     assert_eq!(EntryId::new("a\nb"), Err(id::EntryIdError::BadChar('\n')));
     assert_eq!(EntryId::new("a\tb"), Err(id::EntryIdError::BadChar('\t')));
     assert_eq!(EntryId::new("a\rb"), Err(id::EntryIdError::BadChar('\r')));
-    assert_eq!(EntryId::new("a\x01b"), Err(id::EntryIdError::BadChar('\x01')));
-    assert_eq!(EntryId::new("a\x7fb"), Err(id::EntryIdError::BadChar('\x7f')));
+    assert_eq!(
+        EntryId::new("a\x01b"),
+        Err(id::EntryIdError::BadChar('\x01'))
+    );
+    assert_eq!(
+        EntryId::new("a\x7fb"),
+        Err(id::EntryIdError::BadChar('\x7f'))
+    );
 }
 
 #[test]
@@ -424,7 +430,10 @@ fn id_rejects_reserved_names() {
 #[test]
 fn id_rejects_too_long() {
     let long = "a".repeat(EntryId::MAX_LEN + 1);
-    assert!(matches!(EntryId::new(long), Err(id::EntryIdError::TooLong { .. })));
+    assert!(matches!(
+        EntryId::new(long),
+        Err(id::EntryIdError::TooLong { .. })
+    ));
 }
 
 #[test]

@@ -1,5 +1,5 @@
 //! Background script: opens the native messaging port to
-//! [`valet-native-host`](valet_native_host) (`com.nixpulvis.valet`) and multiplexes
+//! `valet-native-host` (`com.nixpulvis.valet`) and multiplexes
 //! RPC calls from the popup over it.
 
 use wasm_bindgen::prelude::*;

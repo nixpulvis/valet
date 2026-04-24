@@ -179,7 +179,7 @@ impl Lot {
     /// bytes" check surfaces the inconsistency if it matters.
     #[cfg(feature = "db")]
     fn make_fetcher(db: Database, lot_key: Arc<Key<Lot>>, lot_uuid: Uuid<Lot>) -> ModuleFetcher {
-        Arc::new(move |id: &storgit::Id| {
+        Arc::new(move |id: &storgit::EntryId| {
             let record_uuid = Uuid::<Record>::parse(id.as_str())
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>)?;
             let handle = tokio::runtime::Handle::current();

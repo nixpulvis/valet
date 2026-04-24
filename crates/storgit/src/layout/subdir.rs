@@ -10,12 +10,12 @@ use gix::objs::{
 };
 
 use crate::entry::Entry;
-use crate::id::CommitId;
 use crate::error::Error;
 use crate::git::{
     BRANCH, decode_tree, init_bare_on_branch, module_ref_path, read_ref_file, write_commit,
     write_ref_file,
 };
+use crate::id::CommitId;
 use crate::id::EntryId;
 use crate::layout::Layout;
 use crate::module::{DATA_FILE, LABEL_FILE};
