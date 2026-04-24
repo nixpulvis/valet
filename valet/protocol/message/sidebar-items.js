@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Error","Request","Response","ResponseError"],"fn":["domain_matches","label_matches_domain"],"struct":["RevisionEntry"]};
+window.SIDEBAR_ITEMS = {"enum":["Request","Response","ResponseError"],"fn":["domain_matches","label_matches_domain"],"struct":["CreateLot","CreateRecord","DeleteLot","Fetch","FindRecords","GenerateRecord","GetRecord","History","List","ListLots","ListUsers","Lock","LockAll","Register","RevisionEntry","Status","Unlock","Validate"],"trait":["Call"]};

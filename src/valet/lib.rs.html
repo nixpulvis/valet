@@ -17,20 +17,12 @@
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">pub mod </span>user;
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">pub mod </span>uuid;
 <a href=#19 id=19 data-nosnippet>19</a>
-<a href=#20 id=20 data-nosnippet>20</a><span class="attr">#[cfg(any(
-<a href=#21 id=21 data-nosnippet>21</a>    feature = <span class="string">"protocol-embedded"</span>,
-<a href=#22 id=22 data-nosnippet>22</a>    feature = <span class="string">"protocol-socket"</span>,
-<a href=#23 id=23 data-nosnippet>23</a>    feature = <span class="string">"protocol-native-msg-client"</span>,
-<a href=#24 id=24 data-nosnippet>24</a>))]
-<a href=#25 id=25 data-nosnippet>25</a></span><span class="kw">pub use </span><span class="self">self</span>::protocol::Client;
-<a href=#26 id=26 data-nosnippet>26</a><span class="attr">#[cfg(any(feature = <span class="string">"protocol-socket"</span>, feature = <span class="string">"protocol-native-msg-server"</span>))]
-<a href=#27 id=27 data-nosnippet>27</a></span><span class="kw">pub use </span><span class="self">self</span>::protocol::Server;
-<a href=#28 id=28 data-nosnippet>28</a><span class="kw">pub use </span><span class="self">self</span>::protocol::message::{Request, Response};
-<a href=#29 id=29 data-nosnippet>29</a><span class="kw">pub use </span><span class="self">self</span>::protocol::{Handler, LocalHandler};
-<a href=#30 id=30 data-nosnippet>30</a>
-<a href=#31 id=31 data-nosnippet>31</a><span class="comment">// Some top-level re-exports for the most important structures in valet. Mostly
-<a href=#32 id=32 data-nosnippet>32</a>// for visibility in the docs, developers will likely use the prelude.
-<a href=#33 id=33 data-nosnippet>33</a></span><span class="kw">pub use </span><span class="self">self</span>::lot::Lot;
-<a href=#34 id=34 data-nosnippet>34</a><span class="kw">pub use </span><span class="self">self</span>::record::Record;
-<a href=#35 id=35 data-nosnippet>35</a><span class="kw">pub use </span><span class="self">self</span>::user::User;
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">pub use </span><span class="self">self</span>::protocol::message::{Request, Response};
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">pub use </span><span class="self">self</span>::protocol::{Handler, SendHandler};
+<a href=#22 id=22 data-nosnippet>22</a>
+<a href=#23 id=23 data-nosnippet>23</a><span class="comment">// Some top-level re-exports for the most important structures in valet. Mostly
+<a href=#24 id=24 data-nosnippet>24</a>// for visibility in the docs, developers will likely use the prelude.
+<a href=#25 id=25 data-nosnippet>25</a></span><span class="kw">pub use </span><span class="self">self</span>::lot::Lot;
+<a href=#26 id=26 data-nosnippet>26</a><span class="kw">pub use </span><span class="self">self</span>::record::Record;
+<a href=#27 id=27 data-nosnippet>27</a><span class="kw">pub use </span><span class="self">self</span>::user::User;
 </code></pre></div></section></main></body></html>

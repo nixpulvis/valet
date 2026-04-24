@@ -3,12 +3,12 @@
 <a href=#3 id=3 data-nosnippet>3</a><span class="attr">#[cfg(feature = <span class="string">"db"</span>)]
 <a href=#4 id=4 data-nosnippet>4</a></span><span class="kw">use </span><span class="kw">crate</span>::encrypt::{Encrypted, Stash};
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>crate::{encrypt, lot::Lot, password::Password, uuid::Uuid};
-<a href=#6 id=6 data-nosnippet>6</a><span class="attr">#[cfg(feature = <span class="string">"db"</span>)]
-<a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">use </span>storgit::layout::submodule::{ModuleChange, Snapshot};
-<a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>bitcode::{Decode, Encode};
-<a href=#9 id=9 data-nosnippet>9</a><span class="attr">#[cfg(feature = <span class="string">"db"</span>)]
-<a href=#10 id=10 data-nosnippet>10</a></span><span class="kw">use </span>sea_orm::{IntoActiveModel, TransactionTrait, entity::prelude::<span class="kw-2">*</span>, sea_query::OnConflict};
-<a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>std::fmt;
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>bitcode::{Decode, Encode};
+<a href=#7 id=7 data-nosnippet>7</a><span class="attr">#[cfg(feature = <span class="string">"db"</span>)]
+<a href=#8 id=8 data-nosnippet>8</a></span><span class="kw">use </span>sea_orm::{IntoActiveModel, TransactionTrait, entity::prelude::<span class="kw-2">*</span>, sea_query::OnConflict};
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>std::fmt;
+<a href=#10 id=10 data-nosnippet>10</a><span class="attr">#[cfg(feature = <span class="string">"db"</span>)]
+<a href=#11 id=11 data-nosnippet>11</a></span><span class="kw">use </span>storgit::layout::submodule::{ModuleChange, Snapshot};
 <a href=#12 id=12 data-nosnippet>12</a>
 <a href=#13 id=13 data-nosnippet>13</a><span class="doccomment">/// One historical revision of a record, produced by [`Record::history`].
 <a href=#14 id=14 data-nosnippet>14</a>///
@@ -60,7 +60,7 @@
 <a href=#60 id=60 data-nosnippet>60</a></span><span class="attr">#[cfg(feature = <span class="string">"db"</span>)]
 <a href=#61 id=61 data-nosnippet>61</a></span><span class="kw">type </span>SaveBatch = (
 <a href=#62 id=62 data-nosnippet>62</a>    Vec&lt;<span class="self">self</span>::orm::ActiveModel&gt;,
-<a href=#63 id=63 data-nosnippet>63</a>    std::collections::HashSet&lt;storgit::Id&gt;,
+<a href=#63 id=63 data-nosnippet>63</a>    std::collections::HashSet&lt;storgit::EntryId&gt;,
 <a href=#64 id=64 data-nosnippet>64</a>    <span class="prelude-ty">Option</span>&lt;Vec&lt;u8&gt;&gt;,
 <a href=#65 id=65 data-nosnippet>65</a>);
 <a href=#66 id=66 data-nosnippet>66</a>
@@ -134,12 +134,12 @@
 <a href=#134 id=134 data-nosnippet>134</a>        .concat()
 <a href=#135 id=135 data-nosnippet>135</a>    }
 <a href=#136 id=136 data-nosnippet>136</a>
-<a href=#137 id=137 data-nosnippet>137</a>    <span class="doccomment">/// Convert a record UUID to the opaque `storgit::Id` used as the entry key
+<a href=#137 id=137 data-nosnippet>137</a>    <span class="doccomment">/// Convert a record UUID to the opaque `storgit::EntryId` used as the entry key
 <a href=#138 id=138 data-nosnippet>138</a>    /// inside a [`storgit::Store`]. The UUID string form is a valid id: no
 <a href=#139 id=139 data-nosnippet>139</a>    /// forbidden characters, no leading `.`, no `.git` suffix.
 <a href=#140 id=140 data-nosnippet>140</a>    </span><span class="attr">#[cfg(feature = <span class="string">"db"</span>)]
-<a href=#141 id=141 data-nosnippet>141</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>storgit_id(uuid: <span class="kw-2">&amp;</span>Uuid&lt;<span class="self">Self</span>&gt;) -&gt; storgit::Id {
-<a href=#142 id=142 data-nosnippet>142</a>        storgit::Id::new(uuid.to_string()).expect(<span class="string">"uuid string is a valid storgit id"</span>)
+<a href=#141 id=141 data-nosnippet>141</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>storgit_id(uuid: <span class="kw-2">&amp;</span>Uuid&lt;<span class="self">Self</span>&gt;) -&gt; storgit::EntryId {
+<a href=#142 id=142 data-nosnippet>142</a>        storgit::EntryId::new(uuid.to_string()).expect(<span class="string">"uuid string is a valid storgit id"</span>)
 <a href=#143 id=143 data-nosnippet>143</a>    }
 <a href=#144 id=144 data-nosnippet>144</a>
 <a href=#145 id=145 data-nosnippet>145</a>    <span class="doccomment">/// Save this record to the database and return its uuid.
@@ -311,7 +311,7 @@
 <a href=#311 id=311 data-nosnippet>311</a>        // sync section does only storgit work.
 <a href=#312 id=312 data-nosnippet>312</a>        </span><span class="kw">struct </span>Prepared {
 <a href=#313 id=313 data-nosnippet>313</a>            uuid: Uuid&lt;Record&gt;,
-<a href=#314 id=314 data-nosnippet>314</a>            storgit_id: storgit::Id,
+<a href=#314 id=314 data-nosnippet>314</a>            storgit_id: storgit::EntryId,
 <a href=#315 id=315 data-nosnippet>315</a>            label_bytes: Vec&lt;u8&gt;,
 <a href=#316 id=316 data-nosnippet>316</a>            data_bytes: Vec&lt;u8&gt;,
 <a href=#317 id=317 data-nosnippet>317</a>        }

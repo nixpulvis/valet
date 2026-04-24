@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["generate_password","main","password_is_valid"],"mod":["background","content","logging","popup","rpc"]};
+window.SIDEBAR_ITEMS = {"fn":["generate_password","main","password_is_valid"],"mod":["background","content","logging","popup","protocol"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["default_path","path"],"struct":["Socket","SocketClient","SocketServer"]};
+window.SIDEBAR_ITEMS = {"fn":["default_path","path"],"struct":["SocketClient","SocketServer"]};

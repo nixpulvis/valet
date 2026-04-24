@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Error"],"mod":["embedded","ffi","frame","message","native_msg","socket"],"struct":["Client","Embedded","NativeMessage","Server","Socket"],"trait":["Handler","LocalHandler","Protocol"],"type":["Never"]};
+window.SIDEBAR_ITEMS = {"enum":["Error"],"mod":["embedded","ffi","frame","message","native_msg","socket"],"struct":["EmbeddedHandler","NativeMessageClient","NativeMessageServer","SocketClient","SocketServer"],"trait":["Handler","SendHandler","Serve"]};

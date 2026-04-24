@@ -36,12 +36,12 @@
 <a href=#36 id=36 data-nosnippet>36</a>    feature = <span class="string">"protocol-embedded"</span>,
 <a href=#37 id=37 data-nosnippet>37</a>    any(feature = <span class="string">"protocol-socket"</span>, feature = <span class="string">"protocol-native-msg-server"</span>),
 <a href=#38 id=38 data-nosnippet>38</a>))]
-<a href=#39 id=39 data-nosnippet>39</a></span><span class="kw">use </span>valet::protocol::{Client, embedded::Embedded};
+<a href=#39 id=39 data-nosnippet>39</a></span><span class="kw">use </span>valet::protocol::EmbeddedHandler;
 <a href=#40 id=40 data-nosnippet>40</a>
-<a href=#41 id=41 data-nosnippet>41</a><span class="attr">#[cfg(all(feature = <span class="string">"protocol-socket"</span>, feature = <span class="string">"protocol-embedded"</span>))]
-<a href=#42 id=42 data-nosnippet>42</a></span><span class="kw">mod </span>socket_cli;
-<a href=#43 id=43 data-nosnippet>43</a><span class="attr">#[cfg(feature = <span class="string">"protocol-native-msg-server"</span>)]
-<a href=#44 id=44 data-nosnippet>44</a></span><span class="kw">mod </span>native_msg_cli;
+<a href=#41 id=41 data-nosnippet>41</a><span class="attr">#[cfg(feature = <span class="string">"protocol-native-msg-server"</span>)]
+<a href=#42 id=42 data-nosnippet>42</a></span><span class="kw">mod </span>native_msg_cli;
+<a href=#43 id=43 data-nosnippet>43</a><span class="attr">#[cfg(all(feature = <span class="string">"protocol-socket"</span>, feature = <span class="string">"protocol-embedded"</span>))]
+<a href=#44 id=44 data-nosnippet>44</a></span><span class="kw">mod </span>socket_cli;
 <a href=#45 id=45 data-nosnippet>45</a>
 <a href=#46 id=46 data-nosnippet>46</a><span class="attr">#[derive(Clone, Copy, Debug, ValueEnum)]
 <a href=#47 id=47 data-nosnippet>47</a>#[clap(rename_all = <span class="string">"kebab-case"</span>)]
@@ -164,7 +164,9 @@
 <a href=#164 id=164 data-nosnippet>164</a>    feature = <span class="string">"protocol-embedded"</span>,
 <a href=#165 id=165 data-nosnippet>165</a>    any(feature = <span class="string">"protocol-socket"</span>, feature = <span class="string">"protocol-native-msg-server"</span>),
 <a href=#166 id=166 data-nosnippet>166</a>))]
-<a href=#167 id=167 data-nosnippet>167</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">async fn </span>build_embedded_handler() -&gt; <span class="prelude-ty">Result</span>&lt;Arc&lt;Client&lt;Embedded&gt;&gt;, String&gt; {
-<a href=#168 id=168 data-nosnippet>168</a>    <span class="prelude-val">Ok</span>(Arc::new(Client::&lt;Embedded&gt;::open_from_env().<span class="kw">await</span><span class="question-mark">?</span>))
-<a href=#169 id=169 data-nosnippet>169</a>}
+<a href=#167 id=167 data-nosnippet>167</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">async fn </span>build_embedded_handler() -&gt; <span class="prelude-ty">Result</span>&lt;Arc&lt;EmbeddedHandler&gt;, String&gt; {
+<a href=#168 id=168 data-nosnippet>168</a>    <span class="prelude-val">Ok</span>(Arc::new(
+<a href=#169 id=169 data-nosnippet>169</a>        EmbeddedHandler::open_from_env(<span class="kw-2">&amp;</span>tokio::runtime::Handle::current()).<span class="kw">await</span><span class="question-mark">?</span>,
+<a href=#170 id=170 data-nosnippet>170</a>    ))
+<a href=#171 id=171 data-nosnippet>171</a>}
 </code></pre></div></section></main></body></html>
