@@ -16,6 +16,8 @@ use sea_orm::{
     IntoActiveModel,
     entity::prelude::*,
 };
+#[cfg(feature = "db")]
+use storgit::layout::submodule::SubmoduleLayout;
 use std::fmt;
 use std::sync::Arc;
 
@@ -55,7 +57,14 @@ pub struct Lot {
     /// op against this lot so we pay the parent untar and gix open
     /// costs once per session instead of once per op.
     #[cfg(feature = "db")]
-    store: storgit::Store,
+    store: storgit::Store<SubmoduleLayout>,
+    /// Scratch dir that owns the storgit repo's on-disk location.
+    /// Kept alongside `store` so the directory lives exactly as long
+    /// as the `Lot`; dropping the lot removes the backing repo. A
+    /// future milestone will replace this with a persistent
+    /// caller-managed path so the repo survives across sessions.
+    #[cfg(feature = "db")]
+    _scratch: tempfile::TempDir,
     /// Materialised label->uuid index for every live record in the
     /// lot. Built from the store's label cache on construction and
     /// kept in sync by [`Record::save`] / [`Record::delete`], which
@@ -76,16 +85,26 @@ impl Eq for Lot {}
 
 impl Lot {
     pub fn new(name: &str) -> Self {
+        // TODO: plumb a fallible ctor so the scratch TempDir
+        // failure path doesn't panic - exhausting inodes or
+        // $TMPDIR being unwritable shouldn't kill the process,
+        // but Lot::new has no Error return today.
+        #[cfg(feature = "db")]
+        let scratch = tempfile::Builder::new()
+            .prefix("valet-lot-")
+            .tempdir()
+            .expect("scratch tempdir for lot");
+        #[cfg(feature = "db")]
+        let store = storgit::Store::<SubmoduleLayout>::new(scratch.path().join("repo"))
+            .expect("fresh storgit store");
         Lot {
             uuid: Uuid::now(),
             name: name.into(),
             key: Arc::new(Key::generate()),
-            // TODO: plumb a fallible ctor so the scratch TempDir
-            // failure path doesn't panic - exhausting inodes or
-            // $TMPDIR being unwritable shouldn't kill the process,
-            // but Lot::new has no Error return today.
             #[cfg(feature = "db")]
-            store: storgit::Store::new().expect("fresh storgit store"),
+            store,
+            #[cfg(feature = "db")]
+            _scratch: scratch,
             #[cfg(feature = "db")]
             index: RecordIndex::default(),
         }
@@ -131,7 +150,7 @@ impl Lot {
     /// will decrypt the relevant `records.module` row, so callers
     /// don't need to push bytes in ahead of time.
     #[cfg(feature = "db")]
-    pub(crate) fn store(&self) -> &storgit::Store {
+    pub(crate) fn store(&self) -> &storgit::Store<SubmoduleLayout> {
         &self.store
     }
 
@@ -139,7 +158,7 @@ impl Lot {
     /// mutating operations: [`storgit::Store::put`],
     /// [`storgit::Store::archive`], [`storgit::Store::snapshot`].
     #[cfg(feature = "db")]
-    pub(crate) fn store_mut(&mut self) -> &mut storgit::Store {
+    pub(crate) fn store_mut(&mut self) -> &mut storgit::Store<SubmoduleLayout> {
         &mut self.store
     }
 
@@ -360,12 +379,19 @@ impl Lot {
         let parent_bytes = key.decrypt_with_aad(&Encrypted::unpack(&model.store), &store_aad)?;
 
         let fetcher = Lot::make_fetcher(db.clone(), key.clone(), uuid.clone());
-        let store = storgit::Store::open(storgit::Parts {
-            parent: parent_bytes,
-            modules: storgit::Modules::new(),
-            fetcher: Some(fetcher),
-        })
-        .map_err(|e| Error::Record(record::Error::Storgit(e)))?;
+        let scratch = tempfile::Builder::new()
+            .prefix("valet-lot-")
+            .tempdir()
+            .map_err(|e| Error::Record(record::Error::Storgit(storgit::Error::Io(e))))?;
+        let store = storgit::Store::<SubmoduleLayout>::new(scratch.path().join("repo"))
+            .and_then(|s| {
+                s.with_parts(storgit::Parts {
+                    parent: parent_bytes,
+                    modules: storgit::Modules::new(),
+                    fetcher: Some(fetcher),
+                })
+            })
+            .map_err(|e| Error::Record(record::Error::Storgit(e)))?;
         let index = RecordIndex::from_store(&store).map_err(Error::Record)?;
 
         Ok(Lot {
@@ -373,6 +399,7 @@ impl Lot {
             name: ul.name,
             key,
             store,
+            _scratch: scratch,
             index,
         })
     }

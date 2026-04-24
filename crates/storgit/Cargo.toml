@@ -8,14 +8,17 @@ description = "Named, versioned byte-blob storage where each entry is a git subm
 [dependencies]
 gix = "0.81"
 tar = "0.4"
-tempfile = "3.10"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-gix = "0.81"
+gix = { version = "0.81", features = ["sha1"] }
 tar = "0.4"
 tempfile = "3.10"
 
 [[bench]]
-name = "general"
+name = "submodule"
+harness = false
+
+[[bench]]
+name = "generic"
 harness = false
