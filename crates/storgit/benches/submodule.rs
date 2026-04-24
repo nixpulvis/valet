@@ -21,8 +21,8 @@ mod common;
 use std::collections::HashMap;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use storgit::layout::submodule::SubmoduleLayout;
-use storgit::{Id, ModuleChange, Parts, Snapshot, Store};
+use storgit::layout::submodule::{ModuleChange, Parts, Snapshot};
+use storgit::{Id, Store, SubmoduleLayout};
 
 use common::{Handle, MEASUREMENT_TIME, SCALING_NS, entry_id, new_id};
 
@@ -54,7 +54,6 @@ impl Storage {
         Parts {
             parent: self.parent.clone(),
             modules: HashMap::new(),
-            fetcher: None,
         }
     }
 }

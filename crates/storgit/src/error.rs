@@ -2,7 +2,7 @@
 pub enum Error {
     Io(std::io::Error),
     Git(Box<dyn std::error::Error + Send + Sync + 'static>),
-    /// A [`crate::ModuleFetcher`] returned an error.
+    /// A [`crate::layout::submodule::ModuleFetcher`] returned an error.
     Fetch(Box<dyn std::error::Error + Send + Sync + 'static>),
     Other(String),
 }

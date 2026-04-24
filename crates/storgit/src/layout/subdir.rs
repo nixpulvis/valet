@@ -1,7 +1,4 @@
-//! The subdir layout: a single bare repo whose tree carries all
-//! entries as `records/<id>/{data,label}`. One shared ref advances on
-//! every write; per-entry history comes from path-scoped walks of the
-//! shared commit graph rather than isolated submodule refs.
+//! The subdir layout, i.e. `path/records/<id>/{data,label}`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -26,10 +23,71 @@ use crate::tarball::tar_dir;
 /// Subtree name inside the repo's root tree that holds every entry.
 const RECORDS_DIR: &str = "records";
 
-/// The subdir-layout storgit implementation. Backed by a single bare
-/// repo at `path`. Records live at `records/<id>/{data,label}` in
-/// that repo's tree; a single shared ref (`refs/heads/main`) advances
-/// with every write.
+/// Backed by a single bare repo at `path`. Every entry lives as a
+/// subtree of that repo's root tree, and a single shared ref
+/// advances with every write.
+///
+/// # Disk layout
+///
+/// ```text
+/// <path>/                 bare repo
+///   HEAD -> refs/heads/storgit
+///   refs/heads/storgit    -> the latest commit
+///   objects/              the shared object DB for every entry
+/// ```
+///
+/// # Tree shape
+///
+/// The tip commit's root tree has a single `records/` subtree. Inside
+/// `records/`, each live entry is a subtree named by its [`Id`]
+/// carrying up to two blobs:
+///
+/// - `data`, the entry's payload bytes
+/// - `label`, the entry's label bytes (omitted when the label is empty)
+///
+/// ```text
+/// <root>
+///   records/
+///     <id-a>/
+///       data
+///       label
+///     <id-b>/
+///       data
+/// ```
+///
+/// `DATA_FILE` sorts before `LABEL_FILE`, so entry subtrees are
+/// assembled in that order to satisfy git's strict filename sort
+/// without an explicit sort call.
+///
+/// # Write path
+///
+/// Each `put` or `archive` builds a new `records/<id>/` subtree,
+/// splices it into a new `records/` tree (copying the other ids
+/// unchanged), wraps that in a new root tree, and commits with the
+/// prior tip as parent. The new commit is published by rewriting
+/// `refs/heads/storgit` to point at it. `put` is a no-op when the
+/// rebuilt `records/<id>/` subtree is byte-identical to the prior
+/// one; in that case no commit is written and the ref is unchanged.
+/// `delete` is currently an alias for `archive`: a single shared ref
+/// can't cheaply excise one entry's history without rewriting every
+/// commit that touched it.
+///
+/// # Per-entry history
+///
+/// There are no per-entry refs. [`Store::history`](crate::Store::history)
+/// walks the shared commit graph and emits an [`Entry`] for each
+/// commit where the `records/<id>/` subtree differs from its parent's,
+/// which mirrors what `git log -- records/<id>/` would surface. The
+/// walk reads the subtree oid at each commit and compares it to the
+/// first parent's, so it's O(history length) but each step is a
+/// constant-time oid compare.
+///
+/// # Label cache
+///
+/// [`Layout::label`] and [`Layout::list_labels`] are served from an
+/// in-memory `label_cache` keyed by [`Id`]. The cache is populated on
+/// [`Layout::open`] by walking `HEAD:records/` once, and kept current
+/// by `put` and `archive`.
 pub struct SubdirLayout {
     path: PathBuf,
     label_cache: BTreeMap<Id, Vec<u8>>,
@@ -74,10 +132,7 @@ impl SubdirLayout {
                 continue;
             }
             let id = Id::new(entry.filename.to_string()).map_err(|e| {
-                Error::Other(format!(
-                    "corrupt records/ entry {:?}: {e}",
-                    entry.filename
-                ))
+                Error::Other(format!("corrupt records/ entry {:?}: {e}", entry.filename))
             })?;
             let id_tree = decode_tree(&repo, entry.oid)?;
             if let Some(label_entry) = id_tree
@@ -256,7 +311,11 @@ impl Layout for SubdirLayout {
         let Some(prior_commit) = self.head_commit(&repo)? else {
             return Ok(());
         };
-        let prior_root_tree_id = repo.find_object(prior_commit)?.into_commit().decode()?.tree();
+        let prior_root_tree_id = repo
+            .find_object(prior_commit)?
+            .into_commit()
+            .decode()?
+            .tree();
         let prior_records_oid = subtree_entry(&repo, prior_root_tree_id, RECORDS_DIR)?;
         let Some(roid) = prior_records_oid else {
             return Ok(());
@@ -297,10 +356,7 @@ impl Layout for SubdirLayout {
                 continue;
             }
             let id = Id::new(entry.filename.to_string()).map_err(|e| {
-                Error::Other(format!(
-                    "corrupt records/ entry {:?}: {e}",
-                    entry.filename
-                ))
+                Error::Other(format!("corrupt records/ entry {:?}: {e}", entry.filename))
             })?;
             out.push(id);
         }

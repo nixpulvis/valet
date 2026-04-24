@@ -16,10 +16,12 @@ use sea_orm::{
     IntoActiveModel,
     entity::prelude::*,
 };
-#[cfg(feature = "db")]
-use storgit::layout::submodule::SubmoduleLayout;
 use std::fmt;
 use std::sync::Arc;
+#[cfg(feature = "db")]
+use storgit::SubmoduleLayout;
+#[cfg(feature = "db")]
+use storgit::layout::submodule::{ModuleFetcher, Modules, Parts};
 
 pub const DEFAULT_LOT: &str = "main";
 
@@ -162,7 +164,7 @@ impl Lot {
         &mut self.store
     }
 
-    /// Build a [`storgit::ModuleFetcher`] that resolves module bytes
+    /// Build a [`ModuleFetcher`] that resolves module bytes
     /// for `lot_uuid` by looking them up in `records` under the given
     /// lot key. The fetcher is sync (storgit's interface is sync), so
     /// it bridges to the async DB via [`tokio::runtime::Handle::block_on`].
@@ -180,7 +182,7 @@ impl Lot {
         db: Database,
         lot_key: Arc<Key<Lot>>,
         lot_uuid: Uuid<Lot>,
-    ) -> storgit::ModuleFetcher {
+    ) -> ModuleFetcher {
         Arc::new(move |id: &storgit::Id| {
             let record_uuid = Uuid::<Record>::parse(id.as_str())
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>)?;
@@ -385,12 +387,12 @@ impl Lot {
             .map_err(|e| Error::Record(record::Error::Storgit(storgit::Error::Io(e))))?;
         let store = storgit::Store::<SubmoduleLayout>::new(scratch.path().join("repo"))
             .and_then(|s| {
-                s.with_parts(storgit::Parts {
+                s.with_parts(Parts {
                     parent: parent_bytes,
-                    modules: storgit::Modules::new(),
-                    fetcher: Some(fetcher),
+                    modules: Modules::new(),
                 })
             })
+            .map(|s| s.with_fetcher(fetcher))
             .map_err(|e| Error::Record(record::Error::Storgit(e)))?;
         let index = RecordIndex::from_store(&store).map_err(Error::Record)?;
 

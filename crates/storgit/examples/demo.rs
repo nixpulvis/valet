@@ -6,7 +6,8 @@
 //!
 //!     cargo run -p storgit --example demo
 
-use storgit::{Id, ModuleChange, Store};
+use storgit::layout::submodule::ModuleChange;
+use storgit::{Id, Store};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scratch = tempfile::Builder::new().prefix("storgit-demo-").tempdir()?;

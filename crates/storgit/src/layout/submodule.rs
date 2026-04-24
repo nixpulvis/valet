@@ -1,6 +1,5 @@
-//! The submodule layout: a parent bare repo whose tree carries one
-//! gitlink per live entry plus a `.gitmodules` manifest, and one
-//! bare submodule repo per entry id with its own object database.
+//! The submodule layout, i.e. `<path>/parent.git/` +
+//! `<path>/modules/<id>/{data,label}`
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -37,7 +36,8 @@ pub type Modules = HashMap<Id, Vec<u8>>;
 /// Caller-supplied lookup for module bytes. Called by
 /// [`SubmoduleLayout`] when an operation first touches an id whose
 /// bytes are neither on disk nor in [`Parts::modules`]. A fetcher is
-/// assumed to reflect live backing storage at call time.
+/// assumed to reflect live backing storage at call time. Install one
+/// with [`Store::<SubmoduleLayout>::with_fetcher`].
 ///
 /// Return values:
 /// - `Ok(Some(bytes))` - module exists, here are its tarball bytes.
@@ -55,13 +55,14 @@ pub type ModuleFetcher = Arc<
 
 /// The persisted form of a submodule-layout [`Store`].
 ///
-/// Feed this to [`Store::<SubmoduleLayout>::open`] to reconstruct a
-/// store. An empty `parent` means "fresh store"; the first
-/// [`Store::<SubmoduleLayout>::snapshot`] will emit the
-/// newly-initialised state so the caller can persist it.
+/// Feed this to [`Store::<SubmoduleLayout>::with_parts`] to seed a
+/// store with previously-persisted bytes. An empty `parent` means
+/// "fresh store"; the first [`Store::<SubmoduleLayout>::snapshot`]
+/// will emit the newly-initialised state so the caller can persist
+/// it.
 ///
-/// The presence or absence of [`Parts::fetcher`] decides whether the
-/// resulting store is lazy:
+/// Whether the store is lazy is an orthogonal concern, controlled by
+/// [`Store::<SubmoduleLayout>::with_fetcher`]:
 ///
 /// - No fetcher: the caller promises [`Parts::modules`] lists every
 ///   live module. A miss for a live id at `ensure_loaded` time is an
@@ -69,6 +70,7 @@ pub type ModuleFetcher = Arc<
 /// - With a fetcher: [`Parts::modules`] is a prewarm cache consulted
 ///   first; misses fall through to the fetcher, whose answer is
 ///   authoritative.
+#[derive(Debug, Default)]
 pub struct Parts {
     /// Tarball of the parent bare repo.
     pub parent: Vec<u8>,
@@ -77,33 +79,6 @@ pub struct Parts {
     /// set of live modules; with a fetcher, it's an optional prewarm
     /// cache consulted before the fetcher.
     pub modules: Modules,
-    /// Optional backing-store lookup. See [`ModuleFetcher`].
-    pub fetcher: Option<ModuleFetcher>,
-}
-
-impl std::fmt::Debug for Parts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Parts")
-            .field("parent_bytes", &self.parent.len())
-            .field("modules", &self.modules.keys().collect::<Vec<_>>())
-            .field(
-                "fetcher",
-                &self.fetcher.as_ref().map(|_| "..").unwrap_or("None"),
-            )
-            .finish()
-    }
-}
-
-impl Default for Parts {
-    /// A fresh, empty [`Parts`] with no fetcher. Equivalent to
-    /// `Parts { parent: Vec::new(), modules: Modules::new(), fetcher: None }`.
-    fn default() -> Self {
-        Parts {
-            parent: Vec::new(),
-            modules: Modules::new(),
-            fetcher: None,
-        }
-    }
 }
 
 impl Parts {
@@ -133,8 +108,8 @@ impl Parts {
 }
 
 impl From<Snapshot> for Parts {
-    /// Build a fresh [`Parts`] (no fetcher) by calling [`Parts::apply`]
-    /// on an empty one with `snap`.
+    /// Build a fresh [`Parts`] by calling [`Parts::apply`] on an
+    /// empty one with `snap`.
     ///
     /// Use this only when the snapshot is known to describe the entire store,
     /// not a delta against something already persisted. In practice that means
@@ -179,12 +154,60 @@ enum ModuleDirt {
     Deleted,
 }
 
-/// The submodule-layout storgit implementation. Backed by a
-/// directory at `path` containing `parent.git/` (a bare parent
+/// Backed by a directory at `path`, containing `parent.git/` (a bare parent
 /// repo) and `modules/<id>.git/` (one bare submodule per entry).
-/// Dropping the layout without calling
-/// [`Store::<SubmoduleLayout>::snapshot`] discards uncommitted
-/// in-memory state but leaves the on-disk repo intact.
+///
+/// # Disk layout
+///
+/// ```text
+/// <path>/
+///   parent.git/           bare repo: the store's index
+///     HEAD -> refs/heads/storgit
+///     refs/heads/storgit  -> the single parent commit
+///   modules/
+///     <id>.git/           bare repo: one per live entry, its own object DB
+/// ```
+///
+/// # Parent tree
+///
+/// The parent repo's `refs/heads/storgit` points at a single commit whose
+/// tree holds:
+///
+/// - one gitlink per live entry, filename is the entry's [`Id`], oid is the
+///   submodule's head commit
+/// - `.gitmodules`, a serialised manifest of the gitlink set, so the parent
+///   is a valid git submodule parent that `git submodule` can drive
+/// - `index/`, a subtree of blobs keyed by [`Id`] carrying each entry's
+///   label bytes. This mirrors the label cache without having to clone the
+///   entry's submodule to read it
+///
+/// A _gitlink_ is a tree entry whose blob is actually a commit ID in another
+/// repository. Git treats it as a pointer to that commit rather than as file
+/// content, which is how submodules pin a specific revision of a nested repo
+/// from their parent's tree.
+///
+/// The parent's history is kept to a single orphan commit: every flush
+/// writes a new tree, commits it with no parents, repoints the ref, and
+/// prunes the superseded loose objects. Callers who only need the live set
+/// never see stale gitlinks, and the parent's object DB stays bounded.
+///
+/// # Per-entry repos
+///
+/// Each `modules/<id>.git/` has its own commit chain for that entry alone.
+/// [`Store::put`](crate::Store::put) appends a commit carrying a `label`
+/// blob and/or a `data` blob, [`Store::archive`](crate::Store::archive)
+/// appends a tombstone commit and drops the gitlink from the parent, and
+/// [`Store::history`](crate::Store::history) walks that chain. The
+/// entry-level history is independent of the parent, so pruning gitlinks
+/// never rewrites per-entry history.
+///
+/// # Lazy loading
+///
+/// A module directory only needs to exist on disk when an operation
+/// touches it. `ensure_loaded` materialises an entry's bare repo from
+/// either a preloaded tarball in `pending_modules` or the [`ModuleFetcher`]
+/// installed via [`Store::<SubmoduleLayout>::with_fetcher`], letting a
+/// store back a large entry set without keeping every repo on disk.
 pub struct SubmoduleLayout {
     path: PathBuf,
     dirty_parent: bool,
@@ -578,7 +601,6 @@ impl Store<SubmoduleLayout> {
     ///   bytes onto an existing non-empty parent by merging.
     /// - `parts.modules`: inserted into the pending-modules cache;
     ///   each id's tarball is untarred on first touch.
-    /// - `parts.fetcher`: installed, replacing any prior fetcher.
     pub fn with_parts(mut self, parts: Parts) -> Result<Self, Error> {
         if !parts.parent.is_empty() {
             // TODO: merge parts.parent with the on-disk parent when
@@ -588,7 +610,8 @@ impl Store<SubmoduleLayout> {
             if !self.layout.dirty_parent {
                 return Err(Error::Other(
                     "with_parts: parts.parent is non-empty but the store's parent.git already \
-                     has state; merging is not yet implemented".into(),
+                     has state; merging is not yet implemented"
+                        .into(),
                 ));
             }
             let parent_path = self.layout.parent_path();
@@ -601,16 +624,19 @@ impl Store<SubmoduleLayout> {
             self.layout.label_cache = label_cache;
             self.layout.dirty_parent = false;
         }
-        {
-            let pending = self.layout.pending_modules.get_mut().unwrap();
-            for (id, bytes) in parts.modules {
-                pending.insert(id, bytes);
-            }
-        }
-        if parts.fetcher.is_some() {
-            self.layout.fetcher = parts.fetcher;
+        let pending = self.layout.pending_modules.get_mut().unwrap();
+        for (id, bytes) in parts.modules {
+            pending.insert(id, bytes);
         }
         Ok(self)
+    }
+
+    /// Install a [`ModuleFetcher`] as a lazy fallback for module
+    /// bytes, replacing any prior fetcher. See [`ModuleFetcher`] for
+    /// the contract.
+    pub fn with_fetcher(mut self, fetcher: ModuleFetcher) -> Self {
+        self.layout.fetcher = Some(fetcher);
+        self
     }
 
     /// Re-tar everything touched since the previous snapshot (or since

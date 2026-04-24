@@ -1,13 +1,25 @@
-//! The [`Layout`] trait: the per-operation surface that every
-//! concrete storgit layout (submodule, subdir, ...) implements. A
-//! [`crate::Store`] is a thin generic wrapper over some `L: Layout`
-//! and just delegates each method to the layout.
+//! On-disk shapes that back a [`Store`](crate::Store).
 //!
-//! Operations that are specific to one layout (persistence envelopes
-//! like [`submodule::Parts`] / [`submodule::Snapshot`], path-based
-//! open, etc.) stay as inherent methods on that layout's `Store<L>`
-//! rather than living on this trait. The trait is intentionally
-//! narrow: the everyday read/write surface, and nothing else.
+//! The [`Layout`] trait is the surface API that every concrete storgit layout
+//! (submodule, subdir) implements. A [`Store`] is a thin generic wrapper over
+//! a layout and just delegates each method to the layout. Available layouts
+//! are:
+//!
+//! - [`SubdirLayout`]: a single bare repo at `<path>/` whose tree carries all
+//! entries as `<path>/records/<id>/{data,label}`, with one shared ref and
+//! per-entry history via path-scoped walks.
+//! - [`SubmoduleLayout`]: a `<path>/parent.git/` bare repo whose tree carries
+//! one _gitlink_ per live entry plus a `.gitmodules` manifest, alongside
+//! `<path>/modules/<id>/{data,label}` bare repos each holding that entry's
+//! `{data,label}` blobs in their own object database.
+//!
+//! Operations that are specific to one layout (persistence envelopes like
+//! [`submodule::Parts`] / [`submodule::Snapshot`], etc.) stay as inherent
+//! methods on that layout's `Store<L>` rather than living on this trait.
+//!
+//! [`Store`]: crate::Store
+//! [`SubdirLayout`]: crate::SubdirLayout
+//! [`SubmoduleLayout`]: crate::SubmoduleLayout
 
 use std::path::PathBuf;
 
@@ -20,7 +32,7 @@ pub mod subdir;
 pub mod submodule;
 
 pub trait Layout: Sized {
-    /// Initialise a fresh storgit repo at `path`. Creates `path` as
+    /// Initialize a fresh storgit repo at `path`. Creates `path` as
     /// a new directory; errors if `path` already exists. The parent
     /// directory must already exist -- `new` does not create
     /// ancestors.

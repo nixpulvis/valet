@@ -11,9 +11,10 @@ use crate::id::Id;
 use crate::layout::Layout;
 use crate::layout::submodule::SubmoduleLayout;
 
-/// Handle to a storgit store. `L` selects the on-disk layout; the
-/// default is [`SubmoduleLayout`], which carries the existing
-/// parent-plus-per-entry-submodule persistence model.
+/// Git backed database with a specific layout.
+///
+/// The [`Layout`] selects the on-disk layout, which defaults to
+/// [`SubmoduleLayout`].
 pub struct Store<L: Layout = SubmoduleLayout> {
     pub(crate) layout: L,
 }

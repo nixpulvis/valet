@@ -1,3 +1,9 @@
+//! Unique entry identifiers, used as special directory names.
+//!
+//! [`Id`] is the one type each layout uses to name an entry on disk and in git
+//! tree entries, and its validating constructor is the single chokepoint that
+//! enforces the character and length rules both layouts depend on.
+
 use std::borrow::Borrow;
 use std::str::FromStr;
 

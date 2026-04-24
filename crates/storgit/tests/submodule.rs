@@ -8,15 +8,14 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::{get_data, mkid, put_data};
-use storgit::layout::submodule::{Modules, Parts, SubmoduleLayout};
-use storgit::{Id, ModuleChange, Store};
+use storgit::layout::submodule::{ModuleChange, ModuleFetcher, Modules, Parts};
+use storgit::{Id, Store, SubmoduleLayout};
 use tempfile::TempDir;
 
 fn empty() -> Parts {
     Parts {
         parent: Vec::new(),
         modules: Modules::new(),
-        fetcher: None,
     }
 }
 
@@ -46,6 +45,61 @@ fn open_with(parts: Parts) -> (TempDir, Store<SubmoduleLayout>) {
         .with_parts(parts)
         .unwrap();
     (scratch, store)
+}
+
+/// Shared fetcher state for fetcher tests. Holds the module bytes
+/// the fetcher will serve from and a log of every id it was asked
+/// for. Build one with `BackingStore::new`, hand its fetcher to the
+/// store via [`open_with_fetcher`], then [`insert`]/[`extend`] as
+/// the test needs and read [`calls`] to assert on fetch behaviour.
+#[derive(Clone)]
+struct BackingStore {
+    modules: Arc<Mutex<Modules>>,
+    calls: Arc<Mutex<Vec<Id>>>,
+}
+
+impl BackingStore {
+    fn new() -> Self {
+        Self {
+            modules: Arc::new(Mutex::new(Modules::new())),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn extend(&self, modules: Modules) {
+        self.modules.lock().unwrap().extend(modules);
+    }
+
+    fn calls(&self) -> Vec<Id> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn fetcher(&self) -> ModuleFetcher {
+        let modules = self.modules.clone();
+        let calls = self.calls.clone();
+        Arc::new(move |id: &Id| {
+            calls.lock().unwrap().push(id.clone());
+            Ok(modules.lock().unwrap().get(id).cloned())
+        })
+    }
+}
+
+/// Like [`open_with`] but also installs a fetcher that serves from
+/// a fresh [`BackingStore`], returned so the test can populate it
+/// and inspect call history.
+fn open_with_fetcher(parts: Parts) -> (TempDir, Store<SubmoduleLayout>, BackingStore) {
+    let backing = BackingStore::new();
+    let scratch = tempfile::Builder::new()
+        .prefix("storgit-")
+        .tempdir()
+        .unwrap();
+    let path = scratch.path().join("repo");
+    let store = Store::<SubmoduleLayout>::new(path)
+        .unwrap()
+        .with_parts(parts)
+        .unwrap()
+        .with_fetcher(backing.fetcher());
+    (scratch, store, backing)
 }
 
 /// Rehydrate a store from a `save()` tarball under a fresh scratch dir.
@@ -455,24 +509,13 @@ fn snapshot_backing(entries: &[(&str, &[u8])]) -> (Vec<u8>, Modules) {
 #[test]
 fn fetcher_is_consulted_on_miss_and_result_round_trips() {
     let (parent, modules) = snapshot_backing(&[("alpha", b"hello")]);
-
-    let backing = Arc::new(modules);
-    let calls: Arc<Mutex<Vec<Id>>> = Arc::new(Mutex::new(Vec::new()));
-    let (backing_for_fetch, calls_for_fetch) = (backing.clone(), calls.clone());
-
-    let parts = Parts {
-        parent,
-        modules: Modules::new(),
-        fetcher: Some(Arc::new(move |id: &Id| {
-            calls_for_fetch.lock().unwrap().push(id.clone());
-            Ok(backing_for_fetch.get(id).cloned())
-        })),
-    };
-    let (_tmp, store) = open_with(parts);
+    let parts = Parts { parent, modules: Modules::new() };
+    let (_tmp, store, backing) = open_with_fetcher(parts);
+    backing.extend(modules);
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"hello"[..]));
     assert_eq!(
-        calls.lock().unwrap().as_slice(),
-        &[mkid("alpha")],
+        backing.calls(),
+        vec![mkid("alpha")],
         "fetcher is consulted exactly once for a miss",
     );
 }
@@ -480,21 +523,11 @@ fn fetcher_is_consulted_on_miss_and_result_round_trips() {
 #[test]
 fn fetcher_prewarm_short_circuits_lookup() {
     let (parent, modules) = snapshot_backing(&[("alpha", b"hi")]);
-    let calls: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
-    let calls_for_fetch = calls.clone();
-    let parts = Parts {
-        parent,
-        modules,
-        fetcher: Some(Arc::new(move |_id: &Id| {
-            *calls_for_fetch.lock().unwrap() += 1;
-            Ok(None)
-        })),
-    };
-    let (_tmp, store) = open_with(parts);
+    let parts = Parts { parent, modules };
+    let (_tmp, store, backing) = open_with_fetcher(parts);
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"hi"[..]));
-    assert_eq!(
-        *calls.lock().unwrap(),
-        0,
+    assert!(
+        backing.calls().is_empty(),
         "prewarmed id must not reach the fetcher",
     );
 }
@@ -502,12 +535,8 @@ fn fetcher_prewarm_short_circuits_lookup() {
 #[test]
 fn fetcher_ok_none_for_live_id_surfaces_as_error() {
     let (parent, _) = snapshot_backing(&[("alpha", b"hi")]);
-    let parts = Parts {
-        parent,
-        modules: Modules::new(),
-        fetcher: Some(Arc::new(|_id: &Id| Ok(None))),
-    };
-    let (_tmp, store) = open_with(parts);
+    let parts = Parts { parent, modules: Modules::new() };
+    let (_tmp, store, _backing) = open_with_fetcher(parts);
     let err = store
         .get(&mkid("alpha"))
         .expect_err("live id with no backing bytes must error");
@@ -520,12 +549,7 @@ fn fetcher_ok_none_for_live_id_surfaces_as_error() {
 
 #[test]
 fn fetcher_ok_none_for_unknown_id_is_fresh() {
-    let parts = Parts {
-        parent: Vec::new(),
-        modules: Modules::new(),
-        fetcher: Some(Arc::new(|_id: &Id| Ok(None))),
-    };
-    let (_tmp, mut store) = open_with(parts);
+    let (_tmp, mut store, _backing) = open_with_fetcher(empty());
     store.put(&mkid("fresh"), None, Some(b"v1")).unwrap();
     assert_eq!(get_data(&store, "fresh").as_deref(), Some(&b"v1"[..]));
 }
@@ -533,12 +557,18 @@ fn fetcher_ok_none_for_unknown_id_is_fresh() {
 #[test]
 fn fetcher_error_propagates_as_error_fetch() {
     let (parent, _) = snapshot_backing(&[("alpha", b"hi")]);
-    let parts = Parts {
-        parent,
-        modules: Modules::new(),
-        fetcher: Some(Arc::new(|_id: &Id| Err("db unreachable".into()))),
-    };
-    let (_tmp, store) = open_with(parts);
+    let parts = Parts { parent, modules: Modules::new() };
+    let scratch = tempfile::Builder::new()
+        .prefix("storgit-")
+        .tempdir()
+        .unwrap();
+    let path = scratch.path().join("repo");
+    let fetcher: ModuleFetcher = Arc::new(|_id: &Id| Err("db unreachable".into()));
+    let store = Store::<SubmoduleLayout>::new(path)
+        .unwrap()
+        .with_parts(parts)
+        .unwrap()
+        .with_fetcher(fetcher);
     let err = store
         .get(&mkid("alpha"))
         .expect_err("fetcher error must propagate");

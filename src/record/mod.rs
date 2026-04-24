@@ -3,6 +3,8 @@ use crate::db::{self, Database};
 #[cfg(feature = "db")]
 use crate::encrypt::{Encrypted, Stash};
 use crate::{encrypt, lot::Lot, password::Password, uuid::Uuid};
+#[cfg(feature = "db")]
+use storgit::layout::submodule::{ModuleChange, Snapshot};
 use bitcode::{Decode, Encode};
 #[cfg(feature = "db")]
 use sea_orm::{IntoActiveModel, TransactionTrait, entity::prelude::*, sea_query::OnConflict};
@@ -43,7 +45,7 @@ pub struct Revision {
 pub enum SaveProgress<'a> {
     OpenedStore,
     PutRecord(&'a Record),
-    Snapshot(&'a storgit::Snapshot),
+    Snapshot(&'a Snapshot),
     SaveRecord,
     SaveLot,
 }
@@ -188,7 +190,7 @@ impl Record {
             // violating its own invariant.
             let snap = lot.store_mut().snapshot().map_err(Error::Storgit)?;
             let module_bytes = match snap.modules.get(&storgit_id) {
-                Some(storgit::ModuleChange::Changed(bytes)) => bytes.clone(),
+                Some(ModuleChange::Changed(bytes)) => bytes.clone(),
                 other => unreachable!(
                     "storgit invariant: snapshot after put(Some) must yield Changed for {}; got {:?}",
                     storgit_id, other
@@ -350,7 +352,7 @@ impl Record {
                         continue;
                     };
                     let module_bytes = match change {
-                        storgit::ModuleChange::Changed(bytes) => bytes,
+                        ModuleChange::Changed(bytes) => bytes,
                         other => unreachable!(
                             "storgit invariant: snapshot after put must yield Changed for {}; got {:?}",
                             p.storgit_id, other
