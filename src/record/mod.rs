@@ -3,12 +3,12 @@ use crate::db::{self, Database};
 #[cfg(feature = "db")]
 use crate::encrypt::{Encrypted, Stash};
 use crate::{encrypt, lot::Lot, password::Password, uuid::Uuid};
-#[cfg(feature = "db")]
-use storgit::layout::submodule::{ModuleChange, Snapshot};
 use bitcode::{Decode, Encode};
 #[cfg(feature = "db")]
 use sea_orm::{IntoActiveModel, TransactionTrait, entity::prelude::*, sea_query::OnConflict};
 use std::fmt;
+#[cfg(feature = "db")]
+use storgit::layout::submodule::{ModuleChange, Snapshot};
 
 /// One historical revision of a record, produced by [`Record::history`].
 ///

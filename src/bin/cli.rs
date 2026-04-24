@@ -224,20 +224,18 @@ async fn run_repl(rl: ClapEditor<Repl>, client: Arc<Client<Embedded>>, username:
                 println!("Failed to create lot: {e}");
             }
         }
-        Repl::Lot(LotCommand::List { uuid }) => {
-            match client.list_lots(username.clone()).await {
-                Ok(lots) => {
-                    for (lot_uuid, name) in lots {
-                        if *uuid {
-                            println!("{name} <{lot_uuid}>");
-                        } else {
-                            println!("{name}");
-                        }
+        Repl::Lot(LotCommand::List { uuid }) => match client.list_lots(username.clone()).await {
+            Ok(lots) => {
+                for (lot_uuid, name) in lots {
+                    if *uuid {
+                        println!("{name} <{lot_uuid}>");
+                    } else {
+                        println!("{name}");
                     }
                 }
-                Err(e) => println!("Failed to list lots: {e}"),
             }
-        }
+            Err(e) => println!("Failed to list lots: {e}"),
+        },
         Repl::Lot(LotCommand::Delete { name }) => {
             if let Err(e) = client.delete_lot(username.clone(), name.clone()).await {
                 println!("Failed to delete lot: {e}");

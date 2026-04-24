@@ -308,8 +308,8 @@ mod tests {
     }
 
     fn sample_record() -> Record {
-        use crate::record::Data;
         use crate::Lot;
+        use crate::record::Data;
         let lot = Lot::new("test-lot");
         Record::new(
             &lot,

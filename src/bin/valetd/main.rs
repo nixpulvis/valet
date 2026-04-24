@@ -38,10 +38,10 @@ use std::sync::Arc;
 ))]
 use valet::protocol::{Client, embedded::Embedded};
 
-#[cfg(all(feature = "protocol-socket", feature = "protocol-embedded"))]
-mod socket_cli;
 #[cfg(feature = "protocol-native-msg-server")]
 mod native_msg_cli;
+#[cfg(all(feature = "protocol-socket", feature = "protocol-embedded"))]
+mod socket_cli;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 #[clap(rename_all = "kebab-case")]

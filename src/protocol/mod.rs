@@ -24,9 +24,9 @@
 //! `Client<Socket>` is a pure byte relay (the old
 //! `platform/browser/native-host` socket-relay mode).
 
-use crate::{Lot, Record};
 use crate::record::Label;
 use crate::uuid::Uuid;
+use crate::{Lot, Record};
 use message::RevisionEntry;
 #[cfg(feature = "_protocols")]
 use std::convert::Infallible;
