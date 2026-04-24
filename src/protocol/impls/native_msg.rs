@@ -3,16 +3,16 @@
 //! The WebExtensions native-messaging JSON envelope shape is used by
 //! both ends of the browser <-> daemon connection:
 //!
-//! * On the browser side, [`Client<NativeMessage>`] wraps a
+//! * On the browser side, [`NativeMessageClient`] wraps a
 //!   `browser.runtime.Port` returned by `connectNative` and multiplexes
-//!   RPC calls over it. It impls [`LocalHandler`] (non-`Send`; the JS
-//!   port is `!Send`) so extension code can use the same typed method
-//!   surface as native callers of [`Client<Embedded>`] or
-//!   [`Client<Socket>`]. Enabled by `protocol-native-msg-client`.
-//! * On the daemon side, [`Server<NativeMessage>`] parses
-//!   [`NativeRequest`]s off stdin, dispatches through a [`Handler`],
-//!   and writes [`NativeReply`]s back to stdout. Enabled by
-//!   `protocol-native-msg-server`, which pulls in tokio.
+//!   RPC calls over it. It impls [`Handler`] (the base, non-`Send`
+//!   trait; the JS port is `!Send`) so extension code can use the
+//!   same typed call surface as native callers of [`EmbeddedHandler`]
+//!   or [`SocketClient`]. Enabled by `protocol-native-msg-client`.
+//! * On the daemon side, [`NativeMessageServer`] parses
+//!   [`NativeRequest`]s off stdin, dispatches through a
+//!   [`SendHandler`], and writes [`NativeReply`]s back to stdout.
+//!   Enabled by `protocol-native-msg-server`, which pulls in tokio.
 //!
 //! The envelope types ([`NativeRequest`], [`NativeReply`],
 //! [`NativePayload`]) are always compiled so the two halves share one
@@ -27,11 +27,9 @@
 //! ```
 //!
 //! [`Handler`]: crate::protocol::Handler
-//! [`LocalHandler`]: crate::protocol::LocalHandler
-//! [`Client<NativeMessage>`]: crate::protocol::Client
-//! [`Client<Embedded>`]: crate::protocol::Client
-//! [`Client<Socket>`]: crate::protocol::Client
-//! [`Server<NativeMessage>`]: crate::protocol::Server
+//! [`SendHandler`]: crate::protocol::SendHandler
+//! [`EmbeddedHandler`]: crate::protocol::EmbeddedHandler
+//! [`SocketClient`]: crate::protocol::SocketClient
 
 use serde::{Deserialize, Serialize};
 
@@ -80,84 +78,46 @@ pub struct NativePayload {
 /// than this cause the browser to drop the port.
 pub const MAX_SIZE: usize = 1024 * 1024;
 
-#[cfg(any(
-    feature = "protocol-native-msg-server",
-    feature = "protocol-native-msg-client"
-))]
-pub use marker::NativeMessage;
-
 #[cfg(feature = "protocol-native-msg-server")]
 pub use server::{NativeMessageServer, serve_io};
 
 #[cfg(feature = "protocol-native-msg-client")]
 pub use client::NativeMessageClient;
 
-#[cfg(any(
-    feature = "protocol-native-msg-server",
-    feature = "protocol-native-msg-client"
-))]
-mod marker {
-    #[cfg(any(
-        not(feature = "protocol-native-msg-client"),
-        not(feature = "protocol-native-msg-server"),
-    ))]
-    use crate::protocol::Never;
-    use crate::protocol::Protocol;
-
-    /// Wire-protocol marker for WebExtensions native messaging.
-    pub struct NativeMessage;
-
-    impl Protocol for NativeMessage {
-        #[cfg(feature = "protocol-native-msg-client")]
-        type Client = super::client::NativeMessageClient;
-        #[cfg(not(feature = "protocol-native-msg-client"))]
-        type Client = Never;
-
-        #[cfg(feature = "protocol-native-msg-server")]
-        type Server = super::server::NativeMessageServer;
-        #[cfg(not(feature = "protocol-native-msg-server"))]
-        type Server = Never;
-    }
-}
-
 #[cfg(feature = "protocol-native-msg-server")]
 mod server {
-    use super::{MAX_SIZE, NativeMessage, NativePayload, NativeReply, NativeRequest};
-    use crate::protocol::Handler;
+    use super::{MAX_SIZE, NativePayload, NativeReply, NativeRequest};
     use crate::protocol::frame::Frame;
     use crate::protocol::message::Request;
+    use crate::protocol::{SendHandler, Serve};
     use base64::{Engine, engine::general_purpose::STANDARD};
     use std::io;
     use std::sync::Arc;
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use tracing::{debug, error, warn};
 
-    /// State behind [`crate::protocol::Server<NativeMessage>`]. Owns
-    /// stdin/stdout; there is at most one `Server<NativeMessage>` per
-    /// process because the browser funnels one native-messaging
-    /// session through the standard streams.
+    /// Native-messaging server. Reads stdin/stdout and dispatches
+    /// each envelope through a [`SendHandler`]. There is at most one
+    /// `NativeMessageServer` per process because the browser funnels
+    /// one native-messaging session through the standard streams.
     pub struct NativeMessageServer {
-        pub(crate) backend_name: &'static str,
+        backend_name: &'static str,
     }
 
-    impl crate::protocol::Server<NativeMessage> {
+    impl NativeMessageServer {
         /// Build a native-messaging server bound to this process's
         /// stdin/stdout. `backend_name` is the short tag echoed back
         /// in every reply so the browser side can log which transport
         /// served each call (`"embedded"` vs `"socket"`).
         pub fn from_stdio(backend_name: &'static str) -> Self {
-            crate::protocol::Server {
-                inner: NativeMessageServer { backend_name },
-            }
+            NativeMessageServer { backend_name }
         }
+    }
 
-        /// Run the stdio loop. Reads one envelope at a time from
-        /// stdin, dispatches it through `handler`, writes one
-        /// envelope to stdout. Returns `Ok(())` on clean stdin EOF
-        /// (browser closed the pipe).
-        pub async fn serve<H: Handler>(self, handler: Arc<H>) -> io::Result<()> {
+    impl Serve for NativeMessageServer {
+        async fn serve<H: SendHandler + 'static>(self, handler: Arc<H>) -> io::Result<()> {
             serve_io(
-                self.inner.backend_name,
+                self.backend_name,
                 tokio::io::stdin(),
                 tokio::io::stdout(),
                 handler,
@@ -167,9 +127,9 @@ mod server {
     }
 
     /// Run the native-messaging dispatch loop on arbitrary async
-    /// byte streams. [`crate::protocol::Server::<NativeMessage>::
-    /// serve`] is a thin wrapper that passes `tokio::io::stdin` /
-    /// `stdout`; this split exists so tests can drive the loop with
+    /// byte streams. [`NativeMessageServer`]'s [`Serve::serve`] impl
+    /// is a thin wrapper that passes `tokio::io::stdin` / `stdout`;
+    /// this split exists so tests can drive the loop with
     /// [`tokio::io::duplex`] pipes, and so future deployments could
     /// funnel native-messaging frames over any other bidirectional
     /// transport (an SSH channel, a Unix pipe pair) without stdio.
@@ -182,7 +142,7 @@ mod server {
     where
         R: AsyncRead + Unpin,
         W: AsyncWrite + Unpin,
-        H: Handler,
+        H: SendHandler,
     {
         loop {
             let mut len_buf = [0u8; 4];
@@ -237,7 +197,7 @@ mod server {
         }
     }
 
-    async fn handle_envelope<H: Handler>(
+    async fn handle_envelope<H: SendHandler>(
         handler: &H,
         backend: &'static str,
         req: NativeRequest,
@@ -273,22 +233,24 @@ mod server {
 
 #[cfg(feature = "protocol-native-msg-client")]
 mod client {
-    //! WASM-side `Client<NativeMessage>`: wraps a
+    //! WASM-side `NativeMessageClient`: wraps a
     //! `browser.runtime.Port` returned by `connectNative`, multiplexes
     //! RPC calls over it with an id-keyed pending map, and exposes the
-    //! result through the [`LocalHandler`] trait so the browser
-    //! extension popup can call typed methods (`status`, `list_users`,
-    //! ...) the same way a native `Client<Socket>` caller does.
+    //! result through the base [`Handler`] trait so the browser
+    //! extension popup can call typed methods via [`Handler::call`]
+    //! the same way a native [`SocketClient`] caller does.
     //!
     //! Wasm is single-threaded, so `Rc<RefCell<...>>` is the right
     //! shared-mutable-state primitive. The client is `!Send` / `!Sync`
-    //! (the JS `Port` is neither), which is why it impls
-    //! [`LocalHandler`] rather than [`Handler`].
+    //! (the JS `Port` is neither), which is why it impls the base
+    //! [`Handler`] trait rather than the `Send`-bounded
+    //! [`SendHandler`].
     //!
-    //! [`LocalHandler`]: crate::protocol::LocalHandler
     //! [`Handler`]: crate::protocol::Handler
-    use super::{NativeId, NativeMessage, NativeReply, NativeRequest};
-    use crate::protocol::Client;
+    //! [`Handler::call`]: crate::protocol::Handler::call
+    //! [`SendHandler`]: crate::protocol::SendHandler
+    //! [`SocketClient`]: crate::protocol::SocketClient
+    use super::{NativeId, NativeReply, NativeRequest};
     use crate::protocol::frame::Frame;
     use crate::protocol::message::{Request, Response};
     use futures::channel::oneshot;
@@ -323,9 +285,9 @@ mod client {
         fn connect_native(name: &str) -> Port;
     }
 
-    /// State behind [`Client<NativeMessage>`]. Holds the live JS
-    /// `Port`, the pending-reply map, and the id counter. Single-
-    /// threaded; `Rc<RefCell<_>>` is enough.
+    /// Native-messaging client. Holds the live JS `Port`, the
+    /// pending-reply map, and the id counter. Single-threaded;
+    /// `Rc<RefCell<_>>` is enough.
     pub struct NativeMessageClient {
         port: Port,
         pending: Rc<RefCell<HashMap<NativeId, oneshot::Sender<NativeResult>>>>,
@@ -338,7 +300,7 @@ mod client {
 
     type NativeResult = Result<NativeReply, String>;
 
-    impl Client<NativeMessage> {
+    impl NativeMessageClient {
         /// Open a native-messaging port to the host registered under
         /// `app_name` (the `name` field of the host manifest, e.g.
         /// `"com.nixpulvis.valet"`). Attaches `onMessage` /
@@ -396,29 +358,27 @@ mod client {
             port.on_disconnect()
                 .add_listener(on_disconnect.as_ref().unchecked_ref());
 
-            Client {
-                inner: NativeMessageClient {
-                    port,
-                    pending,
-                    next_id,
-                    _on_message: on_message,
-                    _on_disconnect: on_disconnect,
-                },
+            NativeMessageClient {
+                port,
+                pending,
+                next_id,
+                _on_message: on_message,
+                _on_disconnect: on_disconnect,
             }
         }
     }
 
-    impl crate::protocol::LocalHandler for Client<NativeMessage> {
+    impl crate::protocol::Handler for NativeMessageClient {
         fn handle(&self, req: Request) -> impl std::future::Future<Output = io::Result<Response>> {
             let id = {
-                let cur = self.inner.next_id.get();
+                let cur = self.next_id.get();
                 let next = cur.wrapping_add(1);
                 assert!(next != 0, "native_msg id counter wrapped at u64::MAX");
-                self.inner.next_id.set(next);
+                self.next_id.set(next);
                 cur
             };
             let (tx, rx) = oneshot::channel();
-            self.inner.pending.borrow_mut().insert(id, tx);
+            self.pending.borrow_mut().insert(id, tx);
 
             let envelope = NativeRequest {
                 id,
@@ -426,8 +386,8 @@ mod client {
             };
             let serializer = serde_wasm_bindgen::Serializer::json_compatible();
             let post_result = serde::Serialize::serialize(&envelope, &serializer)
-                .map(|frame| self.inner.port.post_message(&frame));
-            let pending = self.inner.pending.clone();
+                .map(|frame| self.port.post_message(&frame));
+            let pending = self.pending.clone();
 
             async move {
                 if let Err(e) = post_result {

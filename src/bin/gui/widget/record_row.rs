@@ -3,11 +3,12 @@ use eframe::egui;
 use egui_inbox::UiInbox;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use valet::Handler;
+use valet::SendHandler;
 use valet::{
     Record,
     password::Password,
-    protocol::{Client, embedded::Embedded},
+    protocol::EmbeddedHandler,
+    protocol::message::Fetch,
     record::{Label, LabelName},
     uuid::Uuid,
 };
@@ -21,7 +22,7 @@ pub struct RecordRow<'a> {
     label: &'a Label,
     record_uuid: &'a Uuid<Record>,
     username: String,
-    client: &'a Arc<Client<Embedded>>,
+    client: &'a Arc<EmbeddedHandler>,
     rt: &'a Runtime,
 }
 
@@ -30,7 +31,7 @@ impl<'a> RecordRow<'a> {
         label: &'a Label,
         record_uuid: &'a Uuid<Record>,
         username: String,
-        client: &'a Arc<Client<Embedded>>,
+        client: &'a Arc<EmbeddedHandler>,
         rt: &'a Runtime,
     ) -> Self {
         Self {
@@ -220,7 +221,7 @@ impl egui::Widget for RecordRow<'_> {
 
 fn spawn_fetch(
     rt: &Runtime,
-    client: Arc<Client<Embedded>>,
+    client: Arc<EmbeddedHandler>,
     username: String,
     record_uuid: Uuid<Record>,
     tx: egui_inbox::UiInboxSender<PasswordEvent>,
@@ -228,7 +229,13 @@ fn spawn_fetch(
 ) {
     rt.spawn(async move {
         // TODO: surface these errors in the UI instead of stderr.
-        let record = match client.fetch(username, record_uuid.clone()).await {
+        let record = match client
+            .call(Fetch {
+                username,
+                uuid: record_uuid.clone(),
+            })
+            .await
+        {
             Ok(record) => record,
             Err(e) => {
                 eprintln!("failed to load record {record_uuid}: {e}");

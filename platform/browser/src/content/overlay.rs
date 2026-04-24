@@ -12,12 +12,13 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, Element, HtmlElement, HtmlInputElement, ShadowRootInit, ShadowRootMode};
 
 use std::str::FromStr;
-use valet::Request;
+use valet::Handler;
 use valet::lot::DEFAULT_LOT;
+use valet::protocol::message::{FindRecords, GenerateRecord, GetRecord};
 use valet::{Record, record::Label, uuid::Uuid};
 
 use super::fill;
-use crate::rpc;
+use crate::protocol;
 
 /// Z-index for overlay elements; maximum i32 to sit above all page content.
 const OVERLAY_Z_INDEX: &str = "2147483647";
@@ -207,7 +208,7 @@ async fn show_menu(pw: &HtmlInputElement, username: Option<&HtmlInputElement>) {
 
     // Try to fetch credentials if unlocked, but don't block the menu
     // on this. We always show "Generate password" regardless.
-    let user = match rpc::first_unlocked_user().await {
+    let user = match protocol::first_unlocked_user().await {
         Ok(Some(u)) => {
             tracing::debug!(username = %u, "vault unlocked");
             u
@@ -223,19 +224,13 @@ async fn show_menu(pw: &HtmlInputElement, username: Option<&HtmlInputElement>) {
         }
     };
 
-    let find_result: Result<
-        Vec<(Uuid<Record>, Label)>,
-        valet::protocol::message::Error<rpc::Error>,
-    > = async {
-        Ok(rpc::call(Request::FindRecords {
+    let find_result = protocol::NativeMessageClient
+        .call(FindRecords {
             username: user.clone(),
             lot: DEFAULT_LOT.to_owned(),
             query: domain.clone(),
         })
-        .await?
-        .expect_index()?)
-    }
-    .await;
+        .await;
     let credentials = match find_result {
         Ok(c) => {
             tracing::debug!(domain = %domain, count = c.len(), "credentials found");
@@ -465,7 +460,7 @@ async fn do_generate(pw: &HtmlInputElement, username_field: Option<&HtmlInputEle
         .unwrap_or_default();
     let label = format!("{id}@{domain}");
 
-    let user = match rpc::first_unlocked_user().await {
+    let user = match protocol::first_unlocked_user().await {
         Ok(Some(u)) => u,
         Ok(None) => {
             show_toast("Valet is locked. Click the Valet toolbar icon to unlock.");
@@ -485,16 +480,13 @@ async fn do_generate(pw: &HtmlInputElement, username_field: Option<&HtmlInputEle
             return;
         }
     };
-    let result: Result<Record, valet::protocol::message::Error<rpc::Error>> = async {
-        Ok(rpc::call(Request::GenerateRecord {
+    let result = protocol::NativeMessageClient
+        .call(GenerateRecord {
             username: user,
             lot: DEFAULT_LOT.to_owned(),
             label: parsed_label,
         })
-        .await?
-        .expect_record()?)
-    }
-    .await;
+        .await;
     match result {
         Ok(record) => {
             tracing::info!(label = %label, "password generated and saved");
@@ -513,7 +505,7 @@ async fn do_fill(
     username_field: Option<&HtmlInputElement>,
     record_uuid: &str,
 ) {
-    let user = match rpc::first_unlocked_user().await {
+    let user = match protocol::first_unlocked_user().await {
         Ok(Some(u)) => u,
         Ok(None) => {
             show_toast("Valet is locked. Click the Valet toolbar icon to unlock.");
@@ -533,16 +525,13 @@ async fn do_fill(
             return;
         }
     };
-    let result: Result<Record, valet::protocol::message::Error<rpc::Error>> = async {
-        Ok(rpc::call(Request::GetRecord {
+    let result = protocol::NativeMessageClient
+        .call(GetRecord {
             username: user,
             lot: DEFAULT_LOT.to_owned(),
             uuid,
         })
-        .await?
-        .expect_record()?)
-    }
-    .await;
+        .await;
     match result {
         Ok(record) => {
             if let Some(u_field) = username_field {

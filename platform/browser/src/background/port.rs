@@ -1,18 +1,18 @@
 //! `browser.runtime.onMessage` bridge. The popup and content scripts
 //! send a base64-encoded [`valet::Request`] as the message body; this
 //! module forwards each call through a shared
-//! [`Client<NativeMessage>`] to the native host and returns
+//! [`NativeMessageClient`] to the native host and returns
 //! `{ result: <b64>, backend: "native" }` to the caller. Re-entrant
-//! calls are safe because `Client<NativeMessage>` multiplexes them
+//! calls are safe because `NativeMessageClient` multiplexes them
 //! over one port.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde::Serialize;
+use valet::protocol::NativeMessageClient;
 use valet::protocol::frame::Frame;
-use valet::protocol::{Client, NativeMessage};
-use valet::{LocalHandler, Request};
+use valet::{Handler, Request};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
@@ -22,16 +22,16 @@ use super::externs;
 const NATIVE_APP: &str = "com.nixpulvis.valet";
 
 thread_local! {
-    static CLIENT: RefCell<Option<Rc<Client<NativeMessage>>>> = const { RefCell::new(None) };
+    static CLIENT: RefCell<Option<Rc<NativeMessageClient>>> = const { RefCell::new(None) };
 }
 
-fn client() -> Rc<Client<NativeMessage>> {
+fn client() -> Rc<NativeMessageClient> {
     CLIENT.with(|cell| {
         if let Some(c) = cell.borrow().as_ref() {
             return c.clone();
         }
         tracing::info!(app = NATIVE_APP, "connecting native host");
-        let c = Rc::new(Client::<NativeMessage>::connect(NATIVE_APP));
+        let c = Rc::new(NativeMessageClient::connect(NATIVE_APP));
         *cell.borrow_mut() = Some(c.clone());
         c
     })
@@ -39,7 +39,7 @@ fn client() -> Rc<Client<NativeMessage>> {
 
 /// Register the `browser.runtime.onMessage` handler. Each message is a
 /// base64 [`valet::Request`]; we hand it to the shared
-/// [`Client<NativeMessage>`] and return the base64 [`valet::Response`].
+/// [`NativeMessageClient`] and return the base64 [`valet::Response`].
 pub fn install_message_listener() {
     let cb = Closure::wrap(Box::new(|msg: JsValue, _sender: JsValue| -> JsValue {
         future_to_promise(async move { handle_rpc(msg).await }).into()

@@ -13,12 +13,13 @@ use std::{
     sync::{Arc, RwLock},
 };
 use tokio::runtime::Runtime;
-use valet::Handler;
+use valet::SendHandler;
 use valet::{
     Record,
     lot::DEFAULT_LOT,
     password::Password,
-    protocol::{Client, embedded::Embedded},
+    protocol::EmbeddedHandler,
+    protocol::message::{CreateRecord, List, Lock},
     record::{Label, Query},
     uuid::Uuid,
 };
@@ -27,7 +28,7 @@ type Index = Vec<(Uuid<Record>, Label)>;
 
 pub struct Unlocked<'a> {
     // TODO: come up with a better organization for these shared values.
-    client: &'a Arc<Client<Embedded>>,
+    client: &'a Arc<EmbeddedHandler>,
     rt: &'a Runtime,
     active_user: &'a mut Option<String>,
     login_inbox: &'a mut UiInbox<String>,
@@ -35,7 +36,7 @@ pub struct Unlocked<'a> {
 
 impl<'a> Unlocked<'a> {
     pub fn new(
-        client: &'a Arc<Client<Embedded>>,
+        client: &'a Arc<EmbeddedHandler>,
         rt: &'a Runtime,
         active_user: &'a mut Option<String>,
         login_inbox: &'a mut UiInbox<String>,
@@ -102,7 +103,7 @@ impl<'a> View for Unlocked<'a> {
                                 let client = self.client.clone();
                                 let uname = username.clone();
                                 self.rt.spawn(async move {
-                                    let _ = client.lock(uname).await;
+                                    let _ = client.call(Lock { username: uname }).await;
                                 });
                                 *self.active_user = None;
                                 *self.login_inbox = UiInbox::new();
@@ -167,13 +168,13 @@ impl<'a> View for Unlocked<'a> {
                                             // name, so resaving the same label
                                             // extends history in place.
                                             if let Err(e) = client
-                                                .create_record(
-                                                    username_c.clone(),
-                                                    DEFAULT_LOT.to_owned(),
-                                                    path.label,
-                                                    new_password,
-                                                    Default::default(),
-                                                )
+                                                .call(CreateRecord {
+                                                    username: username_c.clone(),
+                                                    lot: DEFAULT_LOT.to_owned(),
+                                                    label: path.label,
+                                                    password: new_password,
+                                                    extra: Default::default(),
+                                                })
                                                 .await
                                             {
                                                 // TODO: surface in UI.
@@ -261,12 +262,15 @@ impl<'a> View for Unlocked<'a> {
     }
 }
 
-async fn client_list_all(client: &Arc<Client<Embedded>>, username: &str) -> Index {
+async fn client_list_all(client: &Arc<EmbeddedHandler>, username: &str) -> Index {
     // An empty query list on the handler means "every record in every
     // lot the user has access to". The UI then filters the main lot in
     // the render path.
     client
-        .list(username.to_owned(), Vec::new())
+        .call(List {
+            username: username.to_owned(),
+            queries: Vec::new(),
+        })
         .await
         .unwrap_or_default()
 }

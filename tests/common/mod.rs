@@ -18,16 +18,22 @@ pub mod stub;
 pub mod envelope;
 
 /// Register a user, create the default lot, unlock, and return the
-/// resulting `Client<Embedded>`. Every embedded / socket / native-
+/// resulting [`EmbeddedHandler`]. Every embedded / socket / native-
 /// messaging test starts from this state.
+///
+/// [`EmbeddedHandler`]: valet::protocol::EmbeddedHandler
 #[cfg(feature = "protocol-embedded")]
 pub async fn embedded_client_with_user(
     username: &str,
     password: &str,
-) -> valet::Client<valet::protocol::embedded::Embedded> {
+) -> valet::protocol::EmbeddedHandler {
+    use valet::Lot;
+    use valet::SendHandler;
+    use valet::db::Database;
     use valet::lot::DEFAULT_LOT;
+    use valet::protocol::EmbeddedHandler;
+    use valet::protocol::message::Unlock;
     use valet::user::User;
-    use valet::{Client, Handler, Lot, db::Database, protocol::embedded::Embedded};
 
     let db = Database::new("sqlite://:memory:")
         .await
@@ -37,15 +43,18 @@ pub async fn embedded_client_with_user(
         .register(&db)
         .await
         .expect("register user");
-    // `Client<Embedded>::new` takes ownership of the DB, so create the
+    // `EmbeddedHandler::new` takes ownership of the DB, so create the
     // default lot before handing the DB over.
     Lot::new(DEFAULT_LOT)
         .save(&db, &user)
         .await
         .expect("create default lot");
-    let client = Client::<Embedded>::new(db);
+    let client = EmbeddedHandler::new(db, &tokio::runtime::Handle::current());
     client
-        .unlock(username.to_owned(), password.try_into().unwrap())
+        .call(Unlock {
+            username: username.to_owned(),
+            password: password.try_into().unwrap(),
+        })
         .await
         .expect("unlock");
     client

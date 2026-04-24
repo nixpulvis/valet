@@ -36,7 +36,7 @@ use std::sync::Arc;
     feature = "protocol-embedded",
     any(feature = "protocol-socket", feature = "protocol-native-msg-server"),
 ))]
-use valet::protocol::{Client, embedded::Embedded};
+use valet::protocol::EmbeddedHandler;
 
 #[cfg(feature = "protocol-native-msg-server")]
 mod native_msg_cli;
@@ -164,6 +164,8 @@ async fn run_native_msg(_backend: Backend) -> Result<(), String> {
     feature = "protocol-embedded",
     any(feature = "protocol-socket", feature = "protocol-native-msg-server"),
 ))]
-pub(crate) async fn build_embedded_handler() -> Result<Arc<Client<Embedded>>, String> {
-    Ok(Arc::new(Client::<Embedded>::open_from_env().await?))
+pub(crate) async fn build_embedded_handler() -> Result<Arc<EmbeddedHandler>, String> {
+    Ok(Arc::new(
+        EmbeddedHandler::open_from_env(&tokio::runtime::Handle::current()).await?,
+    ))
 }

@@ -1,7 +1,10 @@
-//! IPC message types: [`Request`], [`Response`], the `expect_*` reply
-//! helpers, and the [`Error`] / [`ResponseError`] shapes typed
-//! handlers return. The wire codec for these types lives in
-//! [`super::frame`].
+//! IPC message types. [`Request`] and [`Response`] are the wire
+//! enums; [`Call`] plus one payload struct per variant drive
+//! [`Handler::call`]; [`ResponseError`] covers the reply-inspection
+//! failures [`Call::from_response`] can raise. The wire codec for
+//! [`Request`] / [`Response`] lives in [`super::frame`].
+//!
+//! [`Handler::call`]: crate::protocol::Handler::call
 
 use crate::{
     Lot, Record,
@@ -174,38 +177,10 @@ pub fn label_matches_domain(label: &Label, query: &str) -> bool {
     }
 }
 
-/// RPC-layer error for valet handler clients. `T` is the transport-specific
-/// failure type: [`std::io::Error`] for the socket handler and FFI, a richer
-/// enum for the browser extension's native-messaging path.
-///
-/// [`Rpc`](Self::Rpc) means no application-level reply arrived
-/// (transport failure, decode failure, disconnect).
-/// [`Response`](Self::Response) carries a reply-inspection failure
-/// ([`ResponseError`]): either a peer-reported error or an unexpected
-/// response variant.
-#[derive(Debug)]
-pub enum Error<T> {
-    /// The RPC round-trip itself failed.
-    Rpc(T),
-    /// A valid reply arrived but could not be interpreted as the
-    /// expected [`Response`] variant.
-    Response(ResponseError),
-}
-
-impl<T: std::fmt::Display> std::fmt::Display for Error<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Rpc(e) => write!(f, "rpc: {e}"),
-            Error::Response(r) => write!(f, "{r}"),
-        }
-    }
-}
-
-impl<T: std::fmt::Debug + std::fmt::Display> std::error::Error for Error<T> {}
-
 /// Failure variants produced when extracting an expected [`Response`]
-/// variant via the `Response::expect_*` methods. Converts into
-/// [`Error`] for any `T` via `?`.
+/// variant via the internal `Response::expect_*` methods. Converts
+/// into [`crate::protocol::Error`] via `?` inside [`Call::from_response`]
+/// implementations.
 #[derive(Debug)]
 pub enum ResponseError {
     /// The peer's server-side handler returned a failure; the string is
@@ -213,12 +188,6 @@ pub enum ResponseError {
     Remote(String),
     /// The peer returned a valid [`Response`] of the wrong variant.
     UnexpectedResponse,
-}
-
-impl<T> From<ResponseError> for Error<T> {
-    fn from(e: ResponseError) -> Self {
-        Error::Response(e)
-    }
 }
 
 impl std::fmt::Display for ResponseError {
@@ -232,10 +201,311 @@ impl std::fmt::Display for ResponseError {
 
 impl std::error::Error for ResponseError {}
 
+/// One typed RPC call: a payload struct that knows how to become a
+/// [`Request`] and how to extract its declared [`Call::Response`]
+/// out of a matching [`Response`] variant.
+///
+/// Every [`Request`] variant has a mirror payload struct that impls
+/// this trait, so [`crate::protocol::Handler::call`] can accept any
+/// call uniformly: `handler.call(Unlock { .. }).await?`.
+pub trait Call: Sized {
+    /// The value returned when the matching [`Response`] variant
+    /// comes back.
+    type Response;
+    /// Build the wire [`Request`] for this call.
+    fn into_request(self) -> Request;
+    /// Extract [`Self::Response`] from the peer's reply.
+    fn from_response(resp: Response) -> Result<Self::Response, ResponseError>;
+}
+
+/// Generate a unit-struct [`Call`] impl for a [`Request`] variant
+/// with no fields. Used by [`Status`], [`ListUsers`], [`LockAll`].
+macro_rules! unit_call {
+    ($name:ident, $variant:ident, $resp_ty:ty, $extractor:ident) => {
+        #[doc = concat!("Payload for [`Request::", stringify!($variant), "`].")]
+        pub struct $name;
+        impl Call for $name {
+            type Response = $resp_ty;
+            fn into_request(self) -> Request {
+                Request::$variant
+            }
+            fn from_response(r: Response) -> Result<Self::Response, ResponseError> {
+                r.$extractor()
+            }
+        }
+    };
+}
+
+unit_call!(Status, Status, Vec<String>, expect_users);
+unit_call!(ListUsers, ListUsers, Vec<String>, expect_users);
+unit_call!(LockAll, LockAll, (), expect_ok);
+
+/// Payload for [`Request::Unlock`].
+pub struct Unlock {
+    pub username: String,
+    pub password: Password,
+}
+impl Call for Unlock {
+    type Response = ();
+    fn into_request(self) -> Request {
+        Request::Unlock {
+            username: self.username,
+            password: self.password,
+        }
+    }
+    fn from_response(r: Response) -> Result<(), ResponseError> {
+        r.expect_ok()
+    }
+}
+
+/// Payload for [`Request::Lock`].
+pub struct Lock {
+    pub username: String,
+}
+impl Call for Lock {
+    type Response = ();
+    fn into_request(self) -> Request {
+        Request::Lock {
+            username: self.username,
+        }
+    }
+    fn from_response(r: Response) -> Result<(), ResponseError> {
+        r.expect_ok()
+    }
+}
+
+/// Payload for [`Request::List`].
+pub struct List {
+    pub username: String,
+    pub queries: Vec<String>,
+}
+impl Call for List {
+    type Response = Vec<(Uuid<Record>, Label)>;
+    fn into_request(self) -> Request {
+        Request::List {
+            username: self.username,
+            queries: self.queries,
+        }
+    }
+    fn from_response(r: Response) -> Result<Self::Response, ResponseError> {
+        r.expect_index()
+    }
+}
+
+/// Payload for [`Request::Fetch`].
+pub struct Fetch {
+    pub username: String,
+    pub uuid: Uuid<Record>,
+}
+impl Call for Fetch {
+    type Response = Record;
+    fn into_request(self) -> Request {
+        Request::Fetch {
+            username: self.username,
+            uuid: self.uuid,
+        }
+    }
+    fn from_response(r: Response) -> Result<Record, ResponseError> {
+        r.expect_record()
+    }
+}
+
+/// Payload for [`Request::FindRecords`].
+pub struct FindRecords {
+    pub username: String,
+    pub lot: String,
+    pub query: String,
+}
+impl Call for FindRecords {
+    type Response = Vec<(Uuid<Record>, Label)>;
+    fn into_request(self) -> Request {
+        Request::FindRecords {
+            username: self.username,
+            lot: self.lot,
+            query: self.query,
+        }
+    }
+    fn from_response(r: Response) -> Result<Self::Response, ResponseError> {
+        r.expect_index()
+    }
+}
+
+/// Payload for [`Request::GetRecord`].
+pub struct GetRecord {
+    pub username: String,
+    pub lot: String,
+    pub uuid: Uuid<Record>,
+}
+impl Call for GetRecord {
+    type Response = Record;
+    fn into_request(self) -> Request {
+        Request::GetRecord {
+            username: self.username,
+            lot: self.lot,
+            uuid: self.uuid,
+        }
+    }
+    fn from_response(r: Response) -> Result<Record, ResponseError> {
+        r.expect_record()
+    }
+}
+
+/// Payload for [`Request::CreateRecord`].
+pub struct CreateRecord {
+    pub username: String,
+    pub lot: String,
+    pub label: Label,
+    pub password: Password,
+    pub extra: HashMap<String, String>,
+}
+impl Call for CreateRecord {
+    type Response = Record;
+    fn into_request(self) -> Request {
+        Request::CreateRecord {
+            username: self.username,
+            lot: self.lot,
+            label: self.label,
+            password: self.password,
+            extra: self.extra,
+        }
+    }
+    fn from_response(r: Response) -> Result<Record, ResponseError> {
+        r.expect_record()
+    }
+}
+
+/// Payload for [`Request::GenerateRecord`].
+pub struct GenerateRecord {
+    pub username: String,
+    pub lot: String,
+    pub label: Label,
+}
+impl Call for GenerateRecord {
+    type Response = Record;
+    fn into_request(self) -> Request {
+        Request::GenerateRecord {
+            username: self.username,
+            lot: self.lot,
+            label: self.label,
+        }
+    }
+    fn from_response(r: Response) -> Result<Record, ResponseError> {
+        r.expect_record()
+    }
+}
+
+/// Payload for [`Request::Register`].
+pub struct Register {
+    pub username: String,
+    pub password: Password,
+}
+impl Call for Register {
+    type Response = ();
+    fn into_request(self) -> Request {
+        Request::Register {
+            username: self.username,
+            password: self.password,
+        }
+    }
+    fn from_response(r: Response) -> Result<(), ResponseError> {
+        r.expect_ok()
+    }
+}
+
+/// Payload for [`Request::Validate`].
+pub struct Validate {
+    pub username: String,
+    pub password: Password,
+}
+impl Call for Validate {
+    type Response = ();
+    fn into_request(self) -> Request {
+        Request::Validate {
+            username: self.username,
+            password: self.password,
+        }
+    }
+    fn from_response(r: Response) -> Result<(), ResponseError> {
+        r.expect_ok()
+    }
+}
+
+/// Payload for [`Request::ListLots`].
+pub struct ListLots {
+    pub username: String,
+}
+impl Call for ListLots {
+    type Response = Vec<(Uuid<Lot>, String)>;
+    fn into_request(self) -> Request {
+        Request::ListLots {
+            username: self.username,
+        }
+    }
+    fn from_response(r: Response) -> Result<Self::Response, ResponseError> {
+        r.expect_lots()
+    }
+}
+
+/// Payload for [`Request::CreateLot`].
+pub struct CreateLot {
+    pub username: String,
+    pub lot: String,
+}
+impl Call for CreateLot {
+    type Response = ();
+    fn into_request(self) -> Request {
+        Request::CreateLot {
+            username: self.username,
+            lot: self.lot,
+        }
+    }
+    fn from_response(r: Response) -> Result<(), ResponseError> {
+        r.expect_ok()
+    }
+}
+
+/// Payload for [`Request::DeleteLot`].
+pub struct DeleteLot {
+    pub username: String,
+    pub lot: String,
+}
+impl Call for DeleteLot {
+    type Response = ();
+    fn into_request(self) -> Request {
+        Request::DeleteLot {
+            username: self.username,
+            lot: self.lot,
+        }
+    }
+    fn from_response(r: Response) -> Result<(), ResponseError> {
+        r.expect_ok()
+    }
+}
+
+/// Payload for [`Request::History`].
+pub struct History {
+    pub username: String,
+    pub lot: String,
+    pub uuid: Uuid<Record>,
+}
+impl Call for History {
+    type Response = Vec<RevisionEntry>;
+    fn into_request(self) -> Request {
+        Request::History {
+            username: self.username,
+            lot: self.lot,
+            uuid: self.uuid,
+        }
+    }
+    fn from_response(r: Response) -> Result<Self::Response, ResponseError> {
+        r.expect_history()
+    }
+}
+
 impl Response {
     /// Extract [`Response::Ok`]. Folds [`Response::Error`] and
     /// any other variant into [`ResponseError`].
-    pub fn expect_ok(self) -> Result<(), ResponseError> {
+    pub(crate) fn expect_ok(self) -> Result<(), ResponseError> {
         match self {
             Response::Ok => Ok(()),
             Response::Error(msg) => Err(ResponseError::Remote(msg)),
@@ -245,7 +515,7 @@ impl Response {
 
     /// Extract [`Response::Users`]. Folds [`Response::Error`] and any
     /// other variant into [`ResponseError`].
-    pub fn expect_users(self) -> Result<Vec<String>, ResponseError> {
+    pub(crate) fn expect_users(self) -> Result<Vec<String>, ResponseError> {
         match self {
             Response::Users(v) => Ok(v),
             Response::Error(msg) => Err(ResponseError::Remote(msg)),
@@ -255,7 +525,7 @@ impl Response {
 
     /// Extract [`Response::Index`]. Folds [`Response::Error`] and any
     /// other variant into [`ResponseError`].
-    pub fn expect_index(self) -> Result<Vec<(Uuid<Record>, Label)>, ResponseError> {
+    pub(crate) fn expect_index(self) -> Result<Vec<(Uuid<Record>, Label)>, ResponseError> {
         match self {
             Response::Index(v) => Ok(v),
             Response::Error(msg) => Err(ResponseError::Remote(msg)),
@@ -265,7 +535,7 @@ impl Response {
 
     /// Extract [`Response::Record`]. Folds [`Response::Error`] and any
     /// other variant into [`ResponseError`].
-    pub fn expect_record(self) -> Result<Record, ResponseError> {
+    pub(crate) fn expect_record(self) -> Result<Record, ResponseError> {
         match self {
             Response::Record(r) => Ok(r),
             Response::Error(msg) => Err(ResponseError::Remote(msg)),
@@ -275,7 +545,7 @@ impl Response {
 
     /// Extract [`Response::Lots`]. Folds [`Response::Error`] and any
     /// other variant into [`ResponseError`].
-    pub fn expect_lots(self) -> Result<Vec<(Uuid<Lot>, String)>, ResponseError> {
+    pub(crate) fn expect_lots(self) -> Result<Vec<(Uuid<Lot>, String)>, ResponseError> {
         match self {
             Response::Lots(v) => Ok(v),
             Response::Error(msg) => Err(ResponseError::Remote(msg)),
@@ -285,7 +555,7 @@ impl Response {
 
     /// Extract [`Response::History`]. Folds [`Response::Error`] and any
     /// other variant into [`ResponseError`].
-    pub fn expect_history(self) -> Result<Vec<RevisionEntry>, ResponseError> {
+    pub(crate) fn expect_history(self) -> Result<Vec<RevisionEntry>, ResponseError> {
         match self {
             Response::History(v) => Ok(v),
             Response::Error(msg) => Err(ResponseError::Remote(msg)),
@@ -299,7 +569,6 @@ mod tests {
     use super::*;
     use crate::Record;
     use crate::record::{Label, LabelName};
-    use std::io;
 
     fn sample_label() -> Label {
         Label::from(LabelName::Simple("github.com".into()))
@@ -396,16 +665,16 @@ mod tests {
     }
 
     #[test]
-    fn response_error_converts_into_error() {
-        let e: Error<io::Error> = ResponseError::Remote("x".into()).into();
+    fn response_error_converts_into_protocol_error() {
+        let e: crate::protocol::Error = ResponseError::Remote("x".into()).into();
         match e {
-            Error::Response(ResponseError::Remote(m)) => assert_eq!(m, "x"),
-            other => panic!("expected Error::Response(Remote), got {other:?}"),
+            crate::protocol::Error::Remote(m) => assert_eq!(m, "x"),
+            other => panic!("expected Error::Remote, got {other:?}"),
         }
-        let e: Error<io::Error> = ResponseError::UnexpectedResponse.into();
+        let e: crate::protocol::Error = ResponseError::UnexpectedResponse.into();
         match e {
-            Error::Response(ResponseError::UnexpectedResponse) => {}
-            other => panic!("expected Error::Response(UnexpectedResponse), got {other:?}"),
+            crate::protocol::Error::Unexpected => {}
+            other => panic!("expected Error::Unexpected, got {other:?}"),
         }
     }
 }

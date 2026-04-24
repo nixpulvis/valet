@@ -6,7 +6,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use valet::Handler;
+use valet::SendHandler;
 use valet::protocol::frame::Frame;
 use valet::protocol::message::{Request, Response};
 use valet::protocol::native_msg::{self, NativeId, NativeReply, NativeRequest};
@@ -57,7 +57,7 @@ pub fn payload_response(reply: &NativeReply) -> Response {
 /// Stand up `native_msg::serve_io` on a pair of duplex pipes,
 /// returning the two halves (`to_server`, `from_server`) the test
 /// uses to act as the browser, plus the server task handle.
-pub fn spawn_server<H: Handler + 'static>(
+pub fn spawn_server<H: SendHandler + 'static>(
     backend: &'static str,
     handler: Arc<H>,
 ) -> (
