@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 use std::ops::{Deref, DerefMut};
+use std::time::Duration;
 
 use criterion::{BenchmarkGroup, SamplingMode, measurement::WallTime};
 use storgit::Id;
@@ -21,6 +22,10 @@ use storgit::layout::Layout;
 /// Optional `flat_threshold: <expr>` overrides the default
 /// [`FLAT_SAMPLING_THRESHOLD`] for benches whose per-iteration cost
 /// grows faster than the default assumes.
+///
+/// Optional `measurement_time: <expr>` (a [`Duration`]) overrides the
+/// default [`MEASUREMENT_TIME`] for benches whose per-iteration cost
+/// doesn't fit in the default budget even under flat sampling.
 ///
 /// `layouts<L>: [<LayoutIdent>, ...]` lists the layouts to bench
 /// against; `L` (or any ident the caller picks) is introduced as a
@@ -39,6 +44,7 @@ macro_rules! bench {
      throughput: |$tn:ident| $thru:expr,
      |$store:ident, $n:ident| $body:block
      $(, flat_threshold: $ft:expr)?
+     $(, measurement_time: $mt:expr)?
      $(,)?
      , layouts<$lt:ident>: [$($lty:ident),+ $(,)?]
      $(,)?
@@ -46,6 +52,7 @@ macro_rules! bench {
         fn $name(c: &mut ::criterion::Criterion) {
             let mut group = c.benchmark_group(stringify!($name));
             group.sample_size(10);
+            group.measurement_time($crate::meas!($($mt)?));
             let threshold = $crate::thresh!($($ft)?);
             $({
                 #[allow(dead_code)]
@@ -84,6 +91,7 @@ macro_rules! bench {
      throughput: |$tn:ident, $ts:pat_param| $thru:expr,
      body: |$bi:pat_param| $body:expr
      $(, flat_threshold: $ft:expr)?
+     $(, measurement_time: $mt:expr)?
      $(,)?
      , layouts<$lt:ident>: [$($lty:ident),+ $(,)?]
      $(,)?
@@ -91,6 +99,7 @@ macro_rules! bench {
         fn $name(c: &mut ::criterion::Criterion) {
             let mut group = c.benchmark_group(stringify!($name));
             group.sample_size(10);
+            group.measurement_time($crate::meas!($($mt)?));
             let threshold = $crate::thresh!($($ft)?);
             $({
                 #[allow(dead_code)]
@@ -129,6 +138,7 @@ macro_rules! bench {
      setup: |$up_s:pat_param, $up_n:ident| $setup:expr,
      body: |$bi:pat_param| $body:expr
      $(, flat_threshold: $ft:expr)?
+     $(, measurement_time: $mt:expr)?
      $(,)?
      , layouts<$lt:ident>: [$($lty:ident),+ $(,)?]
      $(,)?
@@ -136,6 +146,7 @@ macro_rules! bench {
         fn $name(c: &mut ::criterion::Criterion) {
             let mut group = c.benchmark_group(stringify!($name));
             group.sample_size(10);
+            group.measurement_time($crate::meas!($($mt)?));
             let threshold = $crate::thresh!($($ft)?);
             $({
                 #[allow(dead_code)]
@@ -173,11 +184,17 @@ macro_rules! bench {
 pub const SCALING_NS: &[usize] = &[10, 25, 50, 100, 250];
 
 /// N above this threshold switches the enclosing criterion group to
-/// [`SamplingMode::Flat`]. Above ~100 entries per-iteration cost
+/// [`SamplingMode::Flat`]. Above ~50 entries per-iteration cost
 /// climbs past what criterion's default linear sampling can fit into
 /// its time budget, so we pick flat sampling automatically via
 /// [`set_sampling_mode`].
-pub const FLAT_SAMPLING_THRESHOLD: usize = 100;
+pub const FLAT_SAMPLING_THRESHOLD: usize = 50;
+
+/// Default criterion measurement window. Bumped above criterion's 5s
+/// default so the slower SubmoduleLayout benches finish their 10
+/// samples without warning; benches with even heavier per-iteration
+/// cost override this via the `measurement_time:` macro clause.
+pub const MEASUREMENT_TIME: Duration = Duration::from_secs(10);
 
 /// Fixed corpus size for benches whose swept parameter is operation
 /// count rather than corpus size.
@@ -261,5 +278,18 @@ macro_rules! thresh {
     };
     ($ft:expr) => {
         $ft
+    };
+}
+
+/// Resolve the measurement-time override for a [`bench!`] arm,
+/// defaulting to [`MEASUREMENT_TIME`] when the caller omits the
+/// `measurement_time:` clause.
+#[macro_export]
+macro_rules! meas {
+    () => {
+        $crate::common::MEASUREMENT_TIME
+    };
+    ($mt:expr) => {
+        $mt
     };
 }

@@ -17,6 +17,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use criterion::{Throughput, criterion_group, criterion_main};
 use storgit::layout::submodule::{ModuleChange, Parts, Snapshot};
@@ -163,6 +164,7 @@ bench!(bench_snapshot,
         let _ = h.store.snapshot().unwrap();
         h
     },
+    measurement_time: Duration::from_secs(12),
     layouts<L>: [SubmoduleLayout],
 );
 
@@ -191,6 +193,7 @@ bench!(bench_n_put_n_snapshot,
             let _ = h.store.snapshot().unwrap();
         }
     },
+    measurement_time: Duration::from_secs(40),
     layouts<L>: [SubmoduleLayout],
 );
 

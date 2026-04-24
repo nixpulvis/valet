@@ -7,6 +7,8 @@
 
 mod common;
 
+use std::time::Duration;
+
 use criterion::{Throughput, criterion_group, criterion_main};
 
 use common::{CORPUS_SIZE, entry_id, new_id};
@@ -47,7 +49,8 @@ generic_bench!(put_into_corpus<L>,
                 .put(&new_id(i), Some(b"label"), Some(b"payload"))
                 .unwrap();
         }
-    }
+    },
+    measurement_time: Duration::from_secs(15),
 );
 
 // Read N entries from the pre-populated corpus. Cycles through ids
