@@ -12,7 +12,7 @@ tempfile = "3.10"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-gix = "0.81"
+gix = { version = "0.81", features = ["sha1"] }
 tar = "0.4"
 tempfile = "3.10"
 

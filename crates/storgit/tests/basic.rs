@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use storgit::{CommitId, Entry, Id, IdError, ModuleChange, Modules, Parts, Store};
+use storgit::{CommitId, Entry, Id, ModuleChange, Modules, Parts, Store, id};
 
 fn empty() -> Parts {
     Parts {
@@ -13,20 +13,20 @@ fn empty() -> Parts {
 /// Shorthand for building an [`Id`] in-test. Panics on invalid input.
 /// Tests only pass known-good strings, and a bad id is a bug in the
 /// test, not behaviour we want to silently ignore.
-fn id(s: &str) -> Id {
+fn mkid(s: &str) -> Id {
     Id::new(s).unwrap()
 }
 
 /// Shorthand for "put data only, no label"; most tests don't care
 /// about the label slot.
 fn put_data(store: &mut Store, id_str: &str, data: &[u8]) {
-    store.put(&id(id_str), None, Some(data)).unwrap();
+    store.put(&mkid(id_str), None, Some(data)).unwrap();
 }
 
 /// Extract just the `data` slot of the current [`Entry`] for `id`,
 /// or `None` if the id is not a live entry.
 fn get_data(store: &Store, id_str: &str) -> Option<Vec<u8>> {
-    store.get(&id(id_str)).unwrap().and_then(|e| e.data)
+    store.get(&mkid(id_str)).unwrap().and_then(|e| e.data)
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn put_then_get_returns_latest() {
 #[test]
 fn get_missing_entry_returns_none() {
     let store = Store::open(empty()).unwrap();
-    assert!(store.get(&id("nope")).unwrap().is_none());
+    assert!(store.get(&mkid("nope")).unwrap().is_none());
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn history_returns_all_versions_newest_first() {
     put_data(&mut store, "alpha", b"v1");
     put_data(&mut store, "alpha", b"v2");
     put_data(&mut store, "alpha", b"v3");
-    let history = store.history(&id("alpha")).unwrap();
+    let history = store.history(&mkid("alpha")).unwrap();
     let payloads: Vec<Option<&[u8]>> = history.iter().map(|e| e.data.as_deref()).collect();
     assert_eq!(
         payloads,
@@ -85,17 +85,17 @@ fn list_names_live_entries() {
     put_data(&mut store, "b", b"y");
     let mut ids = store.list().unwrap();
     ids.sort();
-    assert_eq!(ids, vec![id("a"), id("b")]);
+    assert_eq!(ids, vec![mkid("a"), mkid("b")]);
 }
 
 #[test]
 fn archive_removes_from_list_but_history_survives() {
     let mut store = Store::open(empty()).unwrap();
     put_data(&mut store, "gone", b"bye");
-    store.archive(&id("gone")).unwrap();
+    store.archive(&mkid("gone")).unwrap();
     assert!(store.list().unwrap().is_empty());
-    assert!(store.get(&id("gone")).unwrap().is_none());
-    let history = store.history(&id("gone")).unwrap();
+    assert!(store.get(&mkid("gone")).unwrap().is_none());
+    let history = store.history(&mkid("gone")).unwrap();
     assert_eq!(history.len(), 2, "archive appends a tombstone commit");
     assert_eq!(history[0].data, None, "newest commit is the tombstone");
     assert_eq!(history[0].label, None);
@@ -106,9 +106,9 @@ fn archive_removes_from_list_but_history_survives() {
 fn re_put_after_archive_continues_submodule_history() {
     let mut store = Store::open(empty()).unwrap();
     put_data(&mut store, "alpha", b"v1");
-    store.archive(&id("alpha")).unwrap();
+    store.archive(&mkid("alpha")).unwrap();
     put_data(&mut store, "alpha", b"v2");
-    let history = store.history(&id("alpha")).unwrap();
+    let history = store.history(&mkid("alpha")).unwrap();
     let payloads: Vec<Option<&[u8]>> = history.iter().map(|e| e.data.as_deref()).collect();
     assert_eq!(
         payloads,
@@ -121,19 +121,19 @@ fn re_put_after_archive_continues_submodule_history() {
 fn delete_drops_submodule_and_history() {
     let mut store = Store::open(empty()).unwrap();
     put_data(&mut store, "gone", b"bye");
-    store.delete(&id("gone")).unwrap();
+    store.delete(&mkid("gone")).unwrap();
     assert!(store.list().unwrap().is_empty());
-    assert!(store.get(&id("gone")).unwrap().is_none());
-    assert!(store.history(&id("gone")).unwrap().is_empty());
+    assert!(store.get(&mkid("gone")).unwrap().is_none());
+    assert!(store.history(&mkid("gone")).unwrap().is_empty());
 }
 
 #[test]
 fn re_put_after_delete_starts_fresh_history() {
     let mut store = Store::open(empty()).unwrap();
     put_data(&mut store, "alpha", b"v1");
-    store.delete(&id("alpha")).unwrap();
+    store.delete(&mkid("alpha")).unwrap();
     put_data(&mut store, "alpha", b"v2");
-    let history = store.history(&id("alpha")).unwrap();
+    let history = store.history(&mkid("alpha")).unwrap();
     let payloads: Vec<Option<&[u8]>> = history.iter().map(|e| e.data.as_deref()).collect();
     assert_eq!(payloads, vec![Some(&b"v2"[..])]);
 }
@@ -142,10 +142,10 @@ fn re_put_after_delete_starts_fresh_history() {
 fn put_returns_matching_commit_id_for_latest_history_entry() {
     let mut store = Store::open(empty()).unwrap();
     let commit: CommitId = store
-        .put(&id("alpha"), None, Some(b"payload"))
+        .put(&mkid("alpha"), None, Some(b"payload"))
         .unwrap()
         .expect("first put writes a commit");
-    let history = store.history(&id("alpha")).unwrap();
+    let history = store.history(&mkid("alpha")).unwrap();
     assert_eq!(history.first().map(|e| &e.commit), Some(&commit));
 }
 
@@ -164,7 +164,7 @@ fn history_survives_parts_roundtrip() {
     put_data(&mut store, "alpha", b"v2");
     parts.apply(store.snapshot().unwrap());
     let reopened = Store::open(parts).unwrap();
-    let history = reopened.history(&id("alpha")).unwrap();
+    let history = reopened.history(&mkid("alpha")).unwrap();
     let payloads: Vec<Option<&[u8]>> = history.iter().map(|e| e.data.as_deref()).collect();
     assert_eq!(payloads, vec![Some(&b"v2"[..]), Some(&b"v1"[..])]);
 }
@@ -180,9 +180,9 @@ fn snapshot_only_reports_touched_modules() {
     put_data(&mut store, "alpha", b"2");
     let second = store.snapshot().unwrap();
     assert!(second.parent.is_some(), "parent advances on every put");
-    assert!(second.modules.contains_key(&id("alpha")));
+    assert!(second.modules.contains_key(&mkid("alpha")));
     assert!(
-        !second.modules.contains_key(&id("beta")),
+        !second.modules.contains_key(&mkid("beta")),
         "beta was untouched and must not reappear in the snapshot"
     );
 }
@@ -210,9 +210,9 @@ fn save_load_roundtrips_all_state() {
     let reloaded = Store::load(&bytes).unwrap();
     let mut ids = reloaded.list().unwrap();
     ids.sort();
-    assert_eq!(ids, vec![id("alpha"), id("beta")]);
+    assert_eq!(ids, vec![mkid("alpha"), mkid("beta")]);
     assert_eq!(get_data(&reloaded, "alpha").as_deref(), Some(&b"a2"[..]));
-    let history = reloaded.history(&id("alpha")).unwrap();
+    let history = reloaded.history(&mkid("alpha")).unwrap();
     let payloads: Vec<Option<&[u8]>> = history.iter().map(|e| e.data.as_deref()).collect();
     assert_eq!(payloads, vec![Some(&b"a2"[..]), Some(&b"a1"[..])]);
 }
@@ -227,7 +227,7 @@ fn save_is_nondestructive() {
     put_data(&mut store, "beta", b"2");
     let mut ids = store.list().unwrap();
     ids.sort();
-    assert_eq!(ids, vec![id("alpha"), id("beta")]);
+    assert_eq!(ids, vec![mkid("alpha"), mkid("beta")]);
 }
 
 #[test]
@@ -252,15 +252,15 @@ fn delete_emits_module_deletion_in_snapshot() {
     let mut store = Store::open(empty()).unwrap();
     put_data(&mut store, "alpha", b"1");
     parts.apply(store.snapshot().unwrap());
-    assert!(parts.modules.contains_key(&id("alpha")));
-    store.delete(&id("alpha")).unwrap();
+    assert!(parts.modules.contains_key(&mkid("alpha")));
+    store.delete(&mkid("alpha")).unwrap();
     let snap = store.snapshot().unwrap();
     assert!(matches!(
-        snap.modules.get(&id("alpha")),
+        snap.modules.get(&mkid("alpha")),
         Some(ModuleChange::Deleted)
     ));
     parts.apply(snap);
-    assert!(!parts.modules.contains_key(&id("alpha")));
+    assert!(!parts.modules.contains_key(&mkid("alpha")));
 }
 
 #[test]
@@ -309,7 +309,7 @@ fn parent_objects_stay_bounded_after_many_puts() {
     for i in 0..N {
         store
             .put(
-                &id(&format!("entry-{i:04}")),
+                &mkid(&format!("entry-{i:04}")),
                 None,
                 Some(format!("payload-{i}").as_bytes()),
             )
@@ -355,8 +355,8 @@ fn parent_history_is_squashed_to_one_commit() {
     for i in 0..50 {
         put_data(&mut store, &format!("entry-{i:04}"), b"x");
     }
-    store.archive(&id("entry-0000")).unwrap();
-    store.delete(&id("entry-0001")).unwrap();
+    store.archive(&mkid("entry-0000")).unwrap();
+    store.delete(&mkid("entry-0001")).unwrap();
 
     let bytes = store.save().unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -423,7 +423,7 @@ fn parts_apply_merges_successive_snapshots() {
     let reopened = Store::open(parts).unwrap();
     let mut ids = reopened.list().unwrap();
     ids.sort();
-    assert_eq!(ids, vec![id("alpha"), id("beta")]);
+    assert_eq!(ids, vec![mkid("alpha"), mkid("beta")]);
 }
 
 // --- label / data + label coverage --------------------------------------
@@ -431,16 +431,16 @@ fn parts_apply_merges_successive_snapshots() {
 #[test]
 fn put_rejects_both_sides_none() {
     let mut store = Store::open(empty()).unwrap();
-    assert!(store.put(&id("alpha"), None, None).is_err());
+    assert!(store.put(&mkid("alpha"), None, None).is_err());
 }
 
 #[test]
 fn put_label_and_data_roundtrips() {
     let mut store = Store::open(empty()).unwrap();
     store
-        .put(&id("alpha"), Some(b"label"), Some(b"payload"))
+        .put(&mkid("alpha"), Some(b"label"), Some(b"payload"))
         .unwrap();
-    let entry: Entry = store.get(&id("alpha")).unwrap().expect("live entry");
+    let entry: Entry = store.get(&mkid("alpha")).unwrap().expect("live entry");
     assert_eq!(entry.label.as_deref(), Some(&b"label"[..]));
     assert_eq!(entry.data.as_deref(), Some(&b"payload"[..]));
 }
@@ -448,10 +448,10 @@ fn put_label_and_data_roundtrips() {
 #[test]
 fn put_none_slot_carries_prior_blob_forward() {
     let mut store = Store::open(empty()).unwrap();
-    store.put(&id("alpha"), None, Some(b"payload")).unwrap();
-    store.put(&id("alpha"), Some(b"label"), None).unwrap();
+    store.put(&mkid("alpha"), None, Some(b"payload")).unwrap();
+    store.put(&mkid("alpha"), Some(b"label"), None).unwrap();
 
-    let latest = store.get(&id("alpha")).unwrap().expect("live entry");
+    let latest = store.get(&mkid("alpha")).unwrap().expect("live entry");
     assert_eq!(
         latest.data.as_deref(),
         Some(&b"payload"[..]),
@@ -459,7 +459,7 @@ fn put_none_slot_carries_prior_blob_forward() {
     );
     assert_eq!(latest.label.as_deref(), Some(&b"label"[..]));
 
-    let history = store.history(&id("alpha")).unwrap();
+    let history = store.history(&mkid("alpha")).unwrap();
     assert_eq!(history.len(), 2);
     assert_eq!(history[0].data.as_deref(), Some(&b"payload"[..]));
     assert_eq!(history[0].label.as_deref(), Some(&b"label"[..]));
@@ -471,23 +471,23 @@ fn put_none_slot_carries_prior_blob_forward() {
 fn put_label_only_is_noop_when_label_matches_prior() {
     let mut store = Store::open(empty()).unwrap();
     store
-        .put(&id("alpha"), Some(b"label"), Some(b"payload"))
+        .put(&mkid("alpha"), Some(b"label"), Some(b"payload"))
         .unwrap();
     assert!(
         store
-            .put(&id("alpha"), Some(b"label"), None)
+            .put(&mkid("alpha"), Some(b"label"), None)
             .unwrap()
             .is_none(),
         "label-only put with unchanged label is a no-op (data reused)"
     );
-    assert_eq!(store.history(&id("alpha")).unwrap().len(), 1);
+    assert_eq!(store.history(&mkid("alpha")).unwrap().len(), 1);
 }
 
 #[test]
 fn put_none_on_fresh_module_omits_slot() {
     let mut store = Store::open(empty()).unwrap();
-    store.put(&id("alpha"), Some(b"label"), None).unwrap();
-    let entry = store.get(&id("alpha")).unwrap().expect("live entry");
+    store.put(&mkid("alpha"), Some(b"label"), None).unwrap();
+    let entry = store.get(&mkid("alpha")).unwrap().expect("live entry");
     assert_eq!(entry.label.as_deref(), Some(&b"label"[..]));
     assert_eq!(
         entry.data, None,
@@ -500,20 +500,20 @@ fn put_is_noop_when_tree_matches_head() {
     let mut store = Store::open(empty()).unwrap();
     assert!(
         store
-            .put(&id("alpha"), Some(b"m"), Some(b"x"))
+            .put(&mkid("alpha"), Some(b"m"), Some(b"x"))
             .unwrap()
             .is_some(),
         "first put writes a commit"
     );
     assert!(
         store
-            .put(&id("alpha"), Some(b"m"), Some(b"x"))
+            .put(&mkid("alpha"), Some(b"m"), Some(b"x"))
             .unwrap()
             .is_none(),
         "identical put is a no-op"
     );
     assert_eq!(
-        store.history(&id("alpha")).unwrap().len(),
+        store.history(&mkid("alpha")).unwrap().len(),
         1,
         "no second commit was written"
     );
@@ -522,22 +522,26 @@ fn put_is_noop_when_tree_matches_head() {
 #[test]
 fn label_cache_surfaces_via_label_and_list_labels() {
     let mut store = Store::open(empty()).unwrap();
-    store.put(&id("a"), Some(b"label-a"), Some(b"d1")).unwrap();
-    store.put(&id("b"), Some(b"label-b"), Some(b"d2")).unwrap();
-    store.put(&id("c"), None, Some(b"d3")).unwrap();
+    store
+        .put(&mkid("a"), Some(b"label-a"), Some(b"d1"))
+        .unwrap();
+    store
+        .put(&mkid("b"), Some(b"label-b"), Some(b"d2"))
+        .unwrap();
+    store.put(&mkid("c"), None, Some(b"d3")).unwrap();
 
-    assert_eq!(store.label(&id("a")), Some(&b"label-a"[..]));
-    assert_eq!(store.label(&id("b")), Some(&b"label-b"[..]));
-    assert_eq!(store.label(&id("c")), None, "no label set for c");
-    assert_eq!(store.label(&id("missing")), None);
+    assert_eq!(store.label(&mkid("a")), Some(&b"label-a"[..]));
+    assert_eq!(store.label(&mkid("b")), Some(&b"label-b"[..]));
+    assert_eq!(store.label(&mkid("c")), None, "no label set for c");
+    assert_eq!(store.label(&mkid("missing")), None);
 
     let mut listed = store.list_labels();
     listed.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
         listed,
         vec![
-            (id("a"), b"label-a".to_vec()),
-            (id("b"), b"label-b".to_vec()),
+            (mkid("a"), b"label-a".to_vec()),
+            (mkid("b"), b"label-b".to_vec()),
         ],
         "list_labels omits modules whose label is absent",
     );
@@ -548,30 +552,30 @@ fn label_cache_survives_parts_roundtrip() {
     let mut parts = empty();
     let mut store = Store::open(empty()).unwrap();
     store
-        .put(&id("alpha"), Some(b"label"), Some(b"data"))
+        .put(&mkid("alpha"), Some(b"label"), Some(b"data"))
         .unwrap();
     parts.apply(store.snapshot().unwrap());
 
     let reopened = Store::open(parts).unwrap();
-    assert_eq!(reopened.label(&id("alpha")), Some(&b"label"[..]));
+    assert_eq!(reopened.label(&mkid("alpha")), Some(&b"label"[..]));
     assert_eq!(
         reopened.list_labels(),
-        vec![(id("alpha"), b"label".to_vec())],
+        vec![(mkid("alpha"), b"label".to_vec())],
     );
 }
 
 #[test]
 fn empty_label_is_not_indexed_but_still_in_history() {
     let mut store = Store::open(empty()).unwrap();
-    store.put(&id("alpha"), Some(b""), Some(b"data")).unwrap();
+    store.put(&mkid("alpha"), Some(b""), Some(b"data")).unwrap();
     assert_eq!(
-        store.label(&id("alpha")),
+        store.label(&mkid("alpha")),
         None,
         "empty label is not indexed"
     );
     assert!(store.list_labels().is_empty());
 
-    let entry = store.get(&id("alpha")).unwrap().expect("live entry");
+    let entry = store.get(&mkid("alpha")).unwrap().expect("live entry");
     assert_eq!(
         entry.label.as_deref(),
         Some(&b""[..]),
@@ -583,11 +587,11 @@ fn empty_label_is_not_indexed_but_still_in_history() {
 fn archive_clears_label_from_cache() {
     let mut store = Store::open(empty()).unwrap();
     store
-        .put(&id("alpha"), Some(b"label"), Some(b"data"))
+        .put(&mkid("alpha"), Some(b"label"), Some(b"data"))
         .unwrap();
-    assert_eq!(store.label(&id("alpha")), Some(&b"label"[..]));
-    store.archive(&id("alpha")).unwrap();
-    assert_eq!(store.label(&id("alpha")), None);
+    assert_eq!(store.label(&mkid("alpha")), Some(&b"label"[..]));
+    store.archive(&mkid("alpha")).unwrap();
+    assert_eq!(store.label(&mkid("alpha")), None);
     assert!(store.list_labels().is_empty());
 }
 
@@ -595,53 +599,53 @@ fn archive_clears_label_from_cache() {
 
 #[test]
 fn id_rejects_empty() {
-    assert_eq!(Id::new(""), Err(IdError::Empty));
+    assert_eq!(Id::new(""), Err(id::Error::Empty));
 }
 
 #[test]
 fn id_rejects_slash_and_nul() {
-    assert_eq!(Id::new("a/b"), Err(IdError::BadChar('/')));
-    assert_eq!(Id::new("a\0b"), Err(IdError::BadChar('\0')));
+    assert_eq!(Id::new("a/b"), Err(id::Error::BadChar('/')));
+    assert_eq!(Id::new("a\0b"), Err(id::Error::BadChar('\0')));
 }
 
 #[test]
 fn id_rejects_quote_and_backslash() {
     // Both characters would need escaping inside the .gitmodules
     // section name, so storgit forbids them at the boundary instead.
-    assert_eq!(Id::new("a\"b"), Err(IdError::BadChar('"')));
-    assert_eq!(Id::new("a\\b"), Err(IdError::BadChar('\\')));
+    assert_eq!(Id::new("a\"b"), Err(id::Error::BadChar('"')));
+    assert_eq!(Id::new("a\\b"), Err(id::Error::BadChar('\\')));
 }
 
 #[test]
 fn id_rejects_control_chars() {
-    assert_eq!(Id::new("a\nb"), Err(IdError::BadChar('\n')));
-    assert_eq!(Id::new("a\tb"), Err(IdError::BadChar('\t')));
-    assert_eq!(Id::new("a\rb"), Err(IdError::BadChar('\r')));
-    assert_eq!(Id::new("a\x01b"), Err(IdError::BadChar('\x01')));
-    assert_eq!(Id::new("a\x7fb"), Err(IdError::BadChar('\x7f')));
+    assert_eq!(Id::new("a\nb"), Err(id::Error::BadChar('\n')));
+    assert_eq!(Id::new("a\tb"), Err(id::Error::BadChar('\t')));
+    assert_eq!(Id::new("a\rb"), Err(id::Error::BadChar('\r')));
+    assert_eq!(Id::new("a\x01b"), Err(id::Error::BadChar('\x01')));
+    assert_eq!(Id::new("a\x7fb"), Err(id::Error::BadChar('\x7f')));
 }
 
 #[test]
 fn id_rejects_leading_dot() {
-    assert_eq!(Id::new(".foo"), Err(IdError::LeadingDot));
-    assert_eq!(Id::new("."), Err(IdError::LeadingDot));
-    assert_eq!(Id::new(".."), Err(IdError::LeadingDot));
+    assert_eq!(Id::new(".foo"), Err(id::Error::LeadingDot));
+    assert_eq!(Id::new("."), Err(id::Error::LeadingDot));
+    assert_eq!(Id::new(".."), Err(id::Error::LeadingDot));
 }
 
 #[test]
 fn id_rejects_git_suffix() {
-    assert_eq!(Id::new("foo.git"), Err(IdError::GitSuffix));
+    assert_eq!(Id::new("foo.git"), Err(id::Error::GitSuffix));
 }
 
 #[test]
 fn id_rejects_reserved_names() {
-    assert_eq!(Id::new("index"), Err(IdError::Reserved));
+    assert_eq!(Id::new("index"), Err(id::Error::Reserved));
 }
 
 #[test]
 fn id_rejects_too_long() {
     let long = "a".repeat(Id::MAX_LEN + 1);
-    assert!(matches!(Id::new(long), Err(IdError::TooLong { .. })));
+    assert!(matches!(Id::new(long), Err(id::Error::TooLong { .. })));
 }
 
 #[test]
@@ -712,7 +716,7 @@ fn gitmodules_updates_when_entry_is_archived() {
     let mut store = Store::open(empty()).unwrap();
     put_data(&mut store, "keep", b"x");
     put_data(&mut store, "drop", b"y");
-    store.archive(&id("drop")).unwrap();
+    store.archive(&mkid("drop")).unwrap();
     let bytes = store.save().unwrap();
 
     let tmp = extract_to_tmp(&bytes);
@@ -772,7 +776,7 @@ fn gitmodules_parses_as_git_submodule_config() {
 fn snapshot_backing(entries: &[(&str, &[u8])]) -> (Vec<u8>, Modules) {
     let mut store = Store::open(empty()).unwrap();
     for (name, data) in entries {
-        store.put(&id(name), Some(b"label"), Some(data)).unwrap();
+        store.put(&mkid(name), Some(b"label"), Some(data)).unwrap();
     }
     let mut parts = empty();
     parts.apply(store.snapshot().unwrap());
@@ -799,7 +803,7 @@ fn fetcher_is_consulted_on_miss_and_result_round_trips() {
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"hello"[..]));
     assert_eq!(
         calls.lock().unwrap().as_slice(),
-        &[id("alpha")],
+        &[mkid("alpha")],
         "fetcher is consulted exactly once for a miss",
     );
 }
@@ -841,7 +845,7 @@ fn fetcher_ok_none_for_live_id_surfaces_as_error() {
     };
     let store = Store::open(parts).unwrap();
     let err = store
-        .get(&id("alpha"))
+        .get(&mkid("alpha"))
         .expect_err("live id with no backing bytes must error");
     let msg = format!("{err}");
     assert!(
@@ -860,7 +864,7 @@ fn fetcher_ok_none_for_unknown_id_is_fresh() {
         fetcher: Some(Arc::new(|_id: &Id| Ok(None))),
     };
     let mut store = Store::open(parts).unwrap();
-    store.put(&id("fresh"), None, Some(b"v1")).unwrap();
+    store.put(&mkid("fresh"), None, Some(b"v1")).unwrap();
     assert_eq!(get_data(&store, "fresh").as_deref(), Some(&b"v1"[..]));
 }
 
@@ -874,7 +878,7 @@ fn fetcher_error_propagates_as_error_fetch() {
     };
     let store = Store::open(parts).unwrap();
     let err = store
-        .get(&id("alpha"))
+        .get(&mkid("alpha"))
         .expect_err("fetcher error must propagate");
     let msg = format!("{err}");
     assert!(
