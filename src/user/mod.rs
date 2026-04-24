@@ -125,7 +125,7 @@ impl User {
     /// For more information, see [`Lot`].
     #[cfg(feature = "db")]
     pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {
-        Ok(Lot::load_all(&db, self).await?)
+        Ok(Lot::load_all(db, self).await?)
     }
 
     /// Return the list of registered usernames from the database.
@@ -200,6 +200,7 @@ pub(crate) mod orm;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "db")]
     use crate::db::Database;
     use std::time::{Duration, Instant};
 
@@ -231,6 +232,7 @@ mod tests {
         assert!(duration > Duration::from_millis(200));
     }
 
+    #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn register_load() {
         let db = Database::new("sqlite://:memory:")
@@ -238,7 +240,7 @@ mod tests {
             .expect("failed to create database");
 
         let password: Password = "password".try_into().unwrap();
-        let user = User::new("alice", Password::from(password.clone()))
+        let user = User::new("alice", password.clone())
             .expect("failed to create user")
             .register(&db)
             .await
@@ -251,6 +253,7 @@ mod tests {
         assert_eq!(user, loaded);
     }
 
+    #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn lots() {
         let db = Database::new("sqlite://:memory:")
@@ -270,6 +273,7 @@ mod tests {
         assert_eq!(lots, vec![lot_a, lot_b]);
     }
 
+    #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn list() {
         let db = Database::new("sqlite://:memory:")

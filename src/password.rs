@@ -49,21 +49,25 @@ impl Password {
         self.as_bytes().len() >= MIN_LENGTH
     }
 
-    pub fn as_bytes<'a>(&'a self) -> &'a [u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         let null_pos = self.0.iter().position(|c| *c == 0).unwrap_or(self.0.len());
         &self.0[0..null_pos]
     }
 
-    pub fn as_bytes_mut<'a>(&'a mut self) -> &'a mut [u8] {
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         let null_pos = self.0.iter().position(|c| *c == 0).unwrap_or(self.0.len());
         &mut self.0[0..null_pos]
     }
 
-    pub fn as_str<'a>(&'a self) -> &'a str {
+    pub fn as_str(&self) -> &str {
         unsafe { str::from_utf8_unchecked(self.as_bytes()) }
     }
 
-    pub unsafe fn as_str_mut<'a>(&'a mut self) -> &'a mut str {
+    /// # Safety
+    ///
+    /// The caller must ensure that any writes through the returned
+    /// `&mut str` leave valid UTF-8 in the underlying buffer.
+    pub unsafe fn as_str_mut(&mut self) -> &mut str {
         unsafe { str::from_utf8_unchecked_mut(self.as_bytes_mut()) }
     }
 }
@@ -95,7 +99,7 @@ impl TryFrom<&str> for Password {
 impl fmt::Display for Password {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Ok(utf8) = str::from_utf8(&*self.0) {
-            let null_pos = utf8.find(|c| c == '\0').unwrap_or(utf8.len());
+            let null_pos = utf8.find('\0').unwrap_or(utf8.len());
             write!(f, "{}", &utf8[0..null_pos])
         } else {
             write!(f, "<invalid utf8>")

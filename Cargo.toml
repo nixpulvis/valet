@@ -2,12 +2,15 @@
 members = [
     "crates/storgit",
     "valet-build",
-    "valetd",
     "platform/browser",
-    "platform/browser/bridge",
-    "platform/browser/native-host",
-    "platform/browser/xtask",
 ]
+
+[workspace.dependencies]
+# Canonical tokio version for everything in the workspace. `valet`
+# pulls it in optionally (via `_async-io` / `cli` / `gui` / `db`) and
+# unconditionally in `[dev-dependencies]`; other workspace members
+# inherit the same version here.
+tokio = { version = "1.46", features = ["full"] }
 
 [package]
 name = "valet"
@@ -38,6 +41,25 @@ name = "valet"
 path = "src/bin/cli.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "valetd"
+path = "src/bin/valetd/main.rs"
+# Any protocol is enough to get a useful valetd; missing transports
+# are cfg-gated out of the binary and rejected at runtime with a
+# clear error. `protocol-all` remains a convenience bundle for callers
+# that want every transport compiled in.
+required-features = ["_protocols"]
+
+# `cargo test --test protocol` on the default feature set would
+# otherwise silently report 0 tests (every submodule is gated). Gate
+# the whole binary on `_protocols`, which any `protocol-*` feature
+# turns on, so a default-feature run fails with a clear "requires
+# feature" message instead.
+[[test]]
+name = "protocol"
+path = "tests/protocol.rs"
+required-features = ["_protocols"]
+
 [features]
 default = ["cli"]
 
@@ -60,19 +82,52 @@ orm = []
 # cbindgen, and produces a `libvalet.a`.
 ffi = []
 
+# Wire protocols. Each gate compiles one `Protocol` impl plus its
+# `Client<P>` and (where applicable) `Server<P>` halves. `protocol-
+# embedded` owns a SQLite DB and dispatches in-proc; `protocol-socket`
+# ships requests over a Unix socket and serves the same protocol on
+# the other end; `protocol-native-msg-server` serves stdio native-messaging
+# frames to the browser. Each pulls in tokio via the private
+# `_async-io` feature, which also enables the async framing helpers
+# on `Request` / `Response` that the socket and native-messaging
+# halves need.
+protocol-all = ["protocol-embedded", "protocol-socket", "protocol-native-msg-server"]
+protocol-embedded = ["_protocols", "db", "logging", "dep:clap"]
+protocol-socket = ["_protocols", "_async-io", "logging", "dep:clap"]
+# Server half of the native-messaging protocol. The daemon's stdio
+# loop lives here and needs tokio.
+protocol-native-msg-server = ["_protocols", "_async-io", "logging", "dep:clap", "dep:serde_json"]
+# Client half of the native-messaging protocol: a `Client<NativeMessage>`
+# that wraps a `browser.runtime.Port` for use from WASM extension
+# code. No tokio; pulls in wasm-bindgen + friends instead.
+protocol-native-msg-client = [
+    "_protocols",
+    "dep:serde_json",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:js-sys",
+    "dep:serde-wasm-bindgen",
+    "dep:futures",
+]
+# Internal umbrella: any protocol implies it. Gates the `Client<P>` /
+# `Server<P>` / `Protocol` surface, which is dead code in pure-wire
+# builds (the browser WASM popup, which only uses `Request`/`Response`).
+_protocols = []
+_async-io = ["dep:tokio"]
+
+
 cli = [
-    "db",
+    "protocol-embedded",
     "dep:tokio",
     "dep:rpassword",
     "dep:clap",
     "dep:clap-repl",
     "dep:clap_complete",
     "dep:csv",
-    "dep:serde",
     "dep:chrono",
 ]
 
-gui = ["db", "dep:tokio", "dep:eframe", "dep:egui_inbox"]
+gui = ["protocol-embedded", "dep:tokio", "dep:eframe", "dep:egui_inbox"]
 
 [dependencies]
 aes-gcm-siv = "0.11"
@@ -84,6 +139,27 @@ snap = "1.1.1"
 uuid = { version = "1.17", features = ["v7"] }
 zeroize = { version = "1.8", features = ["derive"] }
 
+# Protocol/wire types. Always compiled so the pure-data build (WASM)
+# can still encode/decode `Request` and `Response` plus the native-
+# messaging JSON envelope (`NativeRequest`/`NativeReply`/
+# `NativePayload`) for the browser extension.
+base64 = "0.22"
+serde = { version = "1.0", features = ["derive"] }
+strum = { version = "0.27", features = ["derive"] }
+
+# Native-messaging transport: JSON envelope around bitcode frames.
+# Pulled in by both native-messaging halves (server + WASM client).
+serde_json = { version = "1.0", optional = true }
+
+# WASM native-messaging client. Only enabled by
+# `protocol-native-msg-client`; the `Client<NativeMessage>` wraps a
+# `browser.runtime.Port` and needs to talk to JS.
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+futures = { version = "0.3", default-features = false, features = ["std"], optional = true }
+
 # Storage (db/user/lot/record)
 sea-orm = { version = "2.0.0-rc.37", features = ["sqlx-sqlite", "runtime-tokio-rustls"], optional = true }
 storgit = { path = "crates/storgit", optional = true }
@@ -91,7 +167,7 @@ sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"], optional = tru
 url = { version = "2.5", optional = true }
 
 # CLI Dependencies
-tokio = { version = "1.46", features = ["full"], optional = true }
+tokio = { workspace = true, optional = true }
 rpassword = { version = "7.4", optional = true }
 csv = { version = "1.3", optional = true }
 regex = "1.12"
@@ -100,18 +176,31 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 clap = { version = "4.5", features = ["derive", "cargo"], optional = true }
 clap-repl = { version = "0.3", features = ["async"], optional = true }
 clap_complete = { version = "4.5", optional = true }
-serde = { version = "1.0", features = ["derive"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
 
 # GUI Dependencies
 eframe = { version = "0.32", optional = true }
 egui_inbox = { version = "0.9", optional = true }
 
+# WASM-specific flags: `getrandom` and `uuid` both need their `js`
+# feature to compile for `wasm32-unknown-unknown`. These are transitive
+# deps on every build; the target-gated section enables the JS backend
+# only when cross-compiling to wasm, so native builds stay lean.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+uuid = { version = "1.17", features = ["v7", "js"] }
+
 [build-dependencies]
 valet-build = { path = "valet-build" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+# Integration tests use `#[tokio::test]` even when the crate is being
+# built with no protocol features (e.g. the zero-feature row of the
+# feature matrix). Dev-deps make tokio available to every test
+# binary without forcing a specific feature on; the workspace entry
+# keeps the version pinned in one place.
+tokio = { workspace = true }
 
 [[bench]]
 name = "encrypt"

@@ -1,6 +1,6 @@
 //! Shared RPC transport between the popup and content scripts.
 //!
-//! Both sides build a [`valetd::Request`] directly and hand it to
+//! Both sides build a [`valet::Request`] directly and hand it to
 //! [`call`]; the background script is a transparent byte pump to the
 //! native host. Each call sends the base64-encoded bitcode [`Request`]
 //! as the `runtime.sendMessage` payload and gets back
@@ -12,19 +12,19 @@
 //! Callers unpack the expected [`Response`] variant with the
 //! [`Response::expect_ok`], [`Response::expect_users`],
 //! [`Response::expect_index`], and [`Response::expect_record`] helpers
-//! defined in `valetd`. Those return [`ResponseError`], which bubbles
-//! through `?` into the [`Error`] used here.
+//! defined in `valet::protocol::message`. Those return [`ResponseError`],
+//! which bubbles through `?` into the [`Error`] used here.
 
 use serde::Deserialize;
-use valetd::{
+use valet::{
     Request, Response,
-    request::{DecodeError, Frame},
+    protocol::frame::{DecodeError, Frame},
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 /// Transport-layer failure reaching the background or decoding its reply.
-/// Wrapped in [`valetd::request::Error::Rpc`] by [`call`] so daemon-reported
+/// Wrapped in [`valet::protocol::message::Error::Rpc`] by [`call`] so daemon-reported
 /// errors and unexpected variants flow through the same `?` chain.
 #[derive(Debug)]
 pub enum Error {
@@ -74,8 +74,8 @@ struct Reply {
 /// into a [`Response`]. The backend tag (`"socket"` or `"embedded"`) is
 /// logged at trace so it's visible alongside each RPC without threading
 /// through every call site.
-pub async fn call(request: Request) -> Result<Response, valetd::request::Error<Error>> {
-    use valetd::request::Error as OuterError;
+pub async fn call(request: Request) -> Result<Response, valet::protocol::message::Error<Error>> {
+    use valet::protocol::message::Error as OuterError;
     let kind: &'static str = (&request).into();
     let request_b64 = request.encode_base64();
     tracing::trace!(request = kind, "→ rpc request");
@@ -100,7 +100,8 @@ pub async fn call(request: Request) -> Result<Response, valetd::request::Error<E
 /// with [`Response::Users`], so the only errors surfaced here are
 /// transport-level failures from [`call`]; a `Response` path would
 /// indicate the handler contract changed.
-pub async fn first_unlocked_user() -> Result<Option<String>, valetd::request::Error<Error>> {
+pub async fn first_unlocked_user() -> Result<Option<String>, valet::protocol::message::Error<Error>>
+{
     Ok(call(Request::Status)
         .await?
         .expect_users()?

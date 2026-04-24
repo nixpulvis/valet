@@ -11,6 +11,15 @@ use std::marker::PhantomData;
 #[derive(Debug, PartialEq, Eq, Encode, Decode)]
 pub struct Uuid<T>([u8; 16], #[bitcode(skip)] PhantomData<fn() -> T>);
 
+// Manual `Hash` so the bound doesn't leak through `PhantomData` onto
+// `T`. `Uuid<Lot>` needs to key a `HashMap` without forcing `Lot:
+// Hash`.
+impl<T> std::hash::Hash for Uuid<T> {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.0.hash(h);
+    }
+}
+
 impl<T> Uuid<T> {
     pub fn now() -> Self {
         Uuid(*uuid::Uuid::now_v7().as_bytes(), PhantomData)

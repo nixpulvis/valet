@@ -11,7 +11,8 @@ use super::overlay;
 
 const DETECTED_ATTR: &str = "data-valet-detected";
 
-/// Minimum pixel dimensions for a field to be considered visible (not a honeypot).
+/// Minimum pixel dimensions for a field to be considered visible
+/// (not a honeypot).
 const MIN_VISIBLE_WIDTH: i32 = 20;
 const MIN_VISIBLE_HEIGHT: i32 = 10;
 
@@ -118,7 +119,7 @@ fn find_username_field(pw: &HtmlInputElement) -> Option<HtmlInputElement> {
         // Stop once we pass the password field in document order.
         let pos = pw_node.compare_document_position(node.as_ref());
         if pos & Node::DOCUMENT_POSITION_FOLLOWING != 0 {
-            // `node` comes after `pw` — stop.
+            // `node` comes after `pw`; stop.
             break;
         }
         best = Some(input);

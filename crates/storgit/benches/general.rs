@@ -1,7 +1,7 @@
 //! Caller-visible storgit workloads, sized for the realistic range.
 //!
 //! Eight groups, one per primary use case. The first six mirror
-//! valet's intended usage of the library — `Store::open` from
+//! valet's intended usage of the library: `Store::open` from
 //! [`Parts`] (with `modules` empty so only the parent untarss),
 //! lazy [`Store::load_module`] when an entry is touched,
 //! [`Store::snapshot`] for incremental persistence:
@@ -18,7 +18,7 @@
 //! 5. `n_put_1_snapshot`: bulk-insert N entries into a fresh store
 //!    and snapshot once at the end. Amortised import path.
 //! 6. `n_put_n_snapshot`: build N entries one `put + snapshot` at a
-//!    time on a fresh store. Worst case for storage churn — every
+//!    time on a fresh store. Worst case for storage churn; every
 //!    entry triggers a parent + module re-tar.
 //!
 //! The remaining two cover the all-in-one save/load path used by
@@ -97,7 +97,7 @@ impl Storage {
         }
     }
 
-    /// Parts with just the parent populated — `modules` intentionally
+    /// Parts with just the parent populated; `modules` intentionally
     /// empty so `Store::open` doesn't untar anything it doesn't need.
     fn metadata_only_parts(&self) -> Parts {
         Parts {
@@ -173,7 +173,7 @@ fn bench_open(c: &mut Criterion) {
 /// lazy store backed by the static-size corpus. When N exceeds the
 /// corpus size we cycle through ids modulo the corpus (still real
 /// untar work for each iteration's first N corpus accesses, then
-/// no-ops for repeats — gives a sense of how lookup cost amortises).
+/// no-ops for repeats; gives a sense of how lookup cost amortises).
 fn bench_get_from_100(c: &mut Criterion) {
     let mut group = c.benchmark_group("get");
     group.sample_size(10);
@@ -238,9 +238,9 @@ fn bench_put_from_100(c: &mut Criterion) {
 
 /// Use case 4: snapshot a store that has N pending puts on top of
 /// the static-size corpus. The open and the puts live in the setup
-/// closure (not timed); the routine measures `snapshot` only —
-/// flushing the parent tree and re-tarring the parent plus the N
-/// touched modules.
+/// closure (not timed); the routine measures `snapshot` only, which
+/// flushes the parent tree and re-tars the parent plus the N touched
+/// modules.
 fn bench_snapshot_from_100(c: &mut Criterion) {
     let mut group = c.benchmark_group("snapshot");
     group.sample_size(10);
@@ -299,8 +299,8 @@ fn bench_n_put_1_snapshot(c: &mut Criterion) {
 }
 
 /// Use case 6: build N entries one `put + snapshot` at a time on a
-/// fresh store. Worst case for storage churn — every entry triggers
-/// a parent + module re-tar.
+/// fresh store. Worst case for storage churn; every entry triggers a
+/// parent + module re-tar.
 fn bench_n_put_n_snapshot(c: &mut Criterion) {
     let mut group = c.benchmark_group("n_put_n_snapshot");
     group.sample_size(10);

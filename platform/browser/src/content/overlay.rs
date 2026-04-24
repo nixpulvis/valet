@@ -12,14 +12,14 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, Element, HtmlElement, HtmlInputElement, ShadowRootInit, ShadowRootMode};
 
 use std::str::FromStr;
+use valet::Request;
 use valet::lot::DEFAULT_LOT;
 use valet::{Record, record::Label, uuid::Uuid};
-use valetd::Request;
 
 use super::fill;
 use crate::rpc;
 
-/// Z-index for overlay elements — maximum i32 to sit above all page content.
+/// Z-index for overlay elements; maximum i32 to sit above all page content.
 const OVERLAY_Z_INDEX: &str = "2147483647";
 
 /// Size of the Valet icon button in pixels.
@@ -46,7 +46,7 @@ pub(crate) fn attach(pw: &HtmlInputElement, username: Option<&HtmlInputElement>)
 
     // Shadow DOM host keeps our UI isolated from the page.
     // Uses position:absolute so it's placed in page (document) coordinates
-    // and naturally scrolls with the content — immune to macOS elastic
+    // and naturally scrolls with the content; immune to macOS elastic
     // overscroll drift that affects position:fixed elements.
     let host = document.create_element("div").unwrap();
     host.set_attribute(
@@ -84,7 +84,7 @@ pub(crate) fn attach(pw: &HtmlInputElement, username: Option<&HtmlInputElement>)
         leave.forget();
     }
 
-    // Click handler — show the action menu.
+    // Click handler: show the action menu.
     let pw_clone = pw.clone();
     let username_clone = username.cloned();
     let click = Closure::wrap(Box::new(move |e: web_sys::MouseEvent| {
@@ -161,7 +161,7 @@ fn start_position_loop(host: Element, pw: HtmlInputElement) {
     let anchor = js_sys::Array::of2(host.as_ref(), pw.as_ref());
 
     let closure = Closure::wrap(Box::new(move || {
-        // Keep anchor alive — prevents Safari GC from collecting the refs.
+        // Keep anchor alive; prevents Safari GC from collecting the refs.
         let _ = &anchor;
 
         // Stop if the input was removed from the document.
@@ -205,7 +205,7 @@ async fn show_menu(pw: &HtmlInputElement, username: Option<&HtmlInputElement>) {
         .unwrap_or_default();
     tracing::debug!(domain = %domain, "showing valet menu");
 
-    // Try to fetch credentials if unlocked — but don't block the menu
+    // Try to fetch credentials if unlocked, but don't block the menu
     // on this. We always show "Generate password" regardless.
     let user = match rpc::first_unlocked_user().await {
         Ok(Some(u)) => {
@@ -223,7 +223,10 @@ async fn show_menu(pw: &HtmlInputElement, username: Option<&HtmlInputElement>) {
         }
     };
 
-    let find_result: Result<Vec<(Uuid<Record>, Label)>, valetd::request::Error<rpc::Error>> = async {
+    let find_result: Result<
+        Vec<(Uuid<Record>, Label)>,
+        valet::protocol::message::Error<rpc::Error>,
+    > = async {
         Ok(rpc::call(Request::FindRecords {
             username: user.clone(),
             lot: DEFAULT_LOT.to_owned(),
@@ -482,7 +485,7 @@ async fn do_generate(pw: &HtmlInputElement, username_field: Option<&HtmlInputEle
             return;
         }
     };
-    let result: Result<Record, valetd::request::Error<rpc::Error>> = async {
+    let result: Result<Record, valet::protocol::message::Error<rpc::Error>> = async {
         Ok(rpc::call(Request::GenerateRecord {
             username: user,
             lot: DEFAULT_LOT.to_owned(),
@@ -530,7 +533,7 @@ async fn do_fill(
             return;
         }
     };
-    let result: Result<Record, valetd::request::Error<rpc::Error>> = async {
+    let result: Result<Record, valet::protocol::message::Error<rpc::Error>> = async {
         Ok(rpc::call(Request::GetRecord {
             username: user,
             lot: DEFAULT_LOT.to_owned(),

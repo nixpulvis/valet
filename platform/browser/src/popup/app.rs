@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use stylist::yew::{Global, styled_component};
 use valet::Record;
+use valet::Request;
 use valet::lot::DEFAULT_LOT;
 use valet::password::Password;
 use valet::record::Label;
 use valet::uuid::Uuid;
-use valetd::Request;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlInputElement, HtmlSelectElement};
 use yew::prelude::*;
@@ -76,7 +76,7 @@ pub fn app() -> Html {
                     needs_permissions.set(true);
                 }
 
-                let result: Result<Vec<String>, valetd::request::Error<rpc::Error>> =
+                let result: Result<Vec<String>, valet::protocol::message::Error<rpc::Error>> =
                     async { Ok(rpc::call(Request::Status).await?.expect_users()?) }.await;
                 match result {
                     Ok(unlocked) => {
@@ -151,7 +151,7 @@ pub fn app() -> Html {
             let session = session.clone();
             let message = message.clone();
             spawn_local(async move {
-                let result: Result<(), valetd::request::Error<rpc::Error>> =
+                let result: Result<(), valet::protocol::message::Error<rpc::Error>> =
                     async { Ok(rpc::call(Request::LockAll).await?.expect_ok()?) }.await;
                 match result {
                     Ok(()) => tracing::debug!("locked all users"),
@@ -243,7 +243,7 @@ fn lock_view(props: &LockProps) -> Html {
         let set_message = props.set_message.clone();
         use_effect_with((), move |_| {
             spawn_local(async move {
-                let result: Result<Vec<String>, valetd::request::Error<rpc::Error>> =
+                let result: Result<Vec<String>, valet::protocol::message::Error<rpc::Error>> =
                     async { Ok(rpc::call(Request::ListUsers).await?.expect_users()?) }.await;
                 match result {
                     Ok(list) => {
@@ -305,7 +305,7 @@ fn lock_view(props: &LockProps) -> Html {
                         return;
                     }
                 };
-                let result: Result<(), valetd::request::Error<rpc::Error>> = async {
+                let result: Result<(), valet::protocol::message::Error<rpc::Error>> = async {
                     Ok(rpc::call(Request::Unlock {
                         username: u.clone(),
                         password,
@@ -426,7 +426,10 @@ fn unlocked_view(props: &UnlockedProps) -> Html {
             match session.domain.clone() {
                 None => records.set(Vec::new()),
                 Some(domain) => spawn_local(async move {
-                    let result: Result<Vec<(Uuid<Record>, Label)>, valetd::request::Error<rpc::Error>> = async {
+                    let result: Result<
+                        Vec<(Uuid<Record>, Label)>,
+                        valet::protocol::message::Error<rpc::Error>,
+                    > = async {
                         Ok(rpc::call(Request::FindRecords {
                             username: session.username.clone(),
                             lot: session.lot.clone(),
@@ -467,7 +470,7 @@ fn unlocked_view(props: &UnlockedProps) -> Html {
                         return;
                     }
                 };
-                let result: Result<Record, valetd::request::Error<rpc::Error>> = async {
+                let result: Result<Record, valet::protocol::message::Error<rpc::Error>> = async {
                     Ok(rpc::call(Request::GetRecord {
                         username: session.username.clone(),
                         lot: session.lot.clone(),
@@ -563,7 +566,7 @@ fn unlocked_view(props: &UnlockedProps) -> Html {
                         return;
                     }
                 };
-                let result: Result<Record, valetd::request::Error<rpc::Error>> = async {
+                let result: Result<Record, valet::protocol::message::Error<rpc::Error>> = async {
                     Ok(rpc::call(Request::CreateRecord {
                         username: session.username.clone(),
                         lot: session.lot.clone(),

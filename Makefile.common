@@ -1,0 +1,20 @@
+# Shared variables for the repo's Makefiles. Include from a platform
+# driver with the appropriate relative path.
+#
+# Inputs:
+#   RELEASE (unset or 1)  -- debug (default) vs release
+# Outputs:
+#   CARGO                 -- defaults to `cargo` if unset
+#   RELEASE_FLAG          -- `--release` or empty
+#   PROFILE_DIR           -- `release` or `debug`
+
+CARGO ?= cargo
+
+RELEASE ?=
+ifeq ($(RELEASE),1)
+RELEASE_FLAG := --release
+PROFILE_DIR  := release
+else
+RELEASE_FLAG :=
+PROFILE_DIR  := debug
+endif

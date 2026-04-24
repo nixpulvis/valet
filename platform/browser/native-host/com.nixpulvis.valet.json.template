@@ -1,7 +1,0 @@
-{
-  "name": "com.nixpulvis.valet",
-  "description": "Valet password manager native messaging host",
-  "path": "@VALET_NATIVE_HOST_PATH@",
-  "type": "stdio",
-  "allowed_extensions": ["valet@nixpulvis.com"]
-}

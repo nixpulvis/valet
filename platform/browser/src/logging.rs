@@ -11,9 +11,10 @@ use tracing_web::MakeWebConsoleWriter;
 
 static INIT: OnceLock<()> = OnceLock::new();
 
-/// Initialize tracing for the given subsystem (e.g. `"background"` or `"popup"`).
+/// Initialize tracing for the given subsystem (e.g. `"background"`
+/// or `"popup"`).
 ///
-/// Safe to call multiple times — only the first call takes effect.
+/// Safe to call multiple times; only the first call takes effect.
 pub fn init(subsystem: &str) {
     INIT.get_or_init(|| {
         let level = if cfg!(debug_assertions) {

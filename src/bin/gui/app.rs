@@ -3,13 +3,14 @@ use eframe::egui;
 use egui_inbox::UiInbox;
 use std::sync::Arc;
 use tokio::runtime;
-use valet::{db::Database, prelude::*};
+use valet::db::Database;
+use valet::protocol::{Client, embedded::Embedded};
 
 pub struct App {
-    db: Arc<Database>,
-    rt: runtime::Runtime,
-    user: Option<Arc<User>>,
-    login_inbox: UiInbox<User>,
+    pub(crate) client: Arc<Client<Embedded>>,
+    pub(crate) rt: runtime::Runtime,
+    pub(crate) active_user: Option<String>,
+    pub(crate) login_inbox: UiInbox<String>,
 }
 
 impl App {
@@ -21,10 +22,11 @@ impl App {
         let db = rt
             .block_on(Database::new(&valet::db::default_url()))
             .expect("failed to open database");
+        let client = Arc::new(Client::<Embedded>::new(db));
         App {
-            db: Arc::new(db),
+            client,
             rt,
-            user: None,
+            active_user: None,
             login_inbox: UiInbox::new(),
         }
     }
@@ -40,10 +42,22 @@ impl eframe::App for App {
             ctx.style().visuals.panel_fill,
         );
 
-        if self.user.is_some() {
-            Unlocked::new(&self.db, &self.rt, &mut self.user, &mut self.login_inbox).show(ctx);
+        if self.active_user.is_some() {
+            Unlocked::new(
+                &self.client,
+                &self.rt,
+                &mut self.active_user,
+                &mut self.login_inbox,
+            )
+            .show(ctx);
         } else {
-            Locked::new(&self.db, &self.rt, &mut self.user, &self.login_inbox).show(ctx);
+            Locked::new(
+                &self.client,
+                &self.rt,
+                &mut self.active_user,
+                &self.login_inbox,
+            )
+            .show(ctx);
         }
     }
 }

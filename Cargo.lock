@@ -7559,6 +7559,7 @@ version = "0.0.2"
 dependencies = [
  "aes-gcm-siv",
  "argon2",
+ "base64",
  "bitcode",
  "chrono",
  "clap",
@@ -7568,20 +7569,28 @@ dependencies = [
  "csv",
  "eframe",
  "egui_inbox",
+ "futures",
+ "getrandom 0.2.17",
+ "js-sys",
  "rand_core",
  "regex",
  "rpassword",
  "sea-orm",
  "serde",
+ "serde-wasm-bindgen 0.6.5",
+ "serde_json",
  "snap",
  "sqlx",
  "storgit",
+ "strum 0.27.2",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "url",
  "uuid",
  "valet-build",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "zeroize",
 ]
 
@@ -7603,8 +7612,6 @@ dependencies = [
  "tracing-web",
  "uuid",
  "valet",
- "valet-browser-bridge",
- "valetd",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -7612,44 +7619,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "valet-browser-bridge"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "valet-build"
 version = "0.0.1"
 dependencies = [
  "cbindgen",
-]
-
-[[package]]
-name = "valet-native-host"
-version = "0.1.0"
-dependencies = [
- "base64",
- "serde_json",
- "strum 0.27.2",
- "tokio",
- "tracing",
- "valet",
- "valet-browser-bridge",
- "valetd",
-]
-
-[[package]]
-name = "valetd"
-version = "0.0.1"
-dependencies = [
- "base64",
- "bitcode",
- "strum 0.27.2",
- "tokio",
- "tracing",
- "valet",
- "valet-build",
 ]
 
 [[package]]
@@ -8889,10 +8862,6 @@ name = "xml-rs"
 version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
-
-[[package]]
-name = "xtask"
-version = "0.1.0"
 
 [[package]]
 name = "yansi"

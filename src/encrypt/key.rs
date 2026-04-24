@@ -70,7 +70,7 @@ impl<T> Key<T> {
 
     pub fn encrypt_with_aad(&self, plaintext: &[u8], aad: &[u8]) -> Result<Encrypted, Error> {
         let mut nonce = Nonce::default();
-        OsRng.fill_bytes(&mut nonce.as_mut_slice());
+        OsRng.fill_bytes(nonce.as_mut_slice());
 
         let cipher = Aes256GcmSiv::new(&self.0);
         let ciphertext = cipher

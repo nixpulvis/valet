@@ -8,9 +8,13 @@ use std::fs::File;
 use std::io;
 use std::io::Write;
 use std::str::FromStr;
-use tokio;
-use valet::record::{LabelName, SaveProgress};
-use valet::{prelude::*, record::Query, user};
+use std::sync::Arc;
+use valet::db::Database;
+use valet::lot::DEFAULT_LOT;
+use valet::password::Password;
+use valet::protocol::{Client, embedded::Embedded};
+use valet::record::{Data, Label, LabelName, Query, Record, SaveProgress};
+use valet::{Handler, Lot};
 
 #[derive(Parser)]
 #[command(version, about = crate_description!())]
@@ -130,39 +134,34 @@ fn get_password() -> Result<Password, valet::user::Error> {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), valet::user::Error> {
+async fn main() -> Result<(), CliError> {
     let cli = Cli::parse();
 
     match &cli.command {
         ValetCommand::User(UserCommand::Register { username }) => {
-            let db = Database::new(&cli.database).await?;
+            let client = open_client(&cli.database).await?;
             let password = get_password()?;
-            let user = User::new(&username, password)?.register(&db).await?;
-            Lot::new(DEFAULT_LOT)
-                .save(&db, &user)
-                .await
-                .expect("failed to save lot");
+            client.register(username.clone(), password).await?;
             println!("{} registered", username);
         }
         ValetCommand::User(UserCommand::Validate { username }) => {
-            let db = Database::new(&cli.database).await?;
-            let username = get_default_username(username, &db).await?;
+            let client = open_client(&cli.database).await?;
+            let username = get_default_username(username, &client).await?;
             let password = get_password()?;
-            let user = User::load(&db, &username, password).await?;
-            println!("{} validated", user.username());
+            client.validate(username.clone(), password).await?;
+            println!("{} validated", username);
         }
         ValetCommand::User(UserCommand::List) => {
-            let db = Database::new(&cli.database).await?;
-            for user in User::list(&db).await? {
+            let client = open_client(&cli.database).await?;
+            for user in client.list_users().await? {
                 println!("{user}")
             }
         }
         ValetCommand::Unlock { username } => {
-            let db = Database::new(&cli.database).await?;
-
-            let username = get_default_username(username, &db).await?;
+            let client = open_client(&cli.database).await?;
+            let username = get_default_username(username, &client).await?;
             let password = get_password()?;
-            let user = User::load(&db, &username, password).await?;
+            client.unlock(username.clone(), password).await?;
 
             let prompt = DefaultPrompt {
                 left_prompt: DefaultPromptSegment::Basic("valet".to_owned()),
@@ -176,220 +175,25 @@ async fn main() -> Result<(), valet::user::Error> {
                 .with_prompt(Box::new(prompt.clone()))
                 .build();
 
-            let mut store: Vec<Lot> = user.lots(&db).await.expect("failed to load lots");
-
-            rl.repl_async(async |command| match &command {
-                Repl::Lot(LotCommand::Create { name }) => {
-                    let mut lot = Lot::new(&name);
-                    match lot.save(&db, &user).await {
-                        Ok(_) => {
-                            store.push(lot);
-                        }
-                        Err(e) => {
-                            println!("Failed to save lot: {e:?}");
-                        }
-                    }
-                }
-                Repl::Lot(LotCommand::List { uuid }) => {
-                    for lot in store.iter() {
-                        if *uuid {
-                            println!("{} <{}>", lot.name(), lot.uuid());
-                        } else {
-                            println!("{}", lot.name());
-                        }
-                    }
-                }
-                Repl::Lot(LotCommand::Delete { name }) => {
-                    dbg!(&name);
-                    unimplemented!();
-                }
-                Repl::List { path, uuid } => {
-                    let query = match Query::from_str(path) {
-                        Ok(q) => q,
-                        Err(e) => {
-                            println!("{e}: {path}");
-                            return;
-                        }
-                    };
-                    let matching_lots: Vec<_> = store
-                        .iter()
-                        .filter(|lot| query.matches_lot(lot.name()))
-                        .collect();
-                    if matching_lots.is_empty() {
-                        println!("No lots match: {path}");
-                        return;
-                    }
-                    let mut printed = false;
-                    for lot in &matching_lots {
-                        for (entry_label, record_uuid) in lot.index().search(&query) {
-                            let name = entry_label.name();
-                            if *uuid {
-                                println!("{}::{name} <{record_uuid}>", lot.name());
-                            } else {
-                                println!("{}::{name}", lot.name());
-                            }
-                            printed = true;
-                        }
-                    }
-                    if !printed {
-                        println!("No records match: {path}");
-                    }
-                }
-                Repl::Put { path, data } => {
-                    let target = match Query::from_str(&path).and_then(Query::into_path) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            println!("{e}: {path}");
-                            return;
-                        }
-                    };
-                    let Ok(password) = data.as_str().try_into() else {
-                        println!("Invalid password");
-                        return;
-                    };
-                    let Some(lot) = store.iter_mut().find(|l| l.name() == target.lot) else {
-                        println!("Unknown lot: {}", target.lot);
-                        return;
-                    };
-                    // Record identity is the label name; extras are metadata
-                    // that may change across revisions. Reuse the existing
-                    // uuid (if any) for this name so storgit extends the
-                    // submodule's history instead of starting a fresh one.
-                    // TODO: Put data in a Password itself.
-                    let record = match lot.index().find_by_name(target.label.name()).cloned() {
-                        Some(existing_uuid) => Record::with_uuid(
-                            existing_uuid,
-                            &*lot,
-                            target.label,
-                            Data::new(password),
-                        ),
-                        None => Record::new(&*lot, target.label, Data::new(password)),
-                    };
-                    if let Err(e) = record.save(&db, lot).await {
-                        println!("Failed to save record: {e:?}");
-                    }
-                }
-                Repl::Get {
-                    path,
-                    uuid,
-                    history,
-                } => {
-                    let query = match Query::from_str(&path) {
-                        Ok(q) => q,
-                        Err(e) => {
-                            println!("{e}: {path}");
-                            return;
-                        }
-                    };
-                    let matching_lots: Vec<_> = store
-                        .iter()
-                        .filter(|lot| query.matches_lot(lot.name()))
-                        .collect();
-                    if matching_lots.is_empty() {
-                        println!("No lots match: {path}");
-                        return;
-                    }
-                    let matches: Vec<_> = matching_lots
-                        .iter()
-                        .flat_map(|lot| {
-                            lot.index()
-                                .search(&query)
-                                .map(move |(label, uuid)| (*lot, label, uuid))
-                        })
-                        .collect();
-                    let (picked_lot, record_uuid) = match matches.as_slice() {
-                        [] => {
-                            println!("No records match: {path}");
-                            return;
-                        }
-                        [(lot, _, uuid)] => (*lot, *uuid),
-                        many => {
-                            for (i, (lot, label, _)) in many.iter().enumerate() {
-                                println!("{i}: {}::{label}", lot.name());
-                            }
-                            print!("Pick: ");
-                            io::stdout().flush().ok();
-                            let mut buf = String::new();
-                            if io::stdin().read_line(&mut buf).is_err() {
-                                return;
-                            }
-                            let Ok(idx) = buf.trim().parse::<usize>() else {
-                                println!("Not a number");
-                                return;
-                            };
-                            let Some((lot, _, uuid)) = many.get(idx) else {
-                                println!("Out of range");
-                                return;
-                            };
-                            (*lot, *uuid)
-                        }
-                    };
-                    // TODO: The in-memory index can be stale if another
-                    // writer deleted the record. Need a general
-                    // resync/retry strategy for multi-writer setups.
-                    if *history {
-                        match Record::history(&db, picked_lot, record_uuid).await {
-                            Ok(Some(revisions)) if revisions.is_empty() => {
-                                println!("No revisions: {path} <{record_uuid}>");
-                            }
-                            Ok(Some(revisions)) => {
-                                for rev in revisions {
-                                    let ts = chrono::DateTime::<chrono::Utc>::from(rev.time)
-                                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-                                    println!("{ts} {}: {}", rev.label, rev.data.password());
-                                }
-                            }
-                            Ok(None) => {
-                                println!("Record not found: {path} <{record_uuid}>");
-                            }
-                            Err(e) => {
-                                println!("Failed to load history: {e:?}");
-                            }
-                        }
-                    } else {
-                        match Record::show(&db, picked_lot, record_uuid).await {
-                            Ok(Some(record)) => {
-                                if *uuid {
-                                    println!("{} <{}>", record.password(), record.uuid());
-                                } else {
-                                    println!("{}", record.password());
-                                }
-                                for (k, v) in record.label().extra() {
-                                    println!("{k}: {v}");
-                                }
-                            }
-                            Ok(None) => {
-                                println!("Record not found: {path} <{record_uuid}>");
-                            }
-                            Err(e) => {
-                                println!("Failed to load record: {e:?}");
-                            }
-                        }
-                    }
-                }
-                Repl::Clear => {
-                    // NOTE: Order matters here.
-                    // 2J first clears into scrollback
-                    // 3J then clears scrollback
-                    // H resets the cursor to the topleft
-                    print!("\x1b[2J\x1b[3J\x1b[H");
-                }
-                Repl::Lock => {
-                    // TODO: There has to be a way to break out of `repl_async`...
-                    std::process::exit(0);
-                }
-            })
-            .await;
+            run_repl(rl, client, username).await;
         }
         ValetCommand::Import {
             username,
             ty,
             filepath,
         } => {
+            // Bulk import streams a progress callback through
+            // `Record::save_many`, which doesn't fit the one-shot
+            // request/response shape. Keep it on the raw DB path for
+            // now; `Client<Embedded>::state` is not reachable, so run a
+            // parallel Database handle just for this operation.
+            // TODO: fold import into the handler once we have a
+            // streaming response protocol.
             let db = Database::new(&cli.database).await?;
-            let username = get_default_username(username, &db).await?;
+            let client = open_client(&cli.database).await?;
+            let username = get_default_username(username, &client).await?;
             let password = get_password()?;
-            let user = User::load(&db, &username, password).await?;
+            let user = valet::User::load(&db, &username, password).await?;
             if let Some(mut lot) = Lot::load(&db, DEFAULT_LOT, &user).await? {
                 if ty == "apple" {
                     import_apple(&db, &mut lot, filepath).await;
@@ -408,22 +212,260 @@ async fn main() -> Result<(), valet::user::Error> {
     Ok(())
 }
 
+async fn open_client(database: &str) -> Result<Arc<Client<Embedded>>, CliError> {
+    let db = Database::new(database).await?;
+    Ok(Arc::new(Client::<Embedded>::new(db)))
+}
+
+async fn run_repl(rl: ClapEditor<Repl>, client: Arc<Client<Embedded>>, username: String) {
+    rl.repl_async(async |command| match &command {
+        Repl::Lot(LotCommand::Create { name }) => {
+            if let Err(e) = client.create_lot(username.clone(), name.clone()).await {
+                println!("Failed to create lot: {e}");
+            }
+        }
+        Repl::Lot(LotCommand::List { uuid }) => {
+            match client.list_lots(username.clone()).await {
+                Ok(lots) => {
+                    for (lot_uuid, name) in lots {
+                        if *uuid {
+                            println!("{name} <{lot_uuid}>");
+                        } else {
+                            println!("{name}");
+                        }
+                    }
+                }
+                Err(e) => println!("Failed to list lots: {e}"),
+            }
+        }
+        Repl::Lot(LotCommand::Delete { name }) => {
+            if let Err(e) = client.delete_lot(username.clone(), name.clone()).await {
+                println!("Failed to delete lot: {e}");
+            }
+        }
+        Repl::List { path, uuid } => {
+            let entries = match client.list(username.clone(), vec![path.clone()]).await {
+                Ok(es) => es,
+                Err(e) => {
+                    println!("{e}");
+                    return;
+                }
+            };
+            if entries.is_empty() {
+                println!("No records match: {path}");
+                return;
+            }
+            for (record_uuid, label) in entries {
+                let name = label.name();
+                if *uuid {
+                    println!("{name} <{record_uuid}>");
+                } else {
+                    println!("{name}");
+                }
+            }
+        }
+        Repl::Put { path, data } => {
+            let target = match Query::from_str(path).and_then(Query::into_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    println!("{e}: {path}");
+                    return;
+                }
+            };
+            let Ok(password) = data.as_str().try_into() else {
+                println!("Invalid password");
+                return;
+            };
+            // `create_record` upserts by label name, so a repeated put
+            // extends the existing record's storgit history.
+            if let Err(e) = client
+                .create_record(
+                    username.clone(),
+                    target.lot,
+                    target.label,
+                    password,
+                    HashMap::new(),
+                )
+                .await
+            {
+                println!("Failed to save record: {e}");
+            }
+        }
+        Repl::Get {
+            path,
+            uuid,
+            history,
+        } => {
+            let query = match Query::from_str(path) {
+                Ok(q) => q,
+                Err(e) => {
+                    println!("{e}: {path}");
+                    return;
+                }
+            };
+            // The handler's `list` applies the same query grammar the
+            // CLI has always used, so we get a flat (uuid, label) set
+            // to disambiguate against. Lot-name lookup per entry is
+            // not exposed today; prompt by label and then fetch via
+            // `fetch` (cross-lot by uuid).
+            let entries = match client.list(username.clone(), vec![path.clone()]).await {
+                Ok(es) => es,
+                Err(e) => {
+                    println!("{e}");
+                    return;
+                }
+            };
+            if entries.is_empty() {
+                println!("No records match: {path}");
+                return;
+            }
+            let (record_uuid, _label) = match entries.as_slice() {
+                [one] => (one.0.clone(), one.1.clone()),
+                many => {
+                    for (i, (_, label)) in many.iter().enumerate() {
+                        println!("{i}: {label}");
+                    }
+                    print!("Pick: ");
+                    io::stdout().flush().ok();
+                    let mut buf = String::new();
+                    if io::stdin().read_line(&mut buf).is_err() {
+                        return;
+                    }
+                    let Ok(idx) = buf.trim().parse::<usize>() else {
+                        println!("Not a number");
+                        return;
+                    };
+                    let Some(pick) = many.get(idx) else {
+                        println!("Out of range");
+                        return;
+                    };
+                    (pick.0.clone(), pick.1.clone())
+                }
+            };
+            if *history {
+                // History needs a lot name; since `list` doesn't tell us
+                // which lot matched, fall back to the query's lot spec
+                // (required when using `-H`).
+                let lot = match query.into_path() {
+                    Ok(p) => p.lot,
+                    Err(_) => {
+                        println!("`get -H` needs a full `lot::label` path");
+                        return;
+                    }
+                };
+                match client
+                    .history(username.clone(), lot, record_uuid.clone())
+                    .await
+                {
+                    Ok(revs) if revs.is_empty() => {
+                        println!("No revisions: {path} <{record_uuid}>");
+                    }
+                    Ok(revs) => {
+                        for rev in revs {
+                            let secs = rev.time_millis / 1000;
+                            let nanos = ((rev.time_millis.rem_euclid(1000)) as u32) * 1_000_000;
+                            let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(secs, nanos)
+                                .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                                .unwrap_or_else(|| rev.time_millis.to_string());
+                            println!("{ts} {}: {}", rev.label, rev.password);
+                        }
+                    }
+                    Err(e) => {
+                        println!("Failed to load history: {e}");
+                    }
+                }
+            } else {
+                match client.fetch(username.clone(), record_uuid.clone()).await {
+                    Ok(record) => {
+                        if *uuid {
+                            println!("{} <{}>", record.password(), record.uuid());
+                        } else {
+                            println!("{}", record.password());
+                        }
+                        for (k, v) in record.label().extra() {
+                            println!("{k}: {v}");
+                        }
+                    }
+                    Err(e) => {
+                        println!("Failed to load record: {e}");
+                    }
+                }
+            }
+        }
+        Repl::Clear => {
+            // NOTE: Order matters here.
+            // 2J first clears into scrollback
+            // 3J then clears scrollback
+            // H resets the cursor to the topleft
+            print!("\x1b[2J\x1b[3J\x1b[H");
+        }
+        Repl::Lock => {
+            // TODO: There has to be a way to break out of `repl_async`...
+            std::process::exit(0);
+        }
+    })
+    .await;
+}
+
 async fn get_default_username(
     provided: &Option<String>,
-    db: &Database,
-) -> Result<String, user::Error> {
+    client: &Arc<Client<Embedded>>,
+) -> Result<String, CliError> {
     match provided {
         Some(username) => Ok(username.to_owned()),
         // TODO: We need proper CLI error types here.
         None => {
             // TODO: Add a configurable default user.
-            let usernames = User::list(&db).await?;
+            let usernames = client.list_users().await?;
             if usernames.len() == 1 {
                 Ok(usernames[0].to_owned())
             } else {
-                Err(user::Error::NotFound)
+                Err(CliError::User(valet::user::Error::NotFound))
             }
         }
+    }
+}
+
+#[derive(Debug)]
+enum CliError {
+    User(valet::user::Error),
+    Db(valet::db::Error),
+    Protocol(valet::protocol::Error),
+}
+
+impl std::fmt::Display for CliError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CliError::User(e) => write!(f, "{e:?}"),
+            CliError::Db(e) => write!(f, "{e:?}"),
+            CliError::Protocol(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for CliError {}
+
+impl From<valet::user::Error> for CliError {
+    fn from(e: valet::user::Error) -> Self {
+        CliError::User(e)
+    }
+}
+
+impl From<valet::db::Error> for CliError {
+    fn from(e: valet::db::Error) -> Self {
+        CliError::Db(e)
+    }
+}
+
+impl From<valet::protocol::Error> for CliError {
+    fn from(e: valet::protocol::Error) -> Self {
+        CliError::Protocol(e)
+    }
+}
+
+impl From<valet::lot::Error> for CliError {
+    fn from(e: valet::lot::Error) -> Self {
+        CliError::User(valet::user::Error::Lot(e))
     }
 }
 

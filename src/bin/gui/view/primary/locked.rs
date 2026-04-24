@@ -6,27 +6,29 @@ use eframe::egui::{Button, CentralPanel, Context, Id, Key, TextEdit, ViewportCom
 use egui_inbox::UiInbox;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use valet::{Lot, User, db::Database, lot::DEFAULT_LOT, password::Password};
+use valet::Handler;
+use valet::password::Password;
+use valet::protocol::{Client, embedded::Embedded};
 
 pub struct Locked<'a> {
     // TODO: come up with a better organization for these shared values.
-    db: &'a Arc<Database>,
+    client: &'a Arc<Client<Embedded>>,
     rt: &'a Runtime,
-    user: &'a mut Option<Arc<User>>,
-    login_inbox: &'a UiInbox<User>,
+    active_user: &'a mut Option<String>,
+    login_inbox: &'a UiInbox<String>,
 }
 
 impl<'a> Locked<'a> {
     pub fn new(
-        db: &'a Arc<Database>,
+        client: &'a Arc<Client<Embedded>>,
         rt: &'a Runtime,
-        user: &'a mut Option<Arc<User>>,
-        login_inbox: &'a UiInbox<User>,
+        active_user: &'a mut Option<String>,
+        login_inbox: &'a UiInbox<String>,
     ) -> Self {
         Locked {
-            db,
+            client,
             rt,
-            user,
+            active_user,
             login_inbox,
         }
     }
@@ -38,8 +40,8 @@ impl<'a> View for Locked<'a> {
         let mut state = State::load(ctx, id);
 
         CentralPanel::default().show(ctx, |ui| {
-            if let Some(user) = self.login_inbox.read(ui).last() {
-                *self.user = Some(Arc::new(user));
+            if let Some(username) = self.login_inbox.read(ui).last() {
+                *self.active_user = Some(username);
 
                 // TODO: Make some kind of transition function to handle the
                 // logic between Locked and Unlocked. Unlocked should have one
@@ -69,12 +71,11 @@ impl<'a> View for Locked<'a> {
                     // XXX: This is obviously hacky, but I don't want to deal with sharing things now.
                     let username = state.username.clone();
                     let password = state.password.clone();
-                    let db = self.db.clone();
+                    let client = self.client.clone();
                     let tx = self.login_inbox.sender();
                     self.rt.spawn(async move {
-                        let user = User::load(&db, &username, password).await.expect("TODO");
-                        if user.validate() {
-                            tx.send(user).ok();
+                        if client.unlock(username.clone(), password).await.is_ok() {
+                            tx.send(username).ok();
                         }
                     });
                 }
@@ -82,20 +83,11 @@ impl<'a> View for Locked<'a> {
                     // XXX: This is obviously hacky, but I don't want to deal with sharing things now.
                     let username = state.username.clone();
                     let password = state.password.clone();
-                    let db = self.db.clone();
+                    let client = self.client.clone();
                     let tx = self.login_inbox.sender();
                     self.rt.spawn(async move {
-                        let user = User::new(&username, password)
-                            .expect("TODO")
-                            .register(&db)
-                            .await
-                            .expect("TODO");
-                        Lot::new(DEFAULT_LOT)
-                            .save(&db, &user)
-                            .await
-                            .expect("failed to save lot");
-                        if user.validate() {
-                            tx.send(user).ok();
+                        if client.register(username.clone(), password).await.is_ok() {
+                            tx.send(username).ok();
                         }
                     });
                 }

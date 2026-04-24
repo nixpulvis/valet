@@ -323,7 +323,10 @@ impl std::fmt::Debug for Parts {
         f.debug_struct("Parts")
             .field("parent_bytes", &self.parent.len())
             .field("modules", &self.modules.keys().collect::<Vec<_>>())
-            .field("fetcher", &self.fetcher.as_ref().map(|_| "..").unwrap_or("None"))
+            .field(
+                "fetcher",
+                &self.fetcher.as_ref().map(|_| "..").unwrap_or("None"),
+            )
             .finish()
     }
 }
@@ -732,8 +735,8 @@ impl Store {
 
     /// Make `bytes` (a previously-persisted module tarball) available
     /// to the store under `id`. The next operation that touches `id`
-    /// — `get`, `history`, `put`, `archive` — will untar these bytes
-    /// to the scratch dir on first access.
+    /// (`get`, `history`, `put`, `archive`) will untar these bytes to
+    /// the scratch dir on first access.
     ///
     /// Use this as an explicit push when neither [`Parts::modules`]
     /// nor a [`Parts::fetcher`] fits: e.g. the caller just decoded a
@@ -882,11 +885,11 @@ impl Store {
     /// parent's own object DB, then overwrite the parent's
     /// `refs/heads/main` to point at that commit.
     ///
-    /// Storgit doesn't keep parent history — the per-entry module
-    /// histories are the product — so the previous parent commit and
-    /// its tree become unreachable garbage as soon as we update the
-    /// ref. To keep `parent.git/objects/` from growing linearly with
-    /// total puts, we delete those two loose objects directly after
+    /// Storgit doesn't keep parent history; the per-entry module
+    /// histories are the product. The previous parent commit and its
+    /// tree become unreachable garbage as soon as we update the ref.
+    /// To keep `parent.git/objects/` from growing linearly with total
+    /// puts, we delete those two loose objects directly after
     /// publishing the new ref. No reachability walker needed: we know
     /// exactly which two objects were just superseded.
     fn commit_parent_tree(&self, parent: &gix::Repository, tree: Tree) -> Result<(), Error> {

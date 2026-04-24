@@ -12,37 +12,38 @@ use std::{
     str::FromStr,
     sync::{Arc, RwLock},
 };
-use tokio::{runtime::Runtime, sync::Mutex};
+use tokio::runtime::Runtime;
+use valet::Handler;
 use valet::{
-    Lot, Record, User,
-    db::Database,
+    Record,
     lot::DEFAULT_LOT,
     password::Password,
-    record::{Data, Label, Query},
+    protocol::{Client, embedded::Embedded},
+    record::{Label, Query},
     uuid::Uuid,
 };
 
-type Store = Vec<Arc<Mutex<Lot>>>;
+type Index = Vec<(Uuid<Record>, Label)>;
 
 pub struct Unlocked<'a> {
     // TODO: come up with a better organization for these shared values.
-    db: &'a Arc<Database>,
+    client: &'a Arc<Client<Embedded>>,
     rt: &'a Runtime,
-    user: &'a mut Option<Arc<User>>,
-    login_inbox: &'a mut UiInbox<User>,
+    active_user: &'a mut Option<String>,
+    login_inbox: &'a mut UiInbox<String>,
 }
 
 impl<'a> Unlocked<'a> {
     pub fn new(
-        db: &'a Arc<Database>,
+        client: &'a Arc<Client<Embedded>>,
         rt: &'a Runtime,
-        user: &'a mut Option<Arc<User>>,
-        login_inbox: &'a mut UiInbox<User>,
+        active_user: &'a mut Option<String>,
+        login_inbox: &'a mut UiInbox<String>,
     ) -> Self {
         Unlocked {
-            db,
+            client,
             rt,
-            user,
+            active_user,
             login_inbox,
         }
     }
@@ -53,26 +54,28 @@ impl<'a> View for Unlocked<'a> {
         let id = Id::new("unlocked_view");
         let mut state = State::load(ctx, id);
 
-        // TODO: Come up with a better way.
-        let user = if let Some(u) = self.user {
+        let username = if let Some(u) = self.active_user.as_ref() {
             u.clone()
         } else {
             unreachable!();
         };
 
-        if state.store.read().unwrap().is_empty() {
-            let db = self.db.clone();
-            let tx = state.store_inbox.sender();
-            let user2 = user.clone();
+        // The persistent `index` is empty until the first refresh
+        // lands. A sentinel on `loaded` distinguishes "not yet loaded"
+        // from "loaded, empty".
+        if !*state.loaded.read().unwrap() {
+            let client = self.client.clone();
+            let tx = state.index_inbox.sender();
+            let username_c = username.clone();
             self.rt.spawn(async move {
-                let lots = user2.lots(&db).await.expect("failed to load lots");
-                tx.send(lots.into_iter().map(|l| Arc::new(Mutex::new(l))).collect())
-                    .ok();
+                let entries = client_list_all(&client, &username_c).await;
+                tx.send(entries).ok();
             });
+            *state.loaded.write().unwrap() = true;
         }
 
-        if let Some(store) = state.store_inbox.read(ctx).last() {
-            *state.store.write().unwrap() = store;
+        if let Some(entries) = state.index_inbox.read(ctx).last() {
+            *state.index.write().unwrap() = entries;
         }
 
         egui::TopBottomPanel::top("my_panel").show(ctx, |ui| {
@@ -96,8 +99,12 @@ impl<'a> View for Unlocked<'a> {
                                 // TODO: Again this should be in some
                                 // sort of transition function between
                                 // Unlocked and Locked.
-
-                                *self.user = None;
+                                let client = self.client.clone();
+                                let uname = username.clone();
+                                self.rt.spawn(async move {
+                                    let _ = client.lock(uname).await;
+                                });
+                                *self.active_user = None;
                                 *self.login_inbox = UiInbox::new();
                                 // TODO: Do we clear the username or not?
                                 ui.ctx().data_mut(|d| d.clear());
@@ -145,44 +152,44 @@ impl<'a> View for Unlocked<'a> {
                             let can_add =
                                 !state.new_label.is_empty() && !state.new_password.is_empty();
                             if ui.add_enabled(can_add, Button::new("Add Record")).clicked() {
-                                let db = self.db.clone();
+                                let client = self.client.clone();
                                 let new_label = state.new_label.clone();
                                 let new_password = state.new_password.clone();
+                                let username_c = username.clone();
+                                let refresh_tx = state.index_inbox.sender();
                                 state.show_new_record = false;
                                 state.new_label = String::new();
                                 state.new_password = Password::default();
-                                let main_lot = state
-                                    .store
-                                    .read()
-                                    .unwrap()
-                                    .iter()
-                                    .find(|l| {
-                                        l.blocking_lock().name() == DEFAULT_LOT
-                                    })
-                                    .cloned();
-                                if let Some(main_lot) = main_lot {
-                                    self.rt.spawn(async move {
-                                        let mut lot = main_lot.lock().await;
-                                        match Query::from_str(&new_label).and_then(Query::into_path)
-                                        {
-                                            Ok(path) => {
-                                                // TODO: Add deleted record to new record's history.
-                                                Record::new(
-                                                    &lot,
+                                self.rt.spawn(async move {
+                                    match Query::from_str(&new_label).and_then(Query::into_path) {
+                                        Ok(path) => {
+                                            // create_record upserts by label
+                                            // name, so resaving the same label
+                                            // extends history in place.
+                                            if let Err(e) = client
+                                                .create_record(
+                                                    username_c.clone(),
+                                                    DEFAULT_LOT.to_owned(),
                                                     path.label,
-                                                    Data::new(new_password),
+                                                    new_password,
+                                                    Default::default(),
                                                 )
-                                                .save(&db, &mut lot)
                                                 .await
-                                                .expect("failed to save record");
+                                            {
+                                                // TODO: surface in UI.
+                                                eprintln!("failed to save record: {e}");
+                                                return;
                                             }
-                                            Err(error) => {
-                                                // TODO: We need error flashes in the UI.
-                                                eprintln!("{error}: {}", new_label)
-                                            }
+                                            let entries =
+                                                client_list_all(&client, &username_c).await;
+                                            refresh_tx.send(entries).ok();
                                         }
-                                    });
-                                }
+                                        Err(error) => {
+                                            // TODO: We need error flashes in the UI.
+                                            eprintln!("{error}: {}", new_label)
+                                        }
+                                    }
+                                });
                             }
                             if ui.button("Cancel").clicked() {
                                 state.show_new_record = false;
@@ -203,11 +210,6 @@ impl<'a> View for Unlocked<'a> {
                             bottom: 0,
                         })
                         .show(ui, |ui| {
-                            let store = state.store.read().unwrap();
-                            let main_lot: Option<&Arc<Mutex<Lot>>> = store
-                                .iter()
-                                .find(|l| l.blocking_lock().name() == DEFAULT_LOT);
-
                             // Bare input is a case-insensitive literal prefix
                             // match on the label name. A leading `~` opts into
                             // the full Query grammar (regex name, `<k=v>`
@@ -220,30 +222,17 @@ impl<'a> View for Unlocked<'a> {
                             } else {
                                 Ok(Some(Query::label_prefix(search, true)))
                             };
-                            match (main_lot, query) {
-                                (None, _) => {
-                                    ui.label("Loading...");
-                                }
-                                (_, Err(e)) => {
+                            match query {
+                                Err(e) => {
                                     ui.label(format!("Invalid query: {e}"));
                                 }
-                                (Some(lot_arc), Ok(query)) => {
-                                    // Snapshot labels+uuids under the lock, then
-                                    // drop the guard before touching egui so a
-                                    // concurrent save or reveal never queues
-                                    // behind the render.
-                                    let entries: Vec<(Label, Uuid<Record>)> = {
-                                        let lot = lot_arc.blocking_lock();
-                                        lot.index()
-                                            .iter()
-                                            .map(|(l, u)| (l.clone(), u.clone()))
-                                            .collect()
-                                    };
+                                Ok(query) => {
+                                    let entries = state.index.read().unwrap().clone();
                                     if entries.is_empty() {
                                         ui.label("No records yet.");
                                     } else {
                                         let mut any = false;
-                                        for (label, record_uuid) in &entries {
+                                        for (record_uuid, label) in &entries {
                                             if let Some(q) = &query
                                                 && !q.matches_label(label)
                                             {
@@ -252,8 +241,8 @@ impl<'a> View for Unlocked<'a> {
                                             ui.add(RecordRow::new(
                                                 label,
                                                 record_uuid,
-                                                lot_arc.clone(),
-                                                self.db,
+                                                username.clone(),
+                                                self.client,
                                                 self.rt,
                                             ));
                                             ui.separator();
@@ -272,9 +261,20 @@ impl<'a> View for Unlocked<'a> {
     }
 }
 
+async fn client_list_all(client: &Arc<Client<Embedded>>, username: &str) -> Index {
+    // An empty query list on the handler means "every record in every
+    // lot the user has access to". The UI then filters the main lot in
+    // the render path.
+    client
+        .list(username.to_owned(), Vec::new())
+        .await
+        .unwrap_or_default()
+}
+
 struct State {
-    store_inbox: Arc<UiInbox<Store>>,
-    store: Arc<RwLock<Store>>,
+    index_inbox: Arc<UiInbox<Index>>,
+    index: Arc<RwLock<Index>>,
+    loaded: Arc<RwLock<bool>>,
     search: String,
     lock_label: String,
     // TODO: Move into NewRecord widget
@@ -286,11 +286,12 @@ struct State {
 impl State {
     fn load(ctx: &Context, id: Id) -> Self {
         State {
-            store_inbox: ctx.data(|d| {
-                d.get_temp::<Arc<UiInbox<Store>>>(id.with("store_inbox"))
+            index_inbox: ctx.data(|d| {
+                d.get_temp::<Arc<UiInbox<Index>>>(id.with("index_inbox"))
                     .unwrap_or_default()
             }),
-            store: ctx.data(|d| d.get_temp(id.with("store")).unwrap_or_default()),
+            index: ctx.data(|d| d.get_temp(id.with("index")).unwrap_or_default()),
+            loaded: ctx.data(|d| d.get_temp(id.with("loaded")).unwrap_or_default()),
             search: ctx.data(|d| d.get_temp(id.with("search")).unwrap_or_default()),
             lock_label: ctx.data(|d| d.get_temp(id.with("lock_label")).unwrap_or_default()),
             show_new_record: ctx
@@ -305,8 +306,9 @@ impl State {
 
     fn store(self, ctx: &Context, id: Id) {
         ctx.data_mut(|d| {
-            d.insert_temp(id.with("store_inbox"), self.store_inbox);
-            d.insert_temp(id.with("store"), self.store);
+            d.insert_temp(id.with("index_inbox"), self.index_inbox);
+            d.insert_temp(id.with("index"), self.index);
+            d.insert_temp(id.with("loaded"), self.loaded);
             d.insert_temp(id.with("search"), self.search);
             d.insert_temp(id.with("lock_label"), self.lock_label);
             d.insert_temp(id.with("show_new_record"), self.show_new_record);
