@@ -4,10 +4,10 @@ use egui_inbox::UiInbox;
 use std::sync::Arc;
 use tokio::runtime;
 use valet::db::Database;
-use valet::protocol::{Client, embedded::Embedded};
+use valet::protocol::EmbeddedHandler;
 
 pub struct App {
-    pub(crate) client: Arc<Client<Embedded>>,
+    pub(crate) client: Arc<EmbeddedHandler>,
     pub(crate) rt: runtime::Runtime,
     pub(crate) active_user: Option<String>,
     pub(crate) login_inbox: UiInbox<String>,
@@ -22,7 +22,7 @@ impl App {
         let db = rt
             .block_on(Database::new(&valet::db::default_url()))
             .expect("failed to open database");
-        let client = Arc::new(Client::<Embedded>::new(db));
+        let client = Arc::new(EmbeddedHandler::new(db, rt.handle()));
         App {
             client,
             rt,

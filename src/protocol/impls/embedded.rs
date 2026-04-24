@@ -1,15 +1,13 @@
-//! In-process protocol: [`Client<Embedded>`] owns a SQLite handle plus
+//! In-process handler: [`EmbeddedHandler`] owns a SQLite handle plus
 //! the cache of unlocked [`User`] / [`Lot`] keys and answers
-//! [`Request`]s directly. There is no [`Server<Embedded>`]; nothing
-//! listens for an Embedded protocol.
+//! [`Request`]s directly. There is no wire protocol here; nothing
+//! frames bytes over a socket.
 //!
-//! [`Client<Embedded>`]: crate::protocol::Client
-//! [`Server<Embedded>`]: crate::protocol::Server
 //! [`User`]: crate::user::User
 //! [`Lot`]: crate::Lot
 
+use crate::protocol::SendHandler;
 use crate::protocol::message::{Request, Response, RevisionEntry};
-use crate::protocol::{Client, Handler, Never, Protocol};
 use crate::{
     Lot, Record,
     db::Database,
@@ -54,14 +52,6 @@ impl From<Error> for String {
     }
 }
 
-/// Wire-protocol marker for in-process dispatch against a local DB.
-pub struct Embedded;
-
-impl Protocol for Embedded {
-    type Client = EmbeddedClient;
-    type Server = Never;
-}
-
 /// Delay applied after a failed [`Request::Unlock`]. Makes credential
 /// guessing noticeably slow without being user-visible on the success
 /// path.
@@ -73,7 +63,7 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// How often the reaper checks the idle window.
 pub const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 
-/// Cache state shared between [`Client<Embedded>`] and its idle
+/// Cache state shared between [`EmbeddedHandler`] and its idle
 /// reaper. The SQLite handle plus per-user / per-lot key caches
 /// currently held in memory.
 pub struct State {
@@ -158,42 +148,43 @@ impl State {
     }
 }
 
-/// State behind [`Client<Embedded>`]. Private; only accessible via the
-/// typed client methods and the [`Handler`] impl.
-pub struct EmbeddedClient {
+/// Public handler type. Owns the SQLite handle plus the in-memory
+/// caches of unlocked users and their lots; dispatches every
+/// [`Request`] against that state.
+pub struct EmbeddedHandler {
     state: Arc<Mutex<State>>,
 }
 
-impl Client<Embedded> {
-    /// Build a client around `db` and spawn the idle reaper. Must be
-    /// called from within a tokio runtime; the reaper is what
-    /// guarantees cached keys are dropped after [`IDLE_TIMEOUT`] of
-    /// inactivity.
-    pub fn new(db: Database) -> Self {
+impl EmbeddedHandler {
+    /// Build a handler around `db` and spawn the idle reaper on `rt`.
+    /// Taking an explicit [`Handle`] makes the "must have a tokio
+    /// runtime" requirement static: the caller cannot name this
+    /// function without naming a live runtime.
+    ///
+    /// [`Handle`]: tokio::runtime::Handle
+    pub fn new(db: Database, rt: &tokio::runtime::Handle) -> Self {
         let state = Arc::new(Mutex::new(State::new(db)));
-        spawn_reaper(state.clone(), IDLE_TIMEOUT, IDLE_CHECK_INTERVAL);
-        Self {
-            inner: EmbeddedClient { state },
-        }
+        spawn_reaper(rt, state.clone(), IDLE_TIMEOUT, IDLE_CHECK_INTERVAL);
+        Self { state }
     }
 
     /// Open the database at `$VALET_DB` (or [`crate::db::default_url`]
-    /// when unset) and build a client around it. Used by the `valetd`
+    /// when unset) and build a handler around it. Used by the `valetd`
     /// binary and by any transport that just wants the default
     /// location.
-    pub async fn open_from_env() -> Result<Self, String> {
+    pub async fn open_from_env(rt: &tokio::runtime::Handle) -> Result<Self, String> {
         let db_url = std::env::var("VALET_DB").unwrap_or_else(|_| crate::db::default_url());
         let db = Database::new(&db_url)
             .await
             .map_err(|e| format!("failed to open database at {db_url}: {e:?}"))?;
-        Ok(Self::new(db))
+        Ok(Self::new(db, rt))
     }
 }
 
-impl Handler for Client<Embedded> {
+impl SendHandler for EmbeddedHandler {
     async fn handle(&self, req: Request) -> io::Result<Response> {
         let kind: &'static str = (&req).into();
-        let response = match dispatch(&self.inner.state, req).await {
+        let response = match dispatch(&self.state, req).await {
             Ok(r) => {
                 let resp_kind: &'static str = (&r).into();
                 info!(request = kind, response = resp_kind, "ok");
@@ -205,14 +196,10 @@ impl Handler for Client<Embedded> {
             }
         };
         // Any dispatch attempt counts as activity.
-        self.inner.state.lock().await.touch();
+        self.state.lock().await.touch();
         Ok(response)
     }
 }
-
-// No `Server<Embedded>` in scope: the `Server<P>` struct is gated on
-// the wire protocols in `protocol/mod.rs`, so it doesn't even exist
-// in builds that only have `protocol-embedded`.
 
 /// Drop every cached user if the idle window has elapsed since the
 /// last request touched the state. Returns `true` when something was
@@ -228,8 +215,13 @@ async fn reap_if_idle(state: &Arc<Mutex<State>>, idle_timeout: Duration) -> bool
     }
 }
 
-fn spawn_reaper(state: Arc<Mutex<State>>, idle_timeout: Duration, check_interval: Duration) {
-    tokio::spawn(async move {
+fn spawn_reaper(
+    rt: &tokio::runtime::Handle,
+    state: Arc<Mutex<State>>,
+    idle_timeout: Duration,
+    check_interval: Duration,
+) {
+    rt.spawn(async move {
         info!(
             idle_timeout_secs = idle_timeout.as_secs(),
             check_interval_secs = check_interval.as_secs(),

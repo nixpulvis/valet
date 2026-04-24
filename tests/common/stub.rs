@@ -1,18 +1,18 @@
-//! In-memory fake [`Handler`] for integration tests.
+//! In-memory fake [`SendHandler`] for integration tests.
 //!
 //! Answers from a fixed set of records: never touches SQLite, never
 //! opens a socket. Record-mutating requests are rejected; unlocking
-//! accepts any password. Used by `tests/client_roundtrip.rs` to drive
-//! the typed [`Handler`] method surface without a DB.
+//! accepts any password. Used to drive the typed call surface
+//! without a DB.
 //!
-//! [`Handler`]: valet::Handler
+//! [`SendHandler`]: valet::SendHandler
 
 use std::io;
 use tokio::sync::Mutex;
 use valet::{
     Lot, Record,
     protocol::{
-        Handler,
+        SendHandler,
         message::{Request, Response, label_matches_domain},
     },
     record::{Data, Label, LabelName, Query},
@@ -76,7 +76,7 @@ impl Default for StubHandler {
     }
 }
 
-impl Handler for StubHandler {
+impl SendHandler for StubHandler {
     async fn handle(&self, req: Request) -> io::Result<Response> {
         let mut st = self.state.lock().await;
         Ok(dispatch(&mut st, req))

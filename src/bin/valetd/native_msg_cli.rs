@@ -1,19 +1,22 @@
 //! Native-messaging transport entry point: read the browser's stdio
-//! envelope and serve it from either a local [`Client<Embedded>`] or
-//! a [`Client<Socket>`] relay, selected by `VALET_BACKEND`.
+//! envelope and serve it from either a local [`EmbeddedHandler`] or
+//! a [`SocketClient`] relay, selected by `VALET_BACKEND`.
 //!
 //! Each backend is gated on its protocol feature. Requesting a
 //! backend that wasn't compiled in fails at runtime with a clear
 //! message; `Backend::Auto` tries the socket first (when available)
 //! and falls back to embedded (when available).
+//!
+//! [`EmbeddedHandler`]: valet::protocol::EmbeddedHandler
+//! [`SocketClient`]: valet::protocol::SocketClient
 
 use std::sync::Arc;
-use valet::protocol::{Server, native_msg::NativeMessage};
+use valet::protocol::{NativeMessageServer, Serve};
 
 #[cfg(any(feature = "protocol-socket", feature = "protocol-embedded"))]
 use tracing::info;
 #[cfg(feature = "protocol-socket")]
-use valet::protocol::{Client, socket};
+use valet::protocol::{SocketClient, socket};
 
 use super::Backend;
 
@@ -42,7 +45,7 @@ async fn run_embedded() -> Result<(), String> {
 #[cfg(feature = "protocol-socket")]
 async fn run_socket_relay() -> Result<(), String> {
     let path = socket::path();
-    let client = Client::<socket::Socket>::connect(&path)
+    let client = SocketClient::connect(&path)
         .await
         .map_err(|e| format!("connect {}: {e}", path.display()))?;
     info!(backend = "socket", "selected");
@@ -59,7 +62,7 @@ async fn run_socket_relay() -> Result<(), String> {
 #[cfg(all(feature = "protocol-socket", feature = "protocol-embedded"))]
 async fn run_auto() -> Result<(), String> {
     let path = socket::path();
-    match Client::<socket::Socket>::connect(&path).await {
+    match SocketClient::connect(&path).await {
         Ok(client) => {
             info!(backend = "socket", path = %path.display(), "selected");
             serve("socket", Arc::new(client)).await
@@ -98,11 +101,11 @@ async fn run_auto() -> Result<(), String> {
     not(any(feature = "protocol-embedded", feature = "protocol-socket")),
     allow(dead_code)
 )]
-async fn serve<H: valet::Handler + 'static>(
+async fn serve<H: valet::SendHandler + 'static>(
     tag: &'static str,
     handler: Arc<H>,
 ) -> Result<(), String> {
-    Server::<NativeMessage>::from_stdio(tag)
+    NativeMessageServer::from_stdio(tag)
         .serve(handler)
         .await
         .map_err(|e| format!("serve: {e}"))

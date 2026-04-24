@@ -1,7 +1,7 @@
-//! Integration tests for `Server<NativeMessage>` at the envelope
+//! Integration tests for [`NativeMessageServer`] at the envelope
 //! layer.
 //!
-//! `Server::<NativeMessage>::serve` reads stdin/stdout, which a test
+//! The native-messaging server reads stdin/stdout, which a test
 //! can't substitute. [`valet::protocol::native_msg::serve_io`] runs
 //! the same loop over any async byte streams; every test here drives
 //! it through a pair of `tokio::io::duplex` pipes standing in for
@@ -9,8 +9,11 @@
 //!
 //! Every test uses `StubHandler` so this file is independent of the
 //! other protocols. Cross-protocol composition (e.g. the
-//! `Server<NativeMessage>` + `Client<Socket>` relay) lives in
+//! [`NativeMessageServer`] + [`SocketClient`] relay) lives in
 //! [`super::multi`].
+//!
+//! [`NativeMessageServer`]: valet::protocol::NativeMessageServer
+//! [`SocketClient`]: valet::protocol::SocketClient
 
 use crate::common::envelope;
 use crate::common::stub::{STUB_LOT, STUB_USER, StubHandler};

@@ -12,9 +12,13 @@ use std::sync::Arc;
 use valet::db::Database;
 use valet::lot::DEFAULT_LOT;
 use valet::password::Password;
-use valet::protocol::{Client, embedded::Embedded};
+use valet::protocol::EmbeddedHandler;
+use valet::protocol::message::{
+    CreateLot, CreateRecord, DeleteLot, Fetch, History, List, ListLots, ListUsers, Register,
+    Unlock, Validate,
+};
 use valet::record::{Data, Label, LabelName, Query, Record, SaveProgress};
-use valet::{Handler, Lot};
+use valet::{Lot, SendHandler};
 
 #[derive(Parser)]
 #[command(version, about = crate_description!())]
@@ -141,19 +145,29 @@ async fn main() -> Result<(), CliError> {
         ValetCommand::User(UserCommand::Register { username }) => {
             let client = open_client(&cli.database).await?;
             let password = get_password()?;
-            client.register(username.clone(), password).await?;
+            client
+                .call(Register {
+                    username: username.clone(),
+                    password,
+                })
+                .await?;
             println!("{} registered", username);
         }
         ValetCommand::User(UserCommand::Validate { username }) => {
             let client = open_client(&cli.database).await?;
             let username = get_default_username(username, &client).await?;
             let password = get_password()?;
-            client.validate(username.clone(), password).await?;
+            client
+                .call(Validate {
+                    username: username.clone(),
+                    password,
+                })
+                .await?;
             println!("{} validated", username);
         }
         ValetCommand::User(UserCommand::List) => {
             let client = open_client(&cli.database).await?;
-            for user in client.list_users().await? {
+            for user in client.call(ListUsers).await? {
                 println!("{user}")
             }
         }
@@ -161,7 +175,12 @@ async fn main() -> Result<(), CliError> {
             let client = open_client(&cli.database).await?;
             let username = get_default_username(username, &client).await?;
             let password = get_password()?;
-            client.unlock(username.clone(), password).await?;
+            client
+                .call(Unlock {
+                    username: username.clone(),
+                    password,
+                })
+                .await?;
 
             let prompt = DefaultPrompt {
                 left_prompt: DefaultPromptSegment::Basic("valet".to_owned()),
@@ -212,19 +231,33 @@ async fn main() -> Result<(), CliError> {
     Ok(())
 }
 
-async fn open_client(database: &str) -> Result<Arc<Client<Embedded>>, CliError> {
+async fn open_client(database: &str) -> Result<Arc<EmbeddedHandler>, CliError> {
     let db = Database::new(database).await?;
-    Ok(Arc::new(Client::<Embedded>::new(db)))
+    Ok(Arc::new(EmbeddedHandler::new(
+        db,
+        &tokio::runtime::Handle::current(),
+    )))
 }
 
-async fn run_repl(rl: ClapEditor<Repl>, client: Arc<Client<Embedded>>, username: String) {
+async fn run_repl(rl: ClapEditor<Repl>, client: Arc<EmbeddedHandler>, username: String) {
     rl.repl_async(async |command| match &command {
         Repl::Lot(LotCommand::Create { name }) => {
-            if let Err(e) = client.create_lot(username.clone(), name.clone()).await {
+            if let Err(e) = client
+                .call(CreateLot {
+                    username: username.clone(),
+                    lot: name.clone(),
+                })
+                .await
+            {
                 println!("Failed to create lot: {e}");
             }
         }
-        Repl::Lot(LotCommand::List { uuid }) => match client.list_lots(username.clone()).await {
+        Repl::Lot(LotCommand::List { uuid }) => match client
+            .call(ListLots {
+                username: username.clone(),
+            })
+            .await
+        {
             Ok(lots) => {
                 for (lot_uuid, name) in lots {
                     if *uuid {
@@ -237,12 +270,24 @@ async fn run_repl(rl: ClapEditor<Repl>, client: Arc<Client<Embedded>>, username:
             Err(e) => println!("Failed to list lots: {e}"),
         },
         Repl::Lot(LotCommand::Delete { name }) => {
-            if let Err(e) = client.delete_lot(username.clone(), name.clone()).await {
+            if let Err(e) = client
+                .call(DeleteLot {
+                    username: username.clone(),
+                    lot: name.clone(),
+                })
+                .await
+            {
                 println!("Failed to delete lot: {e}");
             }
         }
         Repl::List { path, uuid } => {
-            let entries = match client.list(username.clone(), vec![path.clone()]).await {
+            let entries = match client
+                .call(List {
+                    username: username.clone(),
+                    queries: vec![path.clone()],
+                })
+                .await
+            {
                 Ok(es) => es,
                 Err(e) => {
                     println!("{e}");
@@ -277,13 +322,13 @@ async fn run_repl(rl: ClapEditor<Repl>, client: Arc<Client<Embedded>>, username:
             // `create_record` upserts by label name, so a repeated put
             // extends the existing record's storgit history.
             if let Err(e) = client
-                .create_record(
-                    username.clone(),
-                    target.lot,
-                    target.label,
+                .call(CreateRecord {
+                    username: username.clone(),
+                    lot: target.lot,
+                    label: target.label,
                     password,
-                    HashMap::new(),
-                )
+                    extra: HashMap::new(),
+                })
                 .await
             {
                 println!("Failed to save record: {e}");
@@ -306,7 +351,13 @@ async fn run_repl(rl: ClapEditor<Repl>, client: Arc<Client<Embedded>>, username:
             // to disambiguate against. Lot-name lookup per entry is
             // not exposed today; prompt by label and then fetch via
             // `fetch` (cross-lot by uuid).
-            let entries = match client.list(username.clone(), vec![path.clone()]).await {
+            let entries = match client
+                .call(List {
+                    username: username.clone(),
+                    queries: vec![path.clone()],
+                })
+                .await
+            {
                 Ok(es) => es,
                 Err(e) => {
                     println!("{e}");
@@ -352,7 +403,11 @@ async fn run_repl(rl: ClapEditor<Repl>, client: Arc<Client<Embedded>>, username:
                     }
                 };
                 match client
-                    .history(username.clone(), lot, record_uuid.clone())
+                    .call(History {
+                        username: username.clone(),
+                        lot,
+                        uuid: record_uuid.clone(),
+                    })
                     .await
                 {
                     Ok(revs) if revs.is_empty() => {
@@ -373,7 +428,13 @@ async fn run_repl(rl: ClapEditor<Repl>, client: Arc<Client<Embedded>>, username:
                     }
                 }
             } else {
-                match client.fetch(username.clone(), record_uuid.clone()).await {
+                match client
+                    .call(Fetch {
+                        username: username.clone(),
+                        uuid: record_uuid.clone(),
+                    })
+                    .await
+                {
                     Ok(record) => {
                         if *uuid {
                             println!("{} <{}>", record.password(), record.uuid());
@@ -407,14 +468,14 @@ async fn run_repl(rl: ClapEditor<Repl>, client: Arc<Client<Embedded>>, username:
 
 async fn get_default_username(
     provided: &Option<String>,
-    client: &Arc<Client<Embedded>>,
+    client: &Arc<EmbeddedHandler>,
 ) -> Result<String, CliError> {
     match provided {
         Some(username) => Ok(username.to_owned()),
         // TODO: We need proper CLI error types here.
         None => {
             // TODO: Add a configurable default user.
-            let usernames = client.list_users().await?;
+            let usernames = client.call(ListUsers).await?;
             if usernames.len() == 1 {
                 Ok(usernames[0].to_owned())
             } else {

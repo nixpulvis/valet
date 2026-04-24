@@ -1,13 +1,11 @@
-//! Unix-socket protocol: [`Client<Socket>`] forwards frames over a
-//! connected [`UnixStream`]; [`Server<Socket>`] listens on a
-//! [`UnixListener`] and hands each frame to whatever [`Handler`] the
-//! daemon gave it. Plus the socket-path resolution helpers
+//! Unix-socket protocol: [`SocketClient`] forwards frames over a
+//! connected [`UnixStream`]; [`SocketServer`] listens on a
+//! [`UnixListener`] and hands each frame to whatever [`SendHandler`]
+//! the daemon gave it. Plus the socket-path resolution helpers
 //! ([`path`] / [`default_path`]) that the daemon and every socket
 //! client share.
 //!
-//! [`Client<Socket>`]: crate::protocol::Client
-//! [`Server<Socket>`]: crate::protocol::Server
-//! [`Handler`]: crate::protocol::Handler
+//! [`SendHandler`]: crate::protocol::SendHandler
 //! [`UnixStream`]: tokio::net::UnixStream
 //! [`UnixListener`]: tokio::net::UnixListener
 
@@ -36,66 +34,54 @@ pub fn default_path() -> PathBuf {
     base.join("valet").join("valet.sock")
 }
 
-/// Wire-protocol marker for the length-prefixed bitcode framing carried
-/// over a Unix domain socket.
-pub struct Socket;
-
 #[cfg(feature = "protocol-socket")]
 pub use impl_protocol::{SocketClient, SocketServer};
 
 #[cfg(feature = "protocol-socket")]
-impl crate::protocol::Protocol for Socket {
-    type Client = impl_protocol::SocketClient;
-    type Server = impl_protocol::SocketServer;
-}
-
-#[cfg(feature = "protocol-socket")]
 mod impl_protocol {
-    use super::Socket;
     use crate::protocol::frame::Frame;
     use crate::protocol::message::{Request, Response};
-    use crate::protocol::{Client, Handler, Server};
+    use crate::protocol::{SendHandler, Serve};
     use std::io;
     use std::path::Path;
     use std::sync::Arc;
     use tokio::net::{UnixListener, UnixStream};
     use tokio::sync::Mutex;
 
-    /// State behind [`Client<Socket>`]. A connected stream guarded by
-    /// a mutex so concurrent [`Handler::handle`] callers serialize at
-    /// the socket; without it, two send+recv pairs could interleave
-    /// and the length-prefixed frame parser would trip `MAX_FRAME_LEN`
-    /// on the misaligned read.
+    /// Connected Unix-socket client. A stream guarded by a mutex so
+    /// concurrent [`SendHandler::handle`] callers serialize at the socket;
+    /// without it, two send+recv pairs could interleave and the
+    /// length-prefixed frame parser would trip `MAX_FRAME_LEN` on
+    /// the misaligned read.
     pub struct SocketClient {
         stream: Mutex<UnixStream>,
     }
 
-    /// State behind [`Server<Socket>`]. Holds the bound listener.
+    /// Bound Unix-socket listener. Run the accept loop via
+    /// [`Serve::serve`].
     pub struct SocketServer {
         listener: UnixListener,
     }
 
-    impl Client<Socket> {
+    impl SocketClient {
         /// Connect to a daemon listening at `path`.
         pub async fn connect(path: &Path) -> io::Result<Self> {
             let stream = UnixStream::connect(path).await?;
-            Ok(Client {
-                inner: SocketClient {
-                    stream: Mutex::new(stream),
-                },
+            Ok(SocketClient {
+                stream: Mutex::new(stream),
             })
         }
     }
 
-    impl Handler for Client<Socket> {
+    impl SendHandler for SocketClient {
         async fn handle(&self, req: Request) -> io::Result<Response> {
-            let mut stream = self.inner.stream.lock().await;
+            let mut stream = self.stream.lock().await;
             req.send_async(&mut *stream).await?;
             Response::recv_async(&mut *stream).await
         }
     }
 
-    impl Server<Socket> {
+    impl SocketServer {
         /// Bind a new Unix-socket listener at `path`. Creates the
         /// parent directory if needed and removes any stale socket
         /// file left over from a crashed prior run. If a live daemon
@@ -121,16 +107,14 @@ mod impl_protocol {
                 Err(e) => return Err(e),
             }
             let listener = UnixListener::bind(path)?;
-            Ok(Server {
-                inner: SocketServer { listener },
-            })
+            Ok(SocketServer { listener })
         }
+    }
 
-        /// Accept connections and dispatch every incoming request
-        /// through `handler`. Never returns under normal operation.
-        pub async fn serve<H: Handler + 'static>(self, handler: Arc<H>) -> io::Result<()> {
+    impl Serve for SocketServer {
+        async fn serve<H: SendHandler + 'static>(self, handler: Arc<H>) -> io::Result<()> {
             loop {
-                let (conn, _) = match self.inner.listener.accept().await {
+                let (conn, _) = match self.listener.accept().await {
                     Ok(x) => x,
                     Err(err) => {
                         tracing::warn!("accept failed: {err}");
@@ -147,7 +131,7 @@ mod impl_protocol {
         }
     }
 
-    async fn serve_conn<H: Handler>(mut conn: UnixStream, handler: Arc<H>) -> io::Result<()> {
+    async fn serve_conn<H: SendHandler>(mut conn: UnixStream, handler: Arc<H>) -> io::Result<()> {
         loop {
             let req = match Request::recv_async(&mut conn).await {
                 Ok(r) => r,

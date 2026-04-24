@@ -6,13 +6,14 @@ use eframe::egui::{Button, CentralPanel, Context, Id, Key, TextEdit, ViewportCom
 use egui_inbox::UiInbox;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use valet::Handler;
+use valet::SendHandler;
 use valet::password::Password;
-use valet::protocol::{Client, embedded::Embedded};
+use valet::protocol::EmbeddedHandler;
+use valet::protocol::message::{Register, Unlock};
 
 pub struct Locked<'a> {
     // TODO: come up with a better organization for these shared values.
-    client: &'a Arc<Client<Embedded>>,
+    client: &'a Arc<EmbeddedHandler>,
     rt: &'a Runtime,
     active_user: &'a mut Option<String>,
     login_inbox: &'a UiInbox<String>,
@@ -20,7 +21,7 @@ pub struct Locked<'a> {
 
 impl<'a> Locked<'a> {
     pub fn new(
-        client: &'a Arc<Client<Embedded>>,
+        client: &'a Arc<EmbeddedHandler>,
         rt: &'a Runtime,
         active_user: &'a mut Option<String>,
         login_inbox: &'a UiInbox<String>,
@@ -74,7 +75,14 @@ impl<'a> View for Locked<'a> {
                     let client = self.client.clone();
                     let tx = self.login_inbox.sender();
                     self.rt.spawn(async move {
-                        if client.unlock(username.clone(), password).await.is_ok() {
+                        if client
+                            .call(Unlock {
+                                username: username.clone(),
+                                password,
+                            })
+                            .await
+                            .is_ok()
+                        {
                             tx.send(username).ok();
                         }
                     });
@@ -86,7 +94,14 @@ impl<'a> View for Locked<'a> {
                     let client = self.client.clone();
                     let tx = self.login_inbox.sender();
                     self.rt.spawn(async move {
-                        if client.register(username.clone(), password).await.is_ok() {
+                        if client
+                            .call(Register {
+                                username: username.clone(),
+                                password,
+                            })
+                            .await
+                            .is_ok()
+                        {
                             tx.send(username).ok();
                         }
                     });

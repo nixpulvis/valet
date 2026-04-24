@@ -1,58 +1,63 @@
-//! C ABI surface over the typed [`Client<P>`] API.
+//! C ABI surface over the typed [`Handler::call`] API.
 //!
 //! Structure:
 //!
-//! * [`ValetClient`] - opaque handle holding a `Client<P>` plus a
-//!   tokio runtime to block on its async methods. `P` is picked at
-//!   compile time via the `protocol-*` features; exactly one
-//!   constructor is visible per build.
+//! * [`ValetClient`] - opaque handle holding a concrete [`Handler`]
+//!   plus a tokio runtime to block on its async methods. The handler
+//!   type is feature-selected at compile time ([`EmbeddedHandler`]
+//!   with `protocol-embedded`, otherwise [`SocketClient`]); exactly
+//!   one constructor is visible per build.
 //! * Per-protocol constructors: `valet_ffi_client_new_embedded`,
 //!   `valet_ffi_client_new_socket`. Each is gated on its protocol
 //!   feature; with both enabled, `protocol-embedded` wins by
 //!   precedence.
 //! * Per-method shims: `valet_ffi_client_status`, `_unlock`, `_list`,
 //!   `_find_records`, `_fetch`, `_list_users`, `_free`. These don't
-//!   care which protocol the handle wraps; they call the shared typed
-//!   method surface on `Client<P>`.
+//!   care which handler the handle wraps; they issue typed [`Call`]s
+//!   through the shared [`Handler::call`] surface.
 //!
 //! Shared types (`ValetStr`, `ValetRecordIndex`, `ValetRecord`,
 //! `VALET_FFI_*` return codes, `valet_ffi_last_error`,
 //! `valet_ffi_record_index_free`, `valet_ffi_record_free`) come from
 //! [`crate::ffi`] so clients never link two diverging copies.
 //!
-//! [`Client<P>`]: super::Client
+//! [`Handler`]: super::Handler
+//! [`Handler::call`]: super::Handler::call
+//! [`Call`]: crate::protocol::message::Call
+//! [`EmbeddedHandler`]: crate::protocol::EmbeddedHandler
+//! [`SocketClient`]: crate::protocol::SocketClient
 
-use super::{Client, Error as ClientError, Handler};
+use super::{Error as ClientError, Handler};
 use crate::ffi::{
     self, FfiError, VALET_FFI_ERR_INVALID_ARG, VALET_FFI_ERR_INVALID_UTF8, VALET_FFI_ERR_IO,
     VALET_FFI_ERR_NULL_ARG, VALET_FFI_ERR_PASSWORD_TOO_LONG, VALET_FFI_ERR_PROTOCOL, ValetRecord,
     ValetRecordIndex, ValetStrList,
 };
+#[cfg(feature = "protocol-embedded")]
+use crate::protocol::EmbeddedHandler;
+#[cfg(all(feature = "protocol-socket", not(feature = "protocol-embedded")))]
+use crate::protocol::SocketClient;
+use crate::protocol::message::{FindRecords, List, ListUsers, Status, Unlock};
 use crate::{Record, password::Password, uuid::Uuid};
+#[cfg(all(feature = "protocol-socket", not(feature = "protocol-embedded")))]
+use std::path::Path;
 use std::{ffi::CStr, io, os::raw::c_char, ptr, slice};
 use tokio::runtime::Runtime;
 
+/// The concrete handler the linked staticlib wraps. Feature-selected
+/// at compile time: with `protocol-embedded` the handle carries an
+/// in-proc local handler; otherwise with `protocol-socket` it
+/// carries a socket client.
 #[cfg(feature = "protocol-embedded")]
-use super::embedded::Embedded;
+type Inner = EmbeddedHandler;
 #[cfg(all(feature = "protocol-socket", not(feature = "protocol-embedded")))]
-use super::socket::Socket;
-#[cfg(all(feature = "protocol-socket", not(feature = "protocol-embedded")))]
-use std::path::Path;
-
-/// The concrete `Client<P>` the linked staticlib wraps. Feature-
-/// selected at compile time: with `protocol-embedded` the handle
-/// carries an in-proc local client; otherwise with `protocol-socket`
-/// it carries a socket client.
-#[cfg(feature = "protocol-embedded")]
-type Inner = Client<Embedded>;
-#[cfg(all(feature = "protocol-socket", not(feature = "protocol-embedded")))]
-type Inner = Client<Socket>;
+type Inner = SocketClient;
 
 /// Opaque FFI handle. The C side only ever sees `*mut ValetClient`.
 ///
 /// Owns a multi-threaded tokio runtime used to drive the async
-/// `Client<P>` methods to completion synchronously - the C ABI is
-/// blocking. The inner client takes `&self` and does its own locking,
+/// handler methods to completion synchronously - the C ABI is
+/// blocking. The inner handler takes `&self` and does its own locking,
 /// so concurrent C callers are serialized correctly without a second
 /// mutex here.
 pub struct ValetClient {
@@ -188,7 +193,7 @@ pub unsafe extern "C" fn valet_ffi_client_new_embedded(
         let db = rt
             .block_on(crate::db::Database::new(&path))
             .map_err(|e| FfiCallError::Io(io::Error::other(format!("{e:?}"))))?;
-        let inner = Client::<Embedded>::new(db);
+        let inner = EmbeddedHandler::new(db, rt.handle());
         let boxed = Box::new(ValetClient { inner, rt });
         unsafe { *out = Box::into_raw(boxed) };
         Ok(())
@@ -212,7 +217,7 @@ pub unsafe extern "C" fn valet_ffi_client_new_socket(
         not_null(out, "out")?;
         let path = unsafe { cstr_to_string(socket_path, "socket_path") }?;
         let rt = new_runtime()?;
-        let inner = rt.block_on(Client::<Socket>::connect(Path::new(&path)))?;
+        let inner = rt.block_on(SocketClient::connect(Path::new(&path)))?;
         let boxed = Box::new(ValetClient { inner, rt });
         unsafe { *out = Box::into_raw(boxed) };
         Ok(())
@@ -245,7 +250,10 @@ pub unsafe extern "C" fn valet_ffi_client_unlock(
             .as_str()
             .try_into()
             .map_err(|_| FfiCallError::PasswordTooLong)?;
-        client.rt.block_on(client.inner.unlock(username, pw))?;
+        client.rt.block_on(client.inner.call(Unlock {
+            username,
+            password: pw,
+        }))?;
         Ok(())
     })())
 }
@@ -265,7 +273,7 @@ pub unsafe extern "C" fn valet_ffi_client_status(
     ffi::report((|| -> Result<(), FfiCallError> {
         let client = unsafe { borrow(client) }?;
         not_null(out, "out")?;
-        let users = client.rt.block_on(client.inner.status())?;
+        let users = client.rt.block_on(client.inner.call(Status))?;
         unsafe { ptr::write(out, ValetStrList::from_strings(users)) };
         Ok(())
     })())
@@ -282,7 +290,7 @@ pub unsafe extern "C" fn valet_ffi_client_list_users(
     ffi::report((|| -> Result<(), FfiCallError> {
         let client = unsafe { borrow(client) }?;
         not_null(out, "out")?;
-        let users = client.rt.block_on(client.inner.list_users())?;
+        let users = client.rt.block_on(client.inner.call(ListUsers))?;
         unsafe { ptr::write(out, ValetStrList::from_strings(users)) };
         Ok(())
     })())
@@ -314,7 +322,9 @@ pub unsafe extern "C" fn valet_ffi_client_list(
         not_null(out, "out")?;
         let username = unsafe { cstr_to_string(username, "username") }?;
         let queries = unsafe { collect_queries(queries, query_lens, queries_count) }?;
-        let entries = client.rt.block_on(client.inner.list(username, queries))?;
+        let entries = client
+            .rt
+            .block_on(client.inner.call(List { username, queries }))?;
         unsafe { ptr::write(out, ValetRecordIndex::from_entries(&entries)) };
         Ok(())
     })())
@@ -372,9 +382,11 @@ pub unsafe extern "C" fn valet_ffi_client_find_records(
         let username = unsafe { cstr_to_string(username, "username") }?;
         let lot = unsafe { cstr_to_string(lot, "lot") }?;
         let query = unsafe { bytes_to_string(domain, domain_len, "domain") }?;
-        let entries = client
-            .rt
-            .block_on(client.inner.find_records(username, lot, query))?;
+        let entries = client.rt.block_on(client.inner.call(FindRecords {
+            username,
+            lot,
+            query,
+        }))?;
         unsafe { ptr::write(out, ValetRecordIndex::from_entries(&entries)) };
         Ok(())
     })())
@@ -407,7 +419,11 @@ pub unsafe extern "C" fn valet_ffi_client_fetch(
         let uuid_str = unsafe { bytes_to_string(uuid, uuid_len, "uuid") }?;
         let uuid: Uuid<Record> =
             Uuid::parse(&uuid_str).map_err(|_| FfiCallError::InvalidUuid("uuid"))?;
-        let record = client.rt.block_on(client.inner.fetch(username, uuid))?;
+        let record = client.rt.block_on(
+            client
+                .inner
+                .call(crate::protocol::message::Fetch { username, uuid }),
+        )?;
         unsafe { ptr::write(out, ValetRecord::from_record(&record)) };
         Ok(())
     })())

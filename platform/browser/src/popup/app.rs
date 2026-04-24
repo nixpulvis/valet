@@ -6,10 +6,13 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 use stylist::yew::{Global, styled_component};
+use valet::Handler;
 use valet::Record;
-use valet::Request;
 use valet::lot::DEFAULT_LOT;
 use valet::password::Password;
+use valet::protocol::message::{
+    CreateRecord, FindRecords, GetRecord, ListUsers, LockAll, Status, Unlock,
+};
 use valet::record::Label;
 use valet::uuid::Uuid;
 use wasm_bindgen_futures::spawn_local;
@@ -17,7 +20,7 @@ use web_sys::{HtmlInputElement, HtmlSelectElement};
 use yew::prelude::*;
 
 use super::browser;
-use crate::rpc;
+use crate::protocol;
 
 /// How long (ms) before the clipboard is cleared after copying a password.
 const CLIPBOARD_CLEAR_MS: u32 = 20_000;
@@ -76,8 +79,7 @@ pub fn app() -> Html {
                     needs_permissions.set(true);
                 }
 
-                let result: Result<Vec<String>, valet::protocol::message::Error<rpc::Error>> =
-                    async { Ok(rpc::call(Request::Status).await?.expect_users()?) }.await;
+                let result = protocol::NativeMessageClient.call(Status).await;
                 match result {
                     Ok(unlocked) => {
                         tracing::debug!(count = unlocked.len(), "status check ok");
@@ -151,9 +153,7 @@ pub fn app() -> Html {
             let session = session.clone();
             let message = message.clone();
             spawn_local(async move {
-                let result: Result<(), valet::protocol::message::Error<rpc::Error>> =
-                    async { Ok(rpc::call(Request::LockAll).await?.expect_ok()?) }.await;
-                match result {
+                match protocol::NativeMessageClient.call(LockAll).await {
                     Ok(()) => tracing::debug!("locked all users"),
                     Err(e) => tracing::warn!(error = %e, "lock_all failed"),
                 }
@@ -243,9 +243,7 @@ fn lock_view(props: &LockProps) -> Html {
         let set_message = props.set_message.clone();
         use_effect_with((), move |_| {
             spawn_local(async move {
-                let result: Result<Vec<String>, valet::protocol::message::Error<rpc::Error>> =
-                    async { Ok(rpc::call(Request::ListUsers).await?.expect_users()?) }.await;
-                match result {
+                match protocol::NativeMessageClient.call(ListUsers).await {
                     Ok(list) => {
                         if list.is_empty() {
                             set_message.emit(Message::Error(
@@ -305,15 +303,12 @@ fn lock_view(props: &LockProps) -> Html {
                         return;
                     }
                 };
-                let result: Result<(), valet::protocol::message::Error<rpc::Error>> = async {
-                    Ok(rpc::call(Request::Unlock {
+                let result = protocol::NativeMessageClient
+                    .call(Unlock {
                         username: u.clone(),
                         password,
                     })
-                    .await?
-                    .expect_ok()?)
-                }
-                .await;
+                    .await;
                 match result {
                     Ok(()) => {
                         let domain = browser::current_tab_domain().await;
@@ -426,19 +421,13 @@ fn unlocked_view(props: &UnlockedProps) -> Html {
             match session.domain.clone() {
                 None => records.set(Vec::new()),
                 Some(domain) => spawn_local(async move {
-                    let result: Result<
-                        Vec<(Uuid<Record>, Label)>,
-                        valet::protocol::message::Error<rpc::Error>,
-                    > = async {
-                        Ok(rpc::call(Request::FindRecords {
+                    let result = protocol::NativeMessageClient
+                        .call(FindRecords {
                             username: session.username.clone(),
                             lot: session.lot.clone(),
                             query: domain.clone(),
                         })
-                        .await?
-                        .expect_index()?)
-                    }
-                    .await;
+                        .await;
                     match result {
                         Ok(list) => {
                             tracing::debug!(domain = %domain, count = list.len(), "records loaded");
@@ -470,16 +459,13 @@ fn unlocked_view(props: &UnlockedProps) -> Html {
                         return;
                     }
                 };
-                let result: Result<Record, valet::protocol::message::Error<rpc::Error>> = async {
-                    Ok(rpc::call(Request::GetRecord {
+                let result = protocol::NativeMessageClient
+                    .call(GetRecord {
                         username: session.username.clone(),
                         lot: session.lot.clone(),
                         uuid: parsed_uuid,
                     })
-                    .await?
-                    .expect_record()?)
-                }
-                .await;
+                    .await;
                 match result {
                     Ok(record) => {
                         if let Err(e) = browser::copy_to_clipboard(record.password().as_str()).await
@@ -566,18 +552,15 @@ fn unlocked_view(props: &UnlockedProps) -> Html {
                         return;
                     }
                 };
-                let result: Result<Record, valet::protocol::message::Error<rpc::Error>> = async {
-                    Ok(rpc::call(Request::CreateRecord {
+                let result = protocol::NativeMessageClient
+                    .call(CreateRecord {
                         username: session.username.clone(),
                         lot: session.lot.clone(),
                         label: parsed_label,
                         password,
                         extra: HashMap::<String, String>::new(),
                     })
-                    .await?
-                    .expect_record()?)
-                }
-                .await;
+                    .await;
                 match result {
                     Ok(_record) => {
                         tracing::debug!(label = %label, "record saved");
