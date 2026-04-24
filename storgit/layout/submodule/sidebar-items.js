@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ModuleChange"],"struct":["Parts","Snapshot","SubmoduleLayout"],"type":["ModuleFetcher","Modules"]};
