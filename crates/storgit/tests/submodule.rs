@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use common::{get_data, mkid, put_data};
 use storgit::layout::submodule::{Modules, Parts};
-use storgit::{Entry, Id, ModuleChange, Store};
+use storgit::{Id, ModuleChange, Store};
 
 fn empty() -> Parts {
     Parts {
@@ -405,9 +405,7 @@ fn gitmodules_parses_as_git_submodule_config() {
 fn snapshot_backing(entries: &[(&str, &[u8])]) -> (Vec<u8>, Modules) {
     let mut store = Store::open(empty()).unwrap();
     for (name, data) in entries {
-        store
-            .put(&mkid(name), Some(b"label"), Some(data))
-            .unwrap();
+        store.put(&mkid(name), Some(b"label"), Some(data)).unwrap();
     }
     let mut parts = empty();
     parts.apply(store.snapshot().unwrap());
@@ -509,6 +507,30 @@ fn fetcher_error_propagates_as_error_fetch() {
         msg.contains("fetch") && msg.contains("db unreachable"),
         "error should carry the fetch source; got: {msg}",
     );
+}
+
+#[test]
+fn delete_drops_entry_and_history() {
+    // Hard-delete erases the submodule's history entirely -- a
+    // submodule-only property since subdir can't cheaply rewrite a
+    // shared ref.
+    let mut store = Store::open(empty()).unwrap();
+    put_data(&mut store, "gone", b"bye");
+    store.delete(&mkid("gone")).unwrap();
+    assert!(store.list().unwrap().is_empty());
+    assert!(store.get(&mkid("gone")).unwrap().is_none());
+    assert!(store.history(&mkid("gone")).unwrap().is_empty());
+}
+
+#[test]
+fn re_put_after_delete_starts_fresh_history() {
+    let mut store = Store::open(empty()).unwrap();
+    put_data(&mut store, "alpha", b"v1");
+    store.delete(&mkid("alpha")).unwrap();
+    put_data(&mut store, "alpha", b"v2");
+    let history = store.history(&mkid("alpha")).unwrap();
+    let payloads: Vec<Option<&[u8]>> = history.iter().map(|e| e.data.as_deref()).collect();
+    assert_eq!(payloads, vec![Some(&b"v2"[..])]);
 }
 
 #[test]

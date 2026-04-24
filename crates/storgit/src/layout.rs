@@ -13,6 +13,7 @@ use crate::entry::{CommitId, Entry};
 use crate::error::Error;
 use crate::id::Id;
 
+pub mod subdir;
 pub mod submodule;
 
 pub trait Layout {
