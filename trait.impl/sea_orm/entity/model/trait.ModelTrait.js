@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["valet",[["impl ModelTrait for <a class=\"struct\" href=\"valet/lot/orm/struct.Model.html\" title=\"struct valet::lot::orm::Model\">Model</a>",0],["impl ModelTrait for <a class=\"struct\" href=\"valet/lot/orm/struct.ModelEx.html\" title=\"struct valet::lot::orm::ModelEx\">ModelEx</a>",0],["impl ModelTrait for <a class=\"struct\" href=\"valet/lot/orm/user_lots/struct.Model.html\" title=\"struct valet::lot::orm::user_lots::Model\">Model</a>",0],["impl ModelTrait for <a class=\"struct\" href=\"valet/lot/orm/user_lots/struct.ModelEx.html\" title=\"struct valet::lot::orm::user_lots::ModelEx\">ModelEx</a>",0],["impl ModelTrait for <a class=\"struct\" href=\"valet/record/orm/struct.Model.html\" title=\"struct valet::record::orm::Model\">Model</a>",0],["impl ModelTrait for <a class=\"struct\" href=\"valet/record/orm/struct.ModelEx.html\" title=\"struct valet::record::orm::ModelEx\">ModelEx</a>",0],["impl ModelTrait for <a class=\"struct\" href=\"valet/user/orm/struct.Model.html\" title=\"struct valet::user::orm::Model\">Model</a>",0],["impl ModelTrait for <a class=\"struct\" href=\"valet/user/orm/struct.ModelEx.html\" title=\"struct valet::user::orm::ModelEx\">ModelEx</a>",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[1189]}

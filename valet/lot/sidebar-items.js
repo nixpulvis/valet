@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["DEFAULT_LOT"],"enum":["Error"],"struct":["Lot"]};
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_LOT"],"enum":["Error"],"mod":["orm"],"struct":["Lot"]};

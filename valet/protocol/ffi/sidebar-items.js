@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["valet_ffi_client_fetch","valet_ffi_client_find_records","valet_ffi_client_free","valet_ffi_client_list","valet_ffi_client_list_users","valet_ffi_client_new_embedded","valet_ffi_client_status","valet_ffi_client_unlock"],"struct":["ValetClient"]};

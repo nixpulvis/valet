@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PasswordEvent"],"fn":["spawn_fetch"],"struct":["RecordRow"]};

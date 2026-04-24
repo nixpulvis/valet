@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["MAX_FRAME_LEN"],"enum":["DecodeError"],"trait":["Frame"]};
+window.SIDEBAR_ITEMS = {"constant":["MAX_FRAME_LEN"],"enum":["DecodeError"],"fn":["recv_frame_async","send_frame_async"],"trait":["Frame"]};

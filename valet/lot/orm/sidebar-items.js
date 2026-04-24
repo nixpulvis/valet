@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["COLUMN"],"enum":["Column","PrimaryKey","RelatedEntity","Relation"],"mod":["user_lots"],"struct":["ActiveModel","ActiveModelEx","ColumnIter","Entity","EntityLoader","EntityLoaderNest","EntityLoaderWith","EntityReverse","Model","ModelEx","PrimaryKeyIter","RelatedEntityIter","RelationIter","TypedColumn"],"trait":["EntityLoaderWithParam"]};

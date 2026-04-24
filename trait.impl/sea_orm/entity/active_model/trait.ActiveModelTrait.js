@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["valet",[["impl ActiveModelTrait for <a class=\"struct\" href=\"valet/lot/orm/struct.ActiveModel.html\" title=\"struct valet::lot::orm::ActiveModel\">ActiveModel</a>",0],["impl ActiveModelTrait for <a class=\"struct\" href=\"valet/lot/orm/struct.ActiveModelEx.html\" title=\"struct valet::lot::orm::ActiveModelEx\">ActiveModelEx</a>",0],["impl ActiveModelTrait for <a class=\"struct\" href=\"valet/lot/orm/user_lots/struct.ActiveModel.html\" title=\"struct valet::lot::orm::user_lots::ActiveModel\">ActiveModel</a>",0],["impl ActiveModelTrait for <a class=\"struct\" href=\"valet/lot/orm/user_lots/struct.ActiveModelEx.html\" title=\"struct valet::lot::orm::user_lots::ActiveModelEx\">ActiveModelEx</a>",0],["impl ActiveModelTrait for <a class=\"struct\" href=\"valet/record/orm/struct.ActiveModel.html\" title=\"struct valet::record::orm::ActiveModel\">ActiveModel</a>",0],["impl ActiveModelTrait for <a class=\"struct\" href=\"valet/record/orm/struct.ActiveModelEx.html\" title=\"struct valet::record::orm::ActiveModelEx\">ActiveModelEx</a>",0],["impl ActiveModelTrait for <a class=\"struct\" href=\"valet/user/orm/struct.ActiveModel.html\" title=\"struct valet::user::orm::ActiveModel\">ActiveModel</a>",0],["impl ActiveModelTrait for <a class=\"struct\" href=\"valet/user/orm/struct.ActiveModelEx.html\" title=\"struct valet::user::orm::ActiveModelEx\">ActiveModelEx</a>",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[1381]}

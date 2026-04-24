@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Backend","Transport"],"fn":["auto_transport","main","parse_backend","run_native_msg","run_socket"],"struct":["Args"]};
+window.SIDEBAR_ITEMS = {"enum":["Backend","Transport"],"fn":["auto_transport","build_embedded_handler","main","parse_backend","run_native_msg","run_socket"],"mod":["native_msg_cli","socket_cli"],"struct":["Args"]};

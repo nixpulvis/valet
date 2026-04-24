@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["MAX_SIZE"],"struct":["NativeMessage","NativeMessageClient","NativePayload","NativeReply","NativeRequest"],"type":["NativeId"]};
+window.SIDEBAR_ITEMS = {"constant":["MAX_SIZE"],"fn":["serve_io"],"struct":["NativeMessage","NativeMessageClient","NativeMessageServer","NativePayload","NativeReply","NativeRequest"],"type":["NativeId"]};
