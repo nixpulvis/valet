@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_FRAME_LEN"],"enum":["DecodeError"],"trait":["Frame"]};

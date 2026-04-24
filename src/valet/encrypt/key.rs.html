@@ -70,7 +70,7 @@
 <a href=#70 id=70 data-nosnippet>70</a>
 <a href=#71 id=71 data-nosnippet>71</a>    <span class="kw">pub fn </span>encrypt_with_aad(<span class="kw-2">&amp;</span><span class="self">self</span>, plaintext: <span class="kw-2">&amp;</span>[u8], aad: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="prelude-ty">Result</span>&lt;Encrypted, Error&gt; {
 <a href=#72 id=72 data-nosnippet>72</a>        <span class="kw">let </span><span class="kw-2">mut </span>nonce = Nonce::default();
-<a href=#73 id=73 data-nosnippet>73</a>        OsRng.fill_bytes(<span class="kw-2">&amp;mut </span>nonce.as_mut_slice());
+<a href=#73 id=73 data-nosnippet>73</a>        OsRng.fill_bytes(nonce.as_mut_slice());
 <a href=#74 id=74 data-nosnippet>74</a>
 <a href=#75 id=75 data-nosnippet>75</a>        <span class="kw">let </span>cipher = Aes256GcmSiv::new(<span class="kw-2">&amp;</span><span class="self">self</span>.<span class="number">0</span>);
 <a href=#76 id=76 data-nosnippet>76</a>        <span class="kw">let </span>ciphertext = cipher

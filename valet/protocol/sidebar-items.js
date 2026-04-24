@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Error"],"mod":["embedded","frame","message"],"struct":["Client","Embedded"],"trait":["Handler","LocalHandler","Protocol"],"type":["Never"]};

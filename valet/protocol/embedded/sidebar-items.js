@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["FAILED_UNLOCK_DELAY_MS","IDLE_CHECK_INTERVAL","IDLE_TIMEOUT"],"struct":["Embedded","EmbeddedClient","State"]};

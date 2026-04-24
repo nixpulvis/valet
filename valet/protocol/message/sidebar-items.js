@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Error","Request","Response","ResponseError"],"fn":["domain_matches","label_matches_domain"],"struct":["RevisionEntry"]};
