@@ -73,7 +73,7 @@ logging = ["dep:tracing-subscriber"]
 # Enables the SQLite database layer (`db` module, CRUD operations on
 # `User`/`Lot`/`Record`, and the `prelude` convenience re-exports).
 # Without this feature the crate is a pure encryption/data library.
-db = ["dep:sqlx", "dep:sea-orm", "dep:url", "dep:storgit", "dep:tokio"]
+db = ["dep:sqlx", "dep:sea-orm", "dep:url", "dep:storgit", "dep:tempfile", "dep:tokio"]
 
 # Expose the SeaORM entity modules as `pub` instead of `pub(crate)`.
 orm = []
@@ -163,6 +163,7 @@ futures = { version = "0.3", default-features = false, features = ["std"], optio
 # Storage (db/user/lot/record)
 sea-orm = { version = "2.0.0-rc.37", features = ["sqlx-sqlite", "runtime-tokio-rustls"], optional = true }
 storgit = { path = "crates/storgit", optional = true }
+tempfile = { version = "3.10", optional = true }
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"], optional = true }
 url = { version = "2.5", optional = true }
 
