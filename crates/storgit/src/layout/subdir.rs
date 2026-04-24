@@ -9,13 +9,14 @@ use gix::objs::{
     tree::{Entry as TreeEntry, EntryKind},
 };
 
-use crate::entry::{CommitId, Entry};
+use crate::entry::Entry;
+use crate::id::CommitId;
 use crate::error::Error;
 use crate::git::{
     BRANCH, decode_tree, init_bare_on_branch, module_ref_path, read_ref_file, write_commit,
     write_ref_file,
 };
-use crate::id::Id;
+use crate::id::EntryId;
 use crate::layout::Layout;
 use crate::module::{DATA_FILE, LABEL_FILE};
 use crate::tarball::tar_dir;
@@ -39,7 +40,7 @@ const RECORDS_DIR: &str = "records";
 /// # Tree shape
 ///
 /// The tip commit's root tree has a single `records/` subtree. Inside
-/// `records/`, each live entry is a subtree named by its [`Id`]
+/// `records/`, each live entry is a subtree named by its [`EntryId`]
 /// carrying up to two blobs:
 ///
 /// - `data`, the entry's payload bytes
@@ -85,12 +86,12 @@ const RECORDS_DIR: &str = "records";
 /// # Label cache
 ///
 /// [`Layout::label`] and [`Layout::list_labels`] are served from an
-/// in-memory `label_cache` keyed by [`Id`]. The cache is populated on
+/// in-memory `label_cache` keyed by [`EntryId`]. The cache is populated on
 /// [`Layout::open`] by walking `HEAD:records/` once, and kept current
 /// by `put` and `archive`.
 pub struct SubdirLayout {
     path: PathBuf,
-    label_cache: BTreeMap<Id, Vec<u8>>,
+    label_cache: BTreeMap<EntryId, Vec<u8>>,
 }
 
 impl SubdirLayout {
@@ -106,7 +107,7 @@ impl SubdirLayout {
     fn id_subtree_oid(
         repo: &gix::Repository,
         root_tree_id: gix::ObjectId,
-        id: &Id,
+        id: &EntryId,
     ) -> Result<Option<gix::ObjectId>, Error> {
         let Some(records_oid) = subtree_entry(repo, root_tree_id, RECORDS_DIR)? else {
             return Ok(None);
@@ -131,7 +132,7 @@ impl SubdirLayout {
             if !matches!(entry.mode.kind(), EntryKind::Tree) {
                 continue;
             }
-            let id = Id::new(entry.filename.to_string()).map_err(|e| {
+            let id = EntryId::new(entry.filename.to_string()).map_err(|e| {
                 Error::Other(format!("corrupt records/ entry {:?}: {e}", entry.filename))
             })?;
             let id_tree = decode_tree(&repo, entry.oid)?;
@@ -196,7 +197,7 @@ impl Layout for SubdirLayout {
 
     fn put(
         &mut self,
-        id: &Id,
+        id: &EntryId,
         label: Option<&[u8]>,
         data: Option<&[u8]>,
     ) -> Result<Option<CommitId>, Error> {
@@ -293,7 +294,7 @@ impl Layout for SubdirLayout {
         Ok(Some(commit_id.into()))
     }
 
-    fn get(&self, id: &Id) -> Result<Option<Entry>, Error> {
+    fn get(&self, id: &EntryId) -> Result<Option<Entry>, Error> {
         let repo = self.open_repo()?;
         let Some(head) = self.head_commit(&repo)? else {
             return Ok(None);
@@ -306,7 +307,7 @@ impl Layout for SubdirLayout {
         Ok(Some(read_subdir_entry_at(&repo, head, id)?))
     }
 
-    fn archive(&mut self, id: &Id) -> Result<(), Error> {
+    fn archive(&mut self, id: &EntryId) -> Result<(), Error> {
         let repo = self.open_repo()?;
         let Some(prior_commit) = self.head_commit(&repo)? else {
             return Ok(());
@@ -331,7 +332,7 @@ impl Layout for SubdirLayout {
         Ok(())
     }
 
-    fn delete(&mut self, id: &Id) -> Result<(), Error> {
+    fn delete(&mut self, id: &EntryId) -> Result<(), Error> {
         // A single-ref layout can't cheaply erase history for one
         // record without rewriting the ref. For now `delete` behaves
         // like `archive`: the entry is removed from the tree, and the
@@ -339,7 +340,7 @@ impl Layout for SubdirLayout {
         self.archive(id)
     }
 
-    fn list(&self) -> Result<Vec<Id>, Error> {
+    fn list(&self) -> Result<Vec<EntryId>, Error> {
         let repo = self.open_repo()?;
         let Some(head) = self.head_commit(&repo)? else {
             return Ok(Vec::new());
@@ -355,7 +356,7 @@ impl Layout for SubdirLayout {
             if !matches!(entry.mode.kind(), EntryKind::Tree) {
                 continue;
             }
-            let id = Id::new(entry.filename.to_string()).map_err(|e| {
+            let id = EntryId::new(entry.filename.to_string()).map_err(|e| {
                 Error::Other(format!("corrupt records/ entry {:?}: {e}", entry.filename))
             })?;
             out.push(id);
@@ -363,7 +364,7 @@ impl Layout for SubdirLayout {
         Ok(out)
     }
 
-    fn history(&self, id: &Id) -> Result<Vec<Entry>, Error> {
+    fn history(&self, id: &EntryId) -> Result<Vec<Entry>, Error> {
         let repo = self.open_repo()?;
         let Some(head) = self.head_commit(&repo)? else {
             return Ok(Vec::new());
@@ -391,11 +392,11 @@ impl Layout for SubdirLayout {
         Ok(out)
     }
 
-    fn label(&self, id: &Id) -> Option<&[u8]> {
+    fn label(&self, id: &EntryId) -> Option<&[u8]> {
         self.label_cache.get(id).map(Vec::as_slice)
     }
 
-    fn list_labels(&self) -> Vec<(Id, Vec<u8>)> {
+    fn list_labels(&self) -> Vec<(EntryId, Vec<u8>)> {
         self.label_cache
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -410,7 +411,7 @@ impl Layout for SubdirLayout {
 fn write_records_tree(
     repo: &gix::Repository,
     prior_records_oid: Option<gix::ObjectId>,
-    id: &Id,
+    id: &EntryId,
     new_id_subtree: Option<gix::ObjectId>,
 ) -> Result<Option<gix::ObjectId>, Error> {
     let mut entries: Vec<TreeEntry> = match prior_records_oid {
@@ -470,7 +471,7 @@ fn write_root_tree(
 fn read_subdir_entry_at(
     repo: &gix::Repository,
     commit_id: gix::ObjectId,
-    id: &Id,
+    id: &EntryId,
 ) -> Result<Entry, Error> {
     let commit = repo.find_object(commit_id)?.into_commit();
     let sig = commit.committer()?;

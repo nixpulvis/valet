@@ -1,17 +1,6 @@
 use std::time::SystemTime;
 
-/// A git commit identifier (SHA-1, 20 bytes).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CommitId(pub [u8; 20]);
-
-impl From<gix::ObjectId> for CommitId {
-    fn from(id: gix::ObjectId) -> Self {
-        let slice = id.as_slice();
-        let mut out = [0u8; 20];
-        out.copy_from_slice(&slice[..20]);
-        CommitId(out)
-    }
-}
+use crate::id::CommitId;
 
 /// A single historical version of an entry.
 ///

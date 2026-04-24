@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use common::{get_data, mkid, put_data};
 use storgit::layout::submodule::{ModuleChange, ModuleFetcher, Modules, Parts};
-use storgit::{Id, Store, SubmoduleLayout};
+use storgit::{EntryId, Store, SubmoduleLayout};
 use tempfile::TempDir;
 
 fn empty() -> Parts {
@@ -55,7 +55,7 @@ fn open_with(parts: Parts) -> (TempDir, Store<SubmoduleLayout>) {
 #[derive(Clone)]
 struct BackingStore {
     modules: Arc<Mutex<Modules>>,
-    calls: Arc<Mutex<Vec<Id>>>,
+    calls: Arc<Mutex<Vec<EntryId>>>,
 }
 
 impl BackingStore {
@@ -70,14 +70,14 @@ impl BackingStore {
         self.modules.lock().unwrap().extend(modules);
     }
 
-    fn calls(&self) -> Vec<Id> {
+    fn calls(&self) -> Vec<EntryId> {
         self.calls.lock().unwrap().clone()
     }
 
     fn fetcher(&self) -> ModuleFetcher {
         let modules = self.modules.clone();
         let calls = self.calls.clone();
-        Arc::new(move |id: &Id| {
+        Arc::new(move |id: &EntryId| {
             calls.lock().unwrap().push(id.clone());
             Ok(modules.lock().unwrap().get(id).cloned())
         })
@@ -572,7 +572,7 @@ fn fetcher_error_propagates_as_error_fetch() {
         .tempdir()
         .unwrap();
     let path = scratch.path().join("repo");
-    let fetcher: ModuleFetcher = Arc::new(|_id: &Id| Err("db unreachable".into()));
+    let fetcher: ModuleFetcher = Arc::new(|_id: &EntryId| Err("db unreachable".into()));
     let store = Store::<SubmoduleLayout>::new(path)
         .unwrap()
         .with_parts(parts)

@@ -5,9 +5,10 @@
 
 use std::path::PathBuf;
 
-use crate::entry::{CommitId, Entry};
+use crate::entry::Entry;
+use crate::id::CommitId;
 use crate::error::Error;
-use crate::id::Id;
+use crate::id::EntryId;
 use crate::layout::Layout;
 use crate::layout::submodule::SubmoduleLayout;
 
@@ -54,7 +55,7 @@ impl<L: Layout> Store<L> {
     /// `data` slots. See [`Layout::put`].
     pub fn put(
         &mut self,
-        id: &Id,
+        id: &EntryId,
         label: Option<&[u8]>,
         data: Option<&[u8]>,
     ) -> Result<Option<CommitId>, Error> {
@@ -62,40 +63,40 @@ impl<L: Layout> Store<L> {
     }
 
     /// Return the latest [`Entry`] for `id`. See [`Layout::get`].
-    pub fn get(&self, id: &Id) -> Result<Option<Entry>, Error> {
+    pub fn get(&self, id: &EntryId) -> Result<Option<Entry>, Error> {
         self.layout.get(id)
     }
 
     /// Soft-delete `id`. See [`Layout::archive`].
-    pub fn archive(&mut self, id: &Id) -> Result<(), Error> {
+    pub fn archive(&mut self, id: &EntryId) -> Result<(), Error> {
         self.layout.archive(id)
     }
 
     /// Hard-delete `id`. See [`Layout::delete`].
-    pub fn delete(&mut self, id: &Id) -> Result<(), Error> {
+    pub fn delete(&mut self, id: &EntryId) -> Result<(), Error> {
         self.layout.delete(id)
     }
 
     /// List the ids of all live entries. See [`Layout::list`].
-    pub fn list(&self) -> Result<Vec<Id>, Error> {
+    pub fn list(&self) -> Result<Vec<EntryId>, Error> {
         self.layout.list()
     }
 
     /// Walk every historical version of `id`, newest first.
     /// See [`Layout::history`].
-    pub fn history(&self, id: &Id) -> Result<Vec<Entry>, Error> {
+    pub fn history(&self, id: &EntryId) -> Result<Vec<Entry>, Error> {
         self.layout.history(id)
     }
 
     /// Return the current label blob for `id`, if any.
     /// See [`Layout::label`].
-    pub fn label(&self, id: &Id) -> Option<&[u8]> {
+    pub fn label(&self, id: &EntryId) -> Option<&[u8]> {
         self.layout.label(id)
     }
 
     /// Return every live entry with a non-empty label.
     /// See [`Layout::list_labels`].
-    pub fn list_labels(&self) -> Vec<(Id, Vec<u8>)> {
+    pub fn list_labels(&self) -> Vec<(EntryId, Vec<u8>)> {
         self.layout.list_labels()
     }
 }

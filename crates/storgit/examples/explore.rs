@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use storgit::layout::Layout;
 use storgit::layout::subdir::SubdirLayout;
 use storgit::layout::submodule::SubmoduleLayout;
-use storgit::{Id, Store};
+use storgit::{EntryId, Store};
 
 enum LayoutChoice {
     Submodule,
@@ -62,10 +62,10 @@ fn run<L: Layout>(store: &mut Store<L>) -> Result<(), Box<dyn std::error::Error>
 /// Put a handful of entries covering the interesting states: new,
 /// updated (history), archived (tombstone), deleted.
 fn populate<L: Layout>(store: &mut Store<L>) -> Result<(), Box<dyn std::error::Error>> {
-    let github = Id::new("0194a3c1-1111-7000-8000-000000000001")?;
-    let email = Id::new("0194a3c1-2222-7000-8000-000000000002")?;
-    let scratch = Id::new("0194a3c1-3333-7000-8000-000000000003")?;
-    let old_key = Id::new("0194a3c1-4444-7000-8000-000000000004")?;
+    let github = EntryId::new("0194a3c1-1111-7000-8000-000000000001")?;
+    let email = EntryId::new("0194a3c1-2222-7000-8000-000000000002")?;
+    let scratch = EntryId::new("0194a3c1-3333-7000-8000-000000000003")?;
+    let old_key = EntryId::new("0194a3c1-4444-7000-8000-000000000004")?;
 
     store.put(&github, Some(b"github"), Some(b"hunter2"))?;
     store.put(&github, Some(b"github"), Some(b"hunter3"))?; // two commits now

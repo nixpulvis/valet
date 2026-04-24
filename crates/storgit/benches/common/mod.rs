@@ -9,7 +9,7 @@ use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
 use criterion::{BenchmarkGroup, SamplingMode, measurement::WallTime};
-use storgit::Id;
+use storgit::EntryId;
 use storgit::Store;
 use storgit::layout::Layout;
 
@@ -216,14 +216,14 @@ pub fn set_sampling_mode(group: &mut BenchmarkGroup<'_, WallTime>, n: usize, thr
     group.sampling_mode(mode);
 }
 
-pub fn entry_id(i: usize) -> Id {
-    Id::new(format!("entry-{i:06}")).expect("id")
+pub fn entry_id(i: usize) -> EntryId {
+    EntryId::new(format!("entry-{i:06}")).expect("id")
 }
 
-/// Id namespace distinct from [`entry_id`] so benches can put fresh
+/// EntryId namespace distinct from [`entry_id`] so benches can put fresh
 /// entries onto a pre-populated corpus without collisions.
-pub fn new_id(i: usize) -> Id {
-    Id::new(format!("new-{i:06}")).expect("id")
+pub fn new_id(i: usize) -> EntryId {
+    EntryId::new(format!("new-{i:06}")).expect("id")
 }
 
 pub struct Handle<L: Layout> {

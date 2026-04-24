@@ -11,7 +11,7 @@ use common::{get_data, mkid, put_data};
 use storgit::layout::Layout;
 use storgit::layout::subdir::SubdirLayout;
 use storgit::layout::submodule::SubmoduleLayout;
-use storgit::{CommitId, Entry, Id, Store, id};
+use storgit::{CommitId, Entry, EntryId, Store, id};
 
 macro_rules! store_test {
     ($name:ident, |$store:ident| $body:block) => {
@@ -376,61 +376,61 @@ directory_test!(load_rejects_nonempty_target, |tmp| {
     );
 });
 
-// -- Id validation (layout-independent) --------------------------------
+// -- EntryId validation (layout-independent) --------------------------------
 
 #[test]
 fn id_rejects_empty() {
-    assert_eq!(Id::new(""), Err(id::Error::Empty));
+    assert_eq!(EntryId::new(""), Err(id::EntryIdError::Empty));
 }
 
 #[test]
 fn id_rejects_slash_and_nul() {
-    assert_eq!(Id::new("a/b"), Err(id::Error::BadChar('/')));
-    assert_eq!(Id::new("a\0b"), Err(id::Error::BadChar('\0')));
+    assert_eq!(EntryId::new("a/b"), Err(id::EntryIdError::BadChar('/')));
+    assert_eq!(EntryId::new("a\0b"), Err(id::EntryIdError::BadChar('\0')));
 }
 
 #[test]
 fn id_rejects_quote_and_backslash() {
-    assert_eq!(Id::new("a\"b"), Err(id::Error::BadChar('"')));
-    assert_eq!(Id::new("a\\b"), Err(id::Error::BadChar('\\')));
+    assert_eq!(EntryId::new("a\"b"), Err(id::EntryIdError::BadChar('"')));
+    assert_eq!(EntryId::new("a\\b"), Err(id::EntryIdError::BadChar('\\')));
 }
 
 #[test]
 fn id_rejects_control_chars() {
-    assert_eq!(Id::new("a\nb"), Err(id::Error::BadChar('\n')));
-    assert_eq!(Id::new("a\tb"), Err(id::Error::BadChar('\t')));
-    assert_eq!(Id::new("a\rb"), Err(id::Error::BadChar('\r')));
-    assert_eq!(Id::new("a\x01b"), Err(id::Error::BadChar('\x01')));
-    assert_eq!(Id::new("a\x7fb"), Err(id::Error::BadChar('\x7f')));
+    assert_eq!(EntryId::new("a\nb"), Err(id::EntryIdError::BadChar('\n')));
+    assert_eq!(EntryId::new("a\tb"), Err(id::EntryIdError::BadChar('\t')));
+    assert_eq!(EntryId::new("a\rb"), Err(id::EntryIdError::BadChar('\r')));
+    assert_eq!(EntryId::new("a\x01b"), Err(id::EntryIdError::BadChar('\x01')));
+    assert_eq!(EntryId::new("a\x7fb"), Err(id::EntryIdError::BadChar('\x7f')));
 }
 
 #[test]
 fn id_rejects_leading_dot() {
-    assert_eq!(Id::new(".foo"), Err(id::Error::LeadingDot));
-    assert_eq!(Id::new("."), Err(id::Error::LeadingDot));
-    assert_eq!(Id::new(".."), Err(id::Error::LeadingDot));
+    assert_eq!(EntryId::new(".foo"), Err(id::EntryIdError::LeadingDot));
+    assert_eq!(EntryId::new("."), Err(id::EntryIdError::LeadingDot));
+    assert_eq!(EntryId::new(".."), Err(id::EntryIdError::LeadingDot));
 }
 
 #[test]
 fn id_rejects_git_suffix() {
-    assert_eq!(Id::new("foo.git"), Err(id::Error::GitSuffix));
+    assert_eq!(EntryId::new("foo.git"), Err(id::EntryIdError::GitSuffix));
 }
 
 #[test]
 fn id_rejects_reserved_names() {
-    assert_eq!(Id::new("index"), Err(id::Error::Reserved));
+    assert_eq!(EntryId::new("index"), Err(id::EntryIdError::Reserved));
 }
 
 #[test]
 fn id_rejects_too_long() {
-    let long = "a".repeat(Id::MAX_LEN + 1);
-    assert!(matches!(Id::new(long), Err(id::Error::TooLong { .. })));
+    let long = "a".repeat(EntryId::MAX_LEN + 1);
+    assert!(matches!(EntryId::new(long), Err(id::EntryIdError::TooLong { .. })));
 }
 
 #[test]
 fn id_accepts_reasonable_strings() {
-    Id::new("alpha").unwrap();
-    Id::new("alpha-beta").unwrap();
-    Id::new("user@example.com").unwrap();
-    Id::new("01945e9b-3e3f-7b2a-b8ab-8a52c82d4c01").unwrap();
+    EntryId::new("alpha").unwrap();
+    EntryId::new("alpha-beta").unwrap();
+    EntryId::new("user@example.com").unwrap();
+    EntryId::new("01945e9b-3e3f-7b2a-b8ab-8a52c82d4c01").unwrap();
 }

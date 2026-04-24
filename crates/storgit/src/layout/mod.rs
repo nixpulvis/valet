@@ -23,9 +23,10 @@
 
 use std::path::PathBuf;
 
-use crate::entry::{CommitId, Entry};
+use crate::entry::Entry;
+use crate::id::CommitId;
 use crate::error::Error;
-use crate::id::Id;
+use crate::id::EntryId;
 use crate::tarball::untar_into;
 
 pub mod subdir;
@@ -78,44 +79,44 @@ pub trait Layout: Sized {
     /// returned. Otherwise returns the new [`CommitId`].
     fn put(
         &mut self,
-        id: &Id,
+        id: &EntryId,
         label: Option<&[u8]>,
         data: Option<&[u8]>,
     ) -> Result<Option<CommitId>, Error>;
 
     /// Return the latest [`Entry`] for `id`, or `None` if `id` is not
     /// currently live (never written, archived, or deleted).
-    fn get(&self, id: &Id) -> Result<Option<Entry>, Error>;
+    fn get(&self, id: &EntryId) -> Result<Option<Entry>, Error>;
 
     /// Soft-delete `id`: record a tombstone commit so the entry stops
     /// appearing in [`Layout::list`] / [`Layout::get`], but its prior
     /// versions remain reachable via [`Layout::history`]. Archiving
     /// an unknown or already-archived id is a no-op.
-    fn archive(&mut self, id: &Id) -> Result<(), Error>;
+    fn archive(&mut self, id: &EntryId) -> Result<(), Error>;
 
     /// Hard-delete `id`: remove the entry and, where the layout
     /// supports it, its history as well. Layouts that cannot cheaply
     /// erase per-entry history may fall back to the same behaviour
     /// as [`Layout::archive`]; see the per-layout docs. Deleting an
     /// unknown id is a no-op.
-    fn delete(&mut self, id: &Id) -> Result<(), Error>;
+    fn delete(&mut self, id: &EntryId) -> Result<(), Error>;
 
     /// List the ids of all live entries, in arbitrary order.
     /// Archived and deleted ids are excluded.
-    fn list(&self) -> Result<Vec<Id>, Error>;
+    fn list(&self) -> Result<Vec<EntryId>, Error>;
 
     /// Walk every historical version of `id`, newest first. Includes
     /// the tombstone commit for archived entries. Returns an empty
     /// vec if `id` has no history in this store.
-    fn history(&self, id: &Id) -> Result<Vec<Entry>, Error>;
+    fn history(&self, id: &EntryId) -> Result<Vec<Entry>, Error>;
 
     /// Return the current label blob for `id`, or `None` if `id` is
     /// not live or its label slot is absent/empty. Served from an
     /// in-memory cache, so this is cheap and does not hit the repo.
-    fn label(&self, id: &Id) -> Option<&[u8]>;
+    fn label(&self, id: &EntryId) -> Option<&[u8]>;
 
     /// Return every live entry whose label slot is non-empty, paired
     /// with that label blob. Served from the same in-memory cache as
     /// [`Layout::label`].
-    fn list_labels(&self) -> Vec<(Id, Vec<u8>)>;
+    fn list_labels(&self) -> Vec<(EntryId, Vec<u8>)>;
 }

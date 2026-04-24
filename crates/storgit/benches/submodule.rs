@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use criterion::{Throughput, criterion_group, criterion_main};
 use storgit::layout::submodule::{ModuleChange, Parts, Snapshot};
-use storgit::{Id, Store, SubmoduleLayout};
+use storgit::{EntryId, Store, SubmoduleLayout};
 
 use common::{Handle, entry_id, new_id};
 
@@ -29,7 +29,7 @@ use common::{Handle, entry_id, new_id};
 #[derive(Clone, Default)]
 struct Storage {
     parent: Vec<u8>,
-    modules: HashMap<Id, Vec<u8>>,
+    modules: HashMap<EntryId, Vec<u8>>,
 }
 
 impl Storage {
@@ -125,7 +125,7 @@ bench!(bench_new_with_parts,
 bench!(bench_lazy_get,
     seed: |n| {
         let storage = build_storage(common::CORPUS_SIZE);
-        let pairs: Vec<(Id, Vec<u8>)> = (0..n)
+        let pairs: Vec<(EntryId, Vec<u8>)> = (0..n)
             .map(|i| {
                 let id = entry_id(i % common::CORPUS_SIZE);
                 let bytes = storage.modules.get(&id).cloned().expect("module row");

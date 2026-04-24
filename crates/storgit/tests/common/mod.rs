@@ -14,10 +14,10 @@ use std::path::{Path, PathBuf};
 use storgit::layout::Layout;
 use storgit::layout::subdir::SubdirLayout;
 use storgit::layout::submodule::SubmoduleLayout;
-use storgit::{Id, Store};
+use storgit::{EntryId, Store};
 
-pub fn mkid(s: &str) -> Id {
-    Id::new(s).unwrap()
+pub fn mkid(s: &str) -> EntryId {
+    EntryId::new(s).unwrap()
 }
 
 pub fn put_data<L: Layout>(store: &mut Store<L>, id_str: &str, data: &[u8]) {

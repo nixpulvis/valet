@@ -11,13 +11,14 @@ use gix::objs::{
     tree::{Entry as TreeEntry, EntryKind},
 };
 
-use crate::entry::{CommitId, Entry};
+use crate::entry::Entry;
+use crate::id::CommitId;
 use crate::error::Error;
 use crate::git::{
     BRANCH, drop_loose_object, init_bare_on_branch, module_ref_path, read_ref_file, write_commit,
     write_ref_file,
 };
-use crate::id::Id;
+use crate::id::EntryId;
 use crate::layout::Layout;
 use crate::module::{read_entry_at, write_entry_commit, write_tombstone_commit};
 use crate::parent::{GITMODULES_FILE, INDEX_DIR, load_parent_state, serialize_gitmodules};
@@ -30,8 +31,8 @@ const PARENT_DIR: &str = "parent.git";
 /// dir. Each `<id>.git/` is a full bare repo with its own objects.
 const MODULES_DIR: &str = "modules";
 
-/// Map from entry [`Id`] to the bytes of that module's tarball.
-pub type Modules = HashMap<Id, Vec<u8>>;
+/// Map from entry [`EntryId`] to the bytes of that module's tarball.
+pub type Modules = HashMap<EntryId, Vec<u8>>;
 
 /// Caller-supplied lookup for module bytes. Called by
 /// [`SubmoduleLayout`] when an operation first touches an id whose
@@ -48,7 +49,7 @@ pub type Modules = HashMap<Id, Vec<u8>>;
 /// - `Err(e)` - lookup itself failed; the op fails with
 ///   [`crate::Error::Fetch`].
 pub type ModuleFetcher = Arc<
-    dyn Fn(&Id) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync + 'static>>
+    dyn Fn(&EntryId) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync + 'static>>
         + Send
         + Sync,
 >;
@@ -75,7 +76,7 @@ pub struct Parts {
     /// Tarball of the parent bare repo.
     pub parent: Vec<u8>,
     /// Tarball of each submodule bare repo the caller has in hand,
-    /// keyed by entry [`Id`]. With no fetcher, this is the complete
+    /// keyed by entry [`EntryId`]. With no fetcher, this is the complete
     /// set of live modules; with a fetcher, it's an optional prewarm
     /// cache consulted before the fetcher.
     pub modules: Modules,
@@ -136,7 +137,7 @@ pub struct Snapshot {
     pub parent: Option<Vec<u8>>,
     /// Touched submodules only. Ids absent from this map are
     /// unchanged in storage.
-    pub modules: HashMap<Id, ModuleChange>,
+    pub modules: HashMap<EntryId, ModuleChange>,
 }
 
 /// What happened to a submodule between two snapshots.
@@ -173,11 +174,11 @@ enum ModuleDirt {
 /// The parent repo's `refs/heads/storgit` points at a single commit whose
 /// tree holds:
 ///
-/// - one gitlink per live entry, filename is the entry's [`Id`], oid is the
+/// - one gitlink per live entry, filename is the entry's [`EntryId`], oid is the
 ///   submodule's head commit
 /// - `.gitmodules`, a serialised manifest of the gitlink set, so the parent
 ///   is a valid git submodule parent that `git submodule` can drive
-/// - `index/`, a subtree of blobs keyed by [`Id`] carrying each entry's
+/// - `index/`, a subtree of blobs keyed by [`EntryId`] carrying each entry's
 ///   label bytes. This mirrors the label cache without having to clone the
 ///   entry's submodule to read it
 ///
@@ -211,9 +212,9 @@ enum ModuleDirt {
 pub struct SubmoduleLayout {
     path: PathBuf,
     dirty_parent: bool,
-    dirty_modules: HashMap<Id, ModuleDirt>,
-    gitlinks: BTreeMap<Id, gix::ObjectId>,
-    label_cache: BTreeMap<Id, Vec<u8>>,
+    dirty_modules: HashMap<EntryId, ModuleDirt>,
+    gitlinks: BTreeMap<EntryId, gix::ObjectId>,
+    label_cache: BTreeMap<EntryId, Vec<u8>>,
     gitlinks_dirty: bool,
     pending_modules: Mutex<Modules>,
     fetcher: Option<ModuleFetcher>,
@@ -224,22 +225,22 @@ impl SubmoduleLayout {
         self.path.join(PARENT_DIR)
     }
 
-    fn module_path(&self, id: &Id) -> PathBuf {
+    fn module_path(&self, id: &EntryId) -> PathBuf {
         self.path
             .join(MODULES_DIR)
             .join(format!("{}.git", id.as_str()))
     }
 
-    fn current_module_commit(&self, id: &Id) -> Option<gix::ObjectId> {
+    fn current_module_commit(&self, id: &EntryId) -> Option<gix::ObjectId> {
         self.gitlinks.get(id).copied()
     }
 
-    fn mark_module_changed(&mut self, id: &Id) {
+    fn mark_module_changed(&mut self, id: &EntryId) {
         self.dirty_parent = true;
         self.dirty_modules.insert(id.clone(), ModuleDirt::Changed);
     }
 
-    fn mark_module_deleted(&mut self, id: &Id) {
+    fn mark_module_deleted(&mut self, id: &EntryId) {
         self.dirty_parent = true;
         self.dirty_modules.insert(id.clone(), ModuleDirt::Deleted);
     }
@@ -251,7 +252,7 @@ impl SubmoduleLayout {
     /// [`Parts::fetcher`]. If neither path produces bytes and the id
     /// is live in the parent, return an error so the caller knows the
     /// backing store has diverged from the parent's gitlink set.
-    fn ensure_loaded(&self, id: &Id) -> Result<(), Error> {
+    fn ensure_loaded(&self, id: &EntryId) -> Result<(), Error> {
         let mod_path = self.module_path(id);
         if mod_path.exists() {
             return Ok(());
@@ -428,7 +429,7 @@ impl Layout for SubmoduleLayout {
 
     fn save(&mut self) -> Result<Vec<u8>, Error> {
         self.flush_parent()?;
-        let live: Vec<Id> = self.gitlinks.keys().cloned().collect();
+        let live: Vec<EntryId> = self.gitlinks.keys().cloned().collect();
         for id in &live {
             self.ensure_loaded(id)?;
         }
@@ -437,7 +438,7 @@ impl Layout for SubmoduleLayout {
 
     fn put(
         &mut self,
-        id: &Id,
+        id: &EntryId,
         label: Option<&[u8]>,
         data: Option<&[u8]>,
     ) -> Result<Option<CommitId>, Error> {
@@ -471,7 +472,7 @@ impl Layout for SubmoduleLayout {
         Ok(Some(module_commit.into()))
     }
 
-    fn get(&self, id: &Id) -> Result<Option<Entry>, Error> {
+    fn get(&self, id: &EntryId) -> Result<Option<Entry>, Error> {
         let Some(commit) = self.current_module_commit(id) else {
             return Ok(None);
         };
@@ -480,7 +481,7 @@ impl Layout for SubmoduleLayout {
         Ok(Some(read_entry_at(&repo, commit)?))
     }
 
-    fn archive(&mut self, id: &Id) -> Result<(), Error> {
+    fn archive(&mut self, id: &EntryId) -> Result<(), Error> {
         if !self.gitlinks.contains_key(id) {
             return Ok(());
         }
@@ -494,7 +495,7 @@ impl Layout for SubmoduleLayout {
         Ok(())
     }
 
-    fn delete(&mut self, id: &Id) -> Result<(), Error> {
+    fn delete(&mut self, id: &EntryId) -> Result<(), Error> {
         let mod_path = self.module_path(id);
         if mod_path.exists() {
             std::fs::remove_dir_all(&mod_path)?;
@@ -508,11 +509,11 @@ impl Layout for SubmoduleLayout {
         Ok(())
     }
 
-    fn list(&self) -> Result<Vec<Id>, Error> {
+    fn list(&self) -> Result<Vec<EntryId>, Error> {
         Ok(self.gitlinks.keys().cloned().collect())
     }
 
-    fn history(&self, id: &Id) -> Result<Vec<Entry>, Error> {
+    fn history(&self, id: &EntryId) -> Result<Vec<Entry>, Error> {
         self.ensure_loaded(id)?;
         let mod_path = self.module_path(id);
         if !mod_path.exists() {
@@ -530,11 +531,11 @@ impl Layout for SubmoduleLayout {
         Ok(out)
     }
 
-    fn label(&self, id: &Id) -> Option<&[u8]> {
+    fn label(&self, id: &EntryId) -> Option<&[u8]> {
         self.label_cache.get(id).map(Vec::as_slice)
     }
 
-    fn list_labels(&self) -> Vec<(Id, Vec<u8>)> {
+    fn list_labels(&self) -> Vec<(EntryId, Vec<u8>)> {
         self.label_cache
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -668,7 +669,7 @@ impl Store<SubmoduleLayout> {
     /// Make `bytes` (a previously-persisted module tarball) available
     /// to the store under `id`. The next operation that touches `id`
     /// will untar these bytes into the store's path on first access.
-    pub fn load_module(&mut self, id: Id, bytes: Vec<u8>) {
+    pub fn load_module(&mut self, id: EntryId, bytes: Vec<u8>) {
         self.layout
             .pending_modules
             .get_mut()

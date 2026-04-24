@@ -4,7 +4,7 @@
 //! labeled data. The store provides a thin wrapper around the [`Layout`]
 //! interface, as well as layout specific constructors and storage methods.
 //!
-//! Each entry is keyed by an opaque [`Id`] and carries two optional payloads
+//! Each entry is keyed by an opaque [`EntryId`] and carries two optional payloads
 //! inside every commit: a [`label`][label] (cached metadata the caller wants
 //! to scan without reading from git) and a [`data`][data] blob (the actual
 //! record). The store's [`put`][put] method writes a commit and updates the
@@ -33,9 +33,9 @@ mod parent;
 mod store;
 mod tarball;
 
-pub use entry::{CommitId, Entry};
+pub use entry::Entry;
 pub use error::Error;
-pub use id::Id;
+pub use id::{CommitId, EntryId};
 pub use layout::subdir::SubdirLayout;
 pub use layout::submodule::SubmoduleLayout;
 pub use store::Store;
