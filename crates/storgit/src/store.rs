@@ -3,6 +3,7 @@
 //! [`Store::<SubmoduleLayout>::open`] / [`Store::<SubmoduleLayout>::snapshot`])
 //! via inherent impls in each layout's module.
 
+use std::io;
 use std::path::PathBuf;
 
 use crate::entry::Entry;
@@ -37,17 +38,24 @@ impl<L: Layout> Store<L> {
         })
     }
 
-    /// Bundle the store into a single self-contained tarball.
-    /// See [`Layout::save`].
+    /// Bundle the store into a single self-contained snap-compressed
+    /// tarball. See [`Layout::save`].
     pub fn save(&mut self) -> Result<Vec<u8>, Error> {
-        self.layout.save()
+        let tarball = self.layout.save()?;
+        let mut compressed = Vec::new();
+        let mut encoder = snap::read::FrameEncoder::new(tarball.as_slice());
+        io::copy(&mut encoder, &mut compressed)?;
+        Ok(compressed)
     }
 
-    /// Untar `bytes` into `path` and open the resulting repo.
-    /// See [`Layout::load`].
+    /// Snap-decompress `bytes`, untar into `path`, and open the
+    /// resulting repo. See [`Layout::load`].
     pub fn load(bytes: &[u8], path: PathBuf) -> Result<Self, Error> {
+        let mut tarball = Vec::new();
+        let mut decoder = snap::read::FrameDecoder::new(bytes);
+        io::copy(&mut decoder, &mut tarball)?;
         Ok(Store {
-            layout: L::load(bytes, path)?,
+            layout: L::load(&tarball, path)?,
         })
     }
 

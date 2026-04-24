@@ -240,10 +240,7 @@ fn fresh_module_stays_under_1kb_on_disk() {
     put_data(&mut store, "alpha", b"payload");
     let bytes = store.save().unwrap();
 
-    let tmp = tempfile::tempdir().unwrap();
-    tar::Archive::new(std::io::Cursor::new(bytes))
-        .unpack(tmp.path())
-        .unwrap();
+    let tmp = extract_to_tmp(&bytes);
     let module = tmp.path().join("modules").join("alpha.git");
     let size = dir_size(&module).unwrap();
     assert!(
@@ -283,10 +280,7 @@ fn parent_objects_stay_bounded_after_many_puts() {
     }
     let bytes = store.save().unwrap();
 
-    let tmp = tempfile::tempdir().unwrap();
-    tar::Archive::new(std::io::Cursor::new(bytes))
-        .unpack(tmp.path())
-        .unwrap();
+    let tmp = extract_to_tmp(&bytes);
     let parent_objects = tmp.path().join("parent.git").join("objects");
     let loose = count_loose_objects(&parent_objects);
     assert!(
@@ -323,10 +317,7 @@ fn parent_history_is_squashed_to_one_commit() {
     store.delete(&mkid("entry-0001")).unwrap();
 
     let bytes = store.save().unwrap();
-    let tmp = tempfile::tempdir().unwrap();
-    tar::Archive::new(std::io::Cursor::new(bytes))
-        .unpack(tmp.path())
-        .unwrap();
+    let tmp = extract_to_tmp(&bytes);
     let parent = gix::open(tmp.path().join("parent.git")).unwrap();
     let head = parent.head_commit().unwrap();
     let count = head.ancestors().all().unwrap().count();
@@ -397,7 +388,13 @@ fn label_cache_survives_parts_roundtrip() {
 
 fn extract_to_tmp(bytes: &[u8]) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
-    tar::Archive::new(std::io::Cursor::new(bytes))
+    let mut tarball = Vec::new();
+    std::io::copy(
+        &mut snap::read::FrameDecoder::new(bytes),
+        &mut tarball,
+    )
+    .unwrap();
+    tar::Archive::new(std::io::Cursor::new(tarball))
         .unpack(tmp.path())
         .unwrap();
     tmp
