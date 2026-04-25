@@ -1,6 +1,10 @@
 //! The submodule layout, i.e. `<path>/parent.git/` +
 //! `<path>/modules/<id>/{data,label}`
 
+mod merge;
+mod module;
+pub(crate) mod parent;
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -11,25 +15,47 @@ use gix::objs::{
     tree::{Entry as TreeEntry, EntryKind},
 };
 
+use self::module::ModuleRepo;
+use self::parent::{GITMODULES_FILE, INDEX_DIR, ParentTree, serialize_gitmodules};
 use crate::entry::Entry;
 use crate::error::Error;
-use crate::git::{
-    BRANCH, drop_loose_object, init_bare_on_branch, module_ref_path, read_ref_file, write_commit,
-    write_ref_file,
-};
+use crate::git::{BareRepo, init_bare_on_branch, write_commit};
 use crate::id::CommitId;
 use crate::id::EntryId;
 use crate::layout::Layout;
-use crate::module::{read_entry_at, write_entry_commit, write_tombstone_commit};
-use crate::parent::{GITMODULES_FILE, INDEX_DIR, load_parent_state, serialize_gitmodules};
 use crate::store::Store;
 use crate::tarball::{tar_dir, untar_into};
 
 /// Parent bare repo directory inside the scratch dir.
-const PARENT_DIR: &str = "parent.git";
+pub(crate) const PARENT_DIR: &str = "parent.git";
 /// Directory holding per-entry submodule bare repos inside the scratch
 /// dir. Each `<id>.git/` is a full bare repo with its own objects.
-const MODULES_DIR: &str = "modules";
+pub(crate) const MODULES_DIR: &str = "modules";
+
+/// Initialise the per-id module bare repo under `<root>/modules/<id>.git`
+/// if it doesn't already exist. No-op when present.
+pub(crate) fn ensure_module_repo(root: &std::path::Path, id: &EntryId) -> Result<(), Error> {
+    let mod_path = root.join(MODULES_DIR).join(format!("{}.git", id.as_str()));
+    if !mod_path.exists() {
+        init_bare_on_branch(&mod_path)?;
+    }
+    Ok(())
+}
+
+/// Derive the per-module fetch URL from the parent's remote URL.
+/// Convention: parent URLs end in `/parent.git`; replace that segment
+/// with `/modules/<id>.git`. Works for any scheme (file, ssh, https).
+/// Errors if `parent_url` doesn't end in `/parent.git`.
+pub(crate) fn derive_module_url(parent_url: &str, id: &EntryId) -> Result<String, Error> {
+    let trimmed = parent_url.trim_end_matches('/');
+    let base = trimmed.strip_suffix("/parent.git").ok_or_else(|| {
+        Error::Other(format!(
+            "remote URL {parent_url:?} does not end in /parent.git; \
+             cannot derive module URLs"
+        ))
+    })?;
+    Ok(format!("{base}/modules/{}.git", id.as_str()))
+}
 
 /// Map from entry [`EntryId`] to the bytes of that module's tarball.
 pub type Modules = HashMap<EntryId, Vec<u8>>;
@@ -71,7 +97,7 @@ pub type ModuleFetcher = Arc<
 /// - With a fetcher: [`Parts::modules`] is a prewarm cache consulted
 ///   first; misses fall through to the fetcher, whose answer is
 ///   authoritative.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Parts {
     /// Tarball of the parent bare repo.
     pub parent: Vec<u8>,
@@ -187,10 +213,10 @@ enum ModuleDirt {
 /// content, which is how submodules pin a specific revision of a nested repo
 /// from their parent's tree.
 ///
-/// The parent's history is kept to a single orphan commit: every flush
-/// writes a new tree, commits it with no parents, repoints the ref, and
-/// prunes the superseded loose objects. Callers who only need the live set
-/// never see stale gitlinks, and the parent's object DB stays bounded.
+/// The parent keeps a real commit chain: each flush writes a new commit
+/// whose parent is the prior HEAD. This lets `gix::merge_base` find the
+/// common ancestor between two parent histories during sync, which the
+/// merge kernel uses to disambiguate adds from archives on each side.
 ///
 /// # Per-entry repos
 ///
@@ -221,26 +247,60 @@ pub struct SubmoduleLayout {
 }
 
 impl SubmoduleLayout {
-    fn parent_path(&self) -> PathBuf {
+    pub(crate) fn parent_path(&self) -> PathBuf {
         self.path.join(PARENT_DIR)
     }
 
-    fn module_path(&self, id: &EntryId) -> PathBuf {
+    pub(crate) fn module_path(&self, id: &EntryId) -> PathBuf {
         self.path
             .join(MODULES_DIR)
             .join(format!("{}.git", id.as_str()))
+    }
+
+    pub(crate) fn root_path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    pub(crate) fn gitlinks(&self) -> &BTreeMap<EntryId, gix::ObjectId> {
+        &self.gitlinks
+    }
+
+    pub(crate) fn set_gitlink(&mut self, id: EntryId, oid: gix::ObjectId) {
+        self.gitlinks.insert(id.clone(), oid);
+        self.label_cache.remove(&id);
+        self.gitlinks_dirty = true;
+        self.mark_module_changed(&id);
+    }
+
+    pub(crate) fn refresh_label_for(&mut self, id: &EntryId, label: Option<Vec<u8>>) {
+        match label {
+            Some(b) if !b.is_empty() => {
+                self.label_cache.insert(id.clone(), b);
+            }
+            _ => {
+                self.label_cache.remove(id);
+            }
+        }
+    }
+
+    pub(crate) fn flush_parent_pub(&mut self) -> Result<(), Error> {
+        self.flush_parent()
+    }
+
+    pub(crate) fn pending_modules_mut(&mut self) -> &mut Modules {
+        self.pending_modules.get_mut().unwrap()
     }
 
     fn current_module_commit(&self, id: &EntryId) -> Option<gix::ObjectId> {
         self.gitlinks.get(id).copied()
     }
 
-    fn mark_module_changed(&mut self, id: &EntryId) {
+    pub(crate) fn mark_module_changed(&mut self, id: &EntryId) {
         self.dirty_parent = true;
         self.dirty_modules.insert(id.clone(), ModuleDirt::Changed);
     }
 
-    fn mark_module_deleted(&mut self, id: &EntryId) {
+    pub(crate) fn mark_module_deleted(&mut self, id: &EntryId) {
         self.dirty_parent = true;
         self.dirty_modules.insert(id.clone(), ModuleDirt::Deleted);
     }
@@ -346,46 +406,47 @@ impl SubmoduleLayout {
         Ok(())
     }
 
-    /// Write `tree` and a new orphan commit pointing at it into the
-    /// parent's own object DB, then overwrite the parent's
-    /// `refs/heads/main` to point at that commit. Prunes the loose
-    /// objects that the new commit supersedes.
+    /// Write `tree` and a new commit pointing at it into the parent's
+    /// own object DB, then overwrite the parent's `refs/heads/main` to
+    /// point at that commit. The new commit chains to whatever the
+    /// parent's prior HEAD was (if any), so the parent has a real
+    /// commit history that `gix::merge_base` can walk during sync.
     fn commit_parent_tree(&self, parent: &gix::Repository, tree: Tree) -> Result<(), Error> {
-        let superseded = self.superseded_parent_objects(parent)?;
+        let parent_path = self.parent_path();
+        let br = BareRepo::new(&parent_path);
+        let prior = br.read_head()?;
+        let parents: Vec<gix::ObjectId> = prior.into_iter().collect();
         let tree_id = parent.write_object(&tree)?.detach();
-        let commit_id = write_commit(parent, tree_id, Vec::new(), "parent")?;
-        write_ref_file(&module_ref_path(&self.parent_path()), commit_id)?;
-
-        if let Some((old_commit, old_tree)) = superseded {
-            if old_commit != commit_id {
-                drop_loose_object(&self.parent_path(), old_commit)?;
-            }
-            if let Some(old_tree) = old_tree
-                && old_tree != tree_id
-            {
-                drop_loose_object(&self.parent_path(), old_tree)?;
-            }
-        }
+        let commit_id = write_commit(parent, tree_id, parents, "parent")?;
+        br.write_head(commit_id)?;
         Ok(())
-    }
-
-    fn superseded_parent_objects(
-        &self,
-        parent: &gix::Repository,
-    ) -> Result<Option<(gix::ObjectId, Option<gix::ObjectId>)>, Error> {
-        let Some(commit_oid) = read_ref_file(&module_ref_path(&self.parent_path()))? else {
-            return Ok(None);
-        };
-        let tree_oid = parent
-            .find_object(commit_oid)
-            .ok()
-            .and_then(|o| o.try_into_commit().ok())
-            .and_then(|c| c.decode().ok().map(|d| d.tree()));
-        Ok(Some((commit_oid, tree_oid)))
     }
 }
 
+/// Planned ops the submodule kernel decided on for non-conflicting
+/// ids during a merge that ultimately surfaced conflicts. Stashed on
+/// [`crate::merge::MergeProgress`] so [`Store::merge`] can apply them
+/// alongside the user's picks; without this, every non-picked id
+/// (adopted adds, propagated archives) would be silently dropped on
+/// the conflict-resolution path.
+#[derive(Debug, Default)]
+pub struct PlannedOps {
+    /// Set the gitlink for `id` to this oid.
+    pub(crate) advances: HashMap<EntryId, gix::ObjectId>,
+    /// Archive `id` locally (write tombstone, drop gitlink). Used
+    /// when the remote archived an entry the local side hadn't
+    /// modified since the merge base.
+    pub(crate) archives: Vec<EntryId>,
+}
+
 impl Layout for SubmoduleLayout {
+    type Advanced = std::collections::HashMap<EntryId, CommitId>;
+    type PlannedOps = PlannedOps;
+
+    fn git_dir(&self) -> PathBuf {
+        self.parent_path()
+    }
+
     fn new(path: PathBuf) -> Result<Self, Error> {
         if path.exists() {
             return Err(Error::Other(format!(
@@ -414,13 +475,13 @@ impl Layout for SubmoduleLayout {
         if !modules_path.exists() {
             std::fs::create_dir(&modules_path)?;
         }
-        let (gitlinks, label_cache) = load_parent_state(&parent_path)?;
+        let ParentTree { gitlinks, labels } = ParentTree::load(&parent_path)?;
         Ok(SubmoduleLayout {
             path,
             dirty_parent: false,
             dirty_modules: HashMap::new(),
             gitlinks,
-            label_cache,
+            label_cache: labels,
             gitlinks_dirty: false,
             pending_modules: Mutex::new(Modules::new()),
             fetcher: None,
@@ -448,13 +509,18 @@ impl Layout for SubmoduleLayout {
                     .into(),
             ));
         }
+        if BareRepo::new(&self.parent_path()).merge_in_progress() {
+            return Err(Error::Other(
+                "Store::put: merge in progress; resolve or abort first".into(),
+            ));
+        }
         self.ensure_loaded(id)?;
         let mod_path = self.module_path(id);
         if !mod_path.exists() {
             init_bare_on_branch(&mod_path)?;
         }
         let module = gix::open(&mod_path)?;
-        let Some(module_commit) = write_entry_commit(&module, label, data)? else {
+        let Some(module_commit) = ModuleRepo::new(&module).write_entry(label, data)? else {
             return Ok(None);
         };
         self.gitlinks.insert(id.clone(), module_commit);
@@ -478,7 +544,7 @@ impl Layout for SubmoduleLayout {
         };
         self.ensure_loaded(id)?;
         let repo = gix::open(self.module_path(id))?;
-        Ok(Some(read_entry_at(&repo, commit)?))
+        Ok(Some(ModuleRepo::new(&repo).read_entry(commit)?))
     }
 
     fn archive(&mut self, id: &EntryId) -> Result<(), Error> {
@@ -487,7 +553,7 @@ impl Layout for SubmoduleLayout {
         }
         self.ensure_loaded(id)?;
         let module = gix::open(self.module_path(id))?;
-        write_tombstone_commit(&module)?;
+        ModuleRepo::new(&module).write_tombstone()?;
         self.gitlinks.remove(id);
         self.label_cache.remove(id);
         self.gitlinks_dirty = true;
@@ -526,7 +592,7 @@ impl Layout for SubmoduleLayout {
         let mut out = Vec::new();
         for info in head.ancestors().all()? {
             let info = info?;
-            out.push(read_entry_at(&repo, info.id)?);
+            out.push(ModuleRepo::new(&repo).read_entry(info.id)?);
         }
         Ok(out)
     }
@@ -578,16 +644,7 @@ fn validate_submodule_repo(path: &std::path::Path) -> Result<(), Error> {
             "submodule open: {parent_path:?} is not a git repo: {e}"
         ))
     })?;
-    let head_raw = std::fs::read_to_string(parent_path.join("HEAD"))
-        .map_err(|e| Error::Other(format!("submodule open: cannot read HEAD: {e}")))?;
-    let head_trimmed = head_raw.trim();
-    let expected = format!("ref: {BRANCH}");
-    if head_trimmed != expected {
-        return Err(Error::Other(format!(
-            "submodule open: HEAD must be {expected:?}; got {head_trimmed:?}"
-        )));
-    }
-    Ok(())
+    BareRepo::new(&parent_path).validate_head_branch("submodule open")
 }
 
 // --- Submodule-layout-specific inherent methods on Store<SubmoduleLayout> ---
@@ -620,9 +677,9 @@ impl Store<SubmoduleLayout> {
                 std::fs::remove_dir_all(&parent_path)?;
             }
             untar_into(&parts.parent, &parent_path)?;
-            let (gitlinks, label_cache) = load_parent_state(&parent_path)?;
+            let ParentTree { gitlinks, labels } = ParentTree::load(&parent_path)?;
             self.layout.gitlinks = gitlinks;
-            self.layout.label_cache = label_cache;
+            self.layout.label_cache = labels;
             self.layout.dirty_parent = false;
         }
         let pending = self.layout.pending_modules.get_mut().unwrap();

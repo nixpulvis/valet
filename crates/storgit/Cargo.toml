@@ -6,7 +6,7 @@ license = "MIT"
 description = "Named, versioned byte-blob storage where each entry is a git submodule of a parent repo."
 
 [dependencies]
-gix = "0.81"
+gix = { version = "0.81", features = ["blocking-network-client", "merge"] }
 snap = "1.1.1"
 tar = "0.4"
 

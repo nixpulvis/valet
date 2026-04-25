@@ -23,13 +23,14 @@
 //!
 //! [`Layout`]: layout::Layout
 
+mod config;
 mod entry;
 mod error;
 mod git;
 pub mod id;
 pub mod layout;
-mod module;
-mod parent;
+pub mod merge;
+mod remote;
 mod store;
 mod tarball;
 
@@ -38,4 +39,5 @@ pub use error::Error;
 pub use id::{CommitId, EntryId};
 pub use layout::subdir::SubdirLayout;
 pub use layout::submodule::SubmoduleLayout;
+pub use merge::{ApplyMode, BlobType, Conflict, MergeProgress, MergeResolution, MergeStatus, Side};
 pub use store::Store;

@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 
 use storgit::layout::Layout;
 use storgit::layout::subdir::SubdirLayout;
-use storgit::layout::submodule::SubmoduleLayout;
+use storgit::layout::submodule::{Parts, SubmoduleLayout};
 use storgit::{EntryId, Store};
+use tempfile::TempDir;
 
 pub fn mkid(s: &str) -> EntryId {
     EntryId::new(s).unwrap()
@@ -84,4 +85,108 @@ pub fn make_store<L: Layout>() -> Handle<L> {
         scratch: Some(scratch),
         path,
     }
+}
+
+/// Create a fresh store of the same layout as `other`. The `_other`
+/// argument is only for type inference at the call site.
+pub fn make_store_like<L: Layout>(_other: &Handle<L>) -> Handle<L> {
+    make_store::<L>()
+}
+
+/// Ensure every pending write is flushed to refs on disk. No-op for
+/// layouts that commit on every `put`; snapshots the parent for
+/// submodule.
+impl Handle<SubdirLayout> {
+    pub fn flush_for_test(&mut self) {}
+}
+
+impl Handle<SubmoduleLayout> {
+    pub fn flush_for_test(&mut self) {
+        self.store.snapshot().unwrap();
+    }
+}
+
+/// Fresh, empty submodule-layout store under a newly-allocated
+/// scratch dir. The TempDir is returned so the caller keeps it alive
+/// for the test's scope.
+pub fn fresh_submodule() -> (TempDir, Store<SubmoduleLayout>) {
+    let scratch = tempfile::Builder::new()
+        .prefix("storgit-")
+        .tempdir()
+        .unwrap();
+    let path = scratch.path().join("repo");
+    let store = Store::<SubmoduleLayout>::new(path).unwrap();
+    (scratch, store)
+}
+
+/// Fresh submodule store under a new scratch dir with `parts` applied
+/// via the builder.
+pub fn open_with_parts(parts: Parts) -> (TempDir, Store<SubmoduleLayout>) {
+    let scratch = tempfile::Builder::new()
+        .prefix("storgit-")
+        .tempdir()
+        .unwrap();
+    let path = scratch.path().join("repo");
+    let store = Store::<SubmoduleLayout>::new(path)
+        .unwrap()
+        .with_parts(parts)
+        .unwrap();
+    (scratch, store)
+}
+
+/// Rehydrate a submodule store from a `save()` tarball under a fresh
+/// scratch dir.
+pub fn load_submodule_bytes(bytes: &[u8]) -> (TempDir, Store<SubmoduleLayout>) {
+    let scratch = tempfile::Builder::new()
+        .prefix("storgit-")
+        .tempdir()
+        .unwrap();
+    let path = scratch.path().join("repo");
+    let store = Store::<SubmoduleLayout>::load(bytes, path).unwrap();
+    (scratch, store)
+}
+
+/// Recursive byte-size of a directory tree.
+pub fn dir_size(path: &Path) -> std::io::Result<u64> {
+    let mut total = 0;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let md = entry.metadata()?;
+        if md.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else {
+            total += md.len();
+        }
+    }
+    Ok(total)
+}
+
+/// Count the loose objects under a `objects/` directory.
+pub fn count_loose_objects(objects_root: &Path) -> usize {
+    let mut n = 0;
+    let Ok(dir) = std::fs::read_dir(objects_root) else {
+        return 0;
+    };
+    for entry in dir.flatten() {
+        let fname = entry.file_name();
+        let s = fname.to_string_lossy();
+        if s.len() == 2
+            && s.chars().all(|c| c.is_ascii_hexdigit())
+            && let Ok(sub) = std::fs::read_dir(entry.path())
+        {
+            n += sub.flatten().count();
+        }
+    }
+    n
+}
+
+/// Decompress and untar a snap-framed tarball into a fresh tempdir.
+pub fn extract_to_tmp(bytes: &[u8]) -> TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut tarball = Vec::new();
+    std::io::copy(&mut snap::read::FrameDecoder::new(bytes), &mut tarball).unwrap();
+    tar::Archive::new(std::io::Cursor::new(tarball))
+        .unpack(tmp.path())
+        .unwrap();
+    tmp
 }

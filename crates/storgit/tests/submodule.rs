@@ -7,7 +7,10 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
-use common::{get_data, mkid, put_data};
+use common::{
+    count_loose_objects, dir_size, extract_to_tmp, fresh_submodule as fresh, get_data,
+    load_submodule_bytes as load_bytes, mkid, open_with_parts as open_with, put_data,
+};
 use storgit::layout::submodule::{ModuleChange, ModuleFetcher, Modules, Parts};
 use storgit::{EntryId, Store, SubmoduleLayout};
 use tempfile::TempDir;
@@ -17,34 +20,6 @@ fn empty() -> Parts {
         parent: Vec::new(),
         modules: Modules::new(),
     }
-}
-
-/// Fresh, empty submodule-layout store under a newly-allocated
-/// scratch dir. TempDir is returned so the caller keeps it alive
-/// for the test's scope.
-fn fresh() -> (TempDir, Store<SubmoduleLayout>) {
-    let scratch = tempfile::Builder::new()
-        .prefix("storgit-")
-        .tempdir()
-        .unwrap();
-    let path = scratch.path().join("repo");
-    let store = Store::<SubmoduleLayout>::new(path).unwrap();
-    (scratch, store)
-}
-
-/// Fresh store under a new scratch dir with `parts` applied via the
-/// builder. Equivalent to the old `Store::open(parts)` flow.
-fn open_with(parts: Parts) -> (TempDir, Store<SubmoduleLayout>) {
-    let scratch = tempfile::Builder::new()
-        .prefix("storgit-")
-        .tempdir()
-        .unwrap();
-    let path = scratch.path().join("repo");
-    let store = Store::<SubmoduleLayout>::new(path)
-        .unwrap()
-        .with_parts(parts)
-        .unwrap();
-    (scratch, store)
 }
 
 /// Shared fetcher state for fetcher tests. Holds the module bytes
@@ -100,17 +75,6 @@ fn open_with_fetcher(parts: Parts) -> (TempDir, Store<SubmoduleLayout>, BackingS
         .unwrap()
         .with_fetcher(backing.fetcher());
     (scratch, store, backing)
-}
-
-/// Rehydrate a store from a `save()` tarball under a fresh scratch dir.
-fn load_bytes(bytes: &[u8]) -> (TempDir, Store<SubmoduleLayout>) {
-    let scratch = tempfile::Builder::new()
-        .prefix("storgit-")
-        .tempdir()
-        .unwrap();
-    let path = scratch.path().join("repo");
-    let store = Store::<SubmoduleLayout>::load(bytes, path).unwrap();
-    (scratch, store)
 }
 
 #[test]
@@ -251,20 +215,6 @@ fn fresh_module_stays_under_1kb_on_disk() {
     );
 }
 
-fn dir_size(path: &std::path::Path) -> std::io::Result<u64> {
-    let mut total = 0;
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let md = entry.metadata()?;
-        if md.is_dir() {
-            total += dir_size(&entry.path())?;
-        } else {
-            total += md.len();
-        }
-    }
-    Ok(total)
-}
-
 #[test]
 fn parent_objects_stay_bounded_after_many_puts() {
     const N: usize = 50;
@@ -290,25 +240,10 @@ fn parent_objects_stay_bounded_after_many_puts() {
     );
 }
 
-fn count_loose_objects(objects_root: &std::path::Path) -> usize {
-    let mut n = 0;
-    let Ok(dir) = std::fs::read_dir(objects_root) else {
-        return 0;
-    };
-    for entry in dir.flatten() {
-        let fname = entry.file_name();
-        let s = fname.to_string_lossy();
-        if s.len() == 2 && s.chars().all(|c| c.is_ascii_hexdigit()) {
-            if let Ok(sub) = std::fs::read_dir(entry.path()) {
-                n += sub.flatten().count();
-            }
-        }
-    }
-    n
-}
-
 #[test]
-fn parent_history_is_squashed_to_one_commit() {
+fn parent_collapses_dirty_run_into_one_flush_commit() {
+    // Many dirty operations between flushes should collapse into a
+    // single parent commit, so the chain doesn't grow per-put.
     let (_tmp, mut store) = fresh();
     for i in 0..50 {
         put_data(&mut store, &format!("entry-{i:04}"), b"x");
@@ -321,7 +256,26 @@ fn parent_history_is_squashed_to_one_commit() {
     let parent = gix::open(tmp.path().join("parent.git")).unwrap();
     let head = parent.head_commit().unwrap();
     let count = head.ancestors().all().unwrap().count();
-    assert_eq!(count, 1, "parent history should be squashed");
+    assert_eq!(count, 1, "all dirty ops were folded into one flush");
+}
+
+#[test]
+fn parent_chain_grows_with_each_flush() {
+    // Successive flushes chain so merge_base lookups can find the
+    // common ancestor during sync.
+    let (_tmp, mut store) = fresh();
+    put_data(&mut store, "alpha", b"v1");
+    store.snapshot().unwrap();
+    put_data(&mut store, "beta", b"v1");
+    store.snapshot().unwrap();
+    put_data(&mut store, "gamma", b"v1");
+    let bytes = store.save().unwrap();
+
+    let tmp = extract_to_tmp(&bytes);
+    let parent = gix::open(tmp.path().join("parent.git")).unwrap();
+    let head = parent.head_commit().unwrap();
+    let count = head.ancestors().all().unwrap().count();
+    assert_eq!(count, 3, "one commit per flush");
 }
 
 #[test]
@@ -385,16 +339,6 @@ fn label_cache_survives_parts_roundtrip() {
 }
 
 // -- .gitmodules manifest ----------------------------------------------
-
-fn extract_to_tmp(bytes: &[u8]) -> tempfile::TempDir {
-    let tmp = tempfile::tempdir().unwrap();
-    let mut tarball = Vec::new();
-    std::io::copy(&mut snap::read::FrameDecoder::new(bytes), &mut tarball).unwrap();
-    tar::Archive::new(std::io::Cursor::new(tarball))
-        .unpack(tmp.path())
-        .unwrap();
-    tmp
-}
 
 #[test]
 fn gitmodules_blob_appears_in_parent_tree_after_put() {
@@ -611,4 +555,437 @@ fn new_submodule_store_is_usable() {
     assert!(store.list().unwrap().is_empty());
     put_data(&mut store, "alpha", b"x");
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"x"[..]));
+}
+
+// --- Merge tests (submodule layout) ----------------------------
+
+use storgit::merge::{ApplyMode, MergeStatus, Side};
+
+fn pull_url_sub(store: &Store<SubmoduleLayout>) -> String {
+    format!("file://{}", store.git_dir().display())
+}
+
+fn flush_sub(store: &mut Store<SubmoduleLayout>) {
+    // snapshot returns a delta; the side effect is that the parent
+    // ref is materialised on disk so a remote can fetch from it.
+    store.snapshot().unwrap();
+}
+
+#[test]
+fn pull_no_op_on_identical_state_sub() {
+    let (_a_tmp, mut a) = fresh();
+    let (_b_tmp, b) = fresh();
+    a.add_remote("b", &pull_url_sub(&b)).unwrap();
+    let status = a.pull("b").unwrap();
+    match status {
+        MergeStatus::Clean(advanced) => assert!(advanced.is_empty()),
+        _ => panic!("expected clean no-op"),
+    }
+}
+
+#[test]
+fn pull_loads_into_empty_store_sub() {
+    let (_src_tmp, mut src) = fresh();
+    put_data(&mut src, "alpha", b"hi");
+    flush_sub(&mut src);
+    let (_dst_tmp, mut dst) = fresh();
+    dst.add_remote("src", &pull_url_sub(&src)).unwrap();
+    let status = dst.pull("src").unwrap();
+    match status {
+        MergeStatus::Clean(advanced) => {
+            assert_eq!(advanced.len(), 1);
+            assert!(advanced.contains_key(&mkid("alpha")));
+        }
+        _ => panic!("expected clean"),
+    }
+    assert_eq!(get_data(&dst, "alpha").as_deref(), Some(&b"hi"[..]));
+}
+
+#[test]
+fn pull_fast_forwards_when_local_is_ancestor_sub() {
+    let (_src_tmp, mut src) = fresh();
+    put_data(&mut src, "alpha", b"v1");
+    flush_sub(&mut src);
+    let (_dst_tmp, mut dst) = fresh();
+    dst.add_remote("src", &pull_url_sub(&src)).unwrap();
+    dst.pull("src").unwrap();
+
+    put_data(&mut src, "alpha", b"v2");
+    flush_sub(&mut src);
+    let status = dst.pull("src").unwrap();
+    match status {
+        MergeStatus::Clean(advanced) => assert_eq!(advanced.len(), 1),
+        _ => panic!("expected ff"),
+    }
+    assert_eq!(get_data(&dst, "alpha").as_deref(), Some(&b"v2"[..]));
+}
+
+#[test]
+fn pull_clean_3way_disjoint_ids_sub() {
+    let (_a_tmp, mut a) = fresh();
+    let (_b_tmp, mut b) = fresh();
+    put_data(&mut a, "alpha", b"a");
+    flush_sub(&mut a);
+    put_data(&mut b, "beta", b"b");
+    flush_sub(&mut b);
+
+    a.add_remote("b", &pull_url_sub(&b)).unwrap();
+    let status = a.pull("b").unwrap();
+    match status {
+        MergeStatus::Clean(advanced) => {
+            assert!(advanced.contains_key(&mkid("beta")));
+        }
+        _ => panic!("expected clean for disjoint ids"),
+    }
+    assert_eq!(get_data(&a, "alpha").as_deref(), Some(&b"a"[..]));
+    assert_eq!(get_data(&a, "beta").as_deref(), Some(&b"b"[..]));
+}
+
+#[test]
+fn pull_conflict_then_resolve_local_sub() {
+    let (_a_tmp, mut a) = fresh();
+    let (_b_tmp, mut b) = fresh();
+    put_data(&mut a, "alpha", b"shared");
+    flush_sub(&mut a);
+    a.add_remote("b", &pull_url_sub(&b)).unwrap();
+    b.add_remote("a", &pull_url_sub(&a)).unwrap();
+    b.pull("a").unwrap();
+
+    put_data(&mut a, "alpha", b"a-version");
+    flush_sub(&mut a);
+    put_data(&mut b, "alpha", b"b-version");
+    flush_sub(&mut b);
+
+    let status = a.pull("b").unwrap();
+    let mut progress = match status {
+        MergeStatus::Conflicted(p) => p,
+        _ => panic!("expected conflict"),
+    };
+    assert!(a.merge_in_progress());
+    assert_eq!(progress.conflicts().len(), 1);
+    assert_eq!(progress.conflicts()[0].id.as_str(), "alpha");
+
+    progress.pick(mkid("alpha"), Side::Local).unwrap();
+    let resolution = progress.resolve().unwrap();
+    a.merge(resolution).unwrap();
+    assert!(!a.merge_in_progress());
+    assert_eq!(get_data(&a, "alpha").as_deref(), Some(&b"a-version"[..]));
+}
+
+#[test]
+fn pull_conflict_then_resolve_incoming_sub() {
+    let (_a_tmp, mut a) = fresh();
+    let (_b_tmp, mut b) = fresh();
+    put_data(&mut a, "alpha", b"shared");
+    flush_sub(&mut a);
+    a.add_remote("b", &pull_url_sub(&b)).unwrap();
+    b.add_remote("a", &pull_url_sub(&a)).unwrap();
+    b.pull("a").unwrap();
+
+    put_data(&mut a, "alpha", b"a-version");
+    flush_sub(&mut a);
+    put_data(&mut b, "alpha", b"b-version");
+    flush_sub(&mut b);
+
+    let status = a.pull("b").unwrap();
+    let mut progress = match status {
+        MergeStatus::Conflicted(p) => p,
+        _ => panic!("expected conflict"),
+    };
+    progress.pick(mkid("alpha"), Side::Incoming).unwrap();
+    let resolution = progress.resolve().unwrap();
+    a.merge(resolution).unwrap();
+    assert_eq!(get_data(&a, "alpha").as_deref(), Some(&b"b-version"[..]));
+}
+
+#[test]
+fn put_during_merge_errors_sub() {
+    let (_a_tmp, mut a) = fresh();
+    let (_b_tmp, mut b) = fresh();
+    put_data(&mut a, "alpha", b"shared");
+    flush_sub(&mut a);
+    a.add_remote("b", &pull_url_sub(&b)).unwrap();
+    b.add_remote("a", &pull_url_sub(&a)).unwrap();
+    b.pull("a").unwrap();
+    put_data(&mut a, "alpha", b"a-v");
+    flush_sub(&mut a);
+    put_data(&mut b, "alpha", b"b-v");
+    flush_sub(&mut b);
+    let status = a.pull("b").unwrap();
+    assert!(matches!(status, MergeStatus::Conflicted(_)));
+    assert!(a.put(&mkid("alpha"), None, Some(b"x")).is_err());
+}
+
+#[test]
+fn apply_into_empty_loads_state() {
+    // a's first snapshot is its full state (Parts.apply folds it).
+    let (_a_tmp, mut a) = fresh();
+    put_data(&mut a, "alpha", b"hello");
+    let snap = a.snapshot().unwrap();
+    let mut parts = Parts::default();
+    parts.apply(snap);
+
+    let (_b_tmp, mut b) = fresh();
+    let status = b.apply(parts).unwrap();
+    match status {
+        MergeStatus::Clean(advanced) => assert!(advanced.contains_key(&mkid("alpha"))),
+        _ => panic!("expected clean load"),
+    }
+    assert_eq!(get_data(&b, "alpha").as_deref(), Some(&b"hello"[..]));
+}
+
+#[test]
+fn apply_onto_populated_clean_merge() {
+    let (_a_tmp, mut a) = fresh();
+    put_data(&mut a, "alpha", b"a");
+    let snap_a = a.snapshot().unwrap();
+    let mut parts_a = Parts::default();
+    parts_a.apply(snap_a);
+
+    let (_b_tmp, mut b) = fresh();
+    put_data(&mut b, "beta", b"b");
+    flush_sub(&mut b);
+
+    let status = b.apply(parts_a).unwrap();
+    match status {
+        MergeStatus::Clean(advanced) => {
+            assert!(advanced.contains_key(&mkid("alpha")));
+        }
+        _ => panic!("expected clean disjoint-id merge"),
+    }
+    assert_eq!(get_data(&b, "alpha").as_deref(), Some(&b"a"[..]));
+    assert_eq!(get_data(&b, "beta").as_deref(), Some(&b"b"[..]));
+}
+
+#[test]
+fn apply_onto_populated_with_conflict() {
+    // Build a shared starting state via Parts.
+    let (_seed_tmp, mut seed) = fresh();
+    put_data(&mut seed, "alpha", b"shared");
+    let snap_shared = seed.snapshot().unwrap();
+    let mut parts_shared = Parts::default();
+    parts_shared.apply(snap_shared);
+
+    let (_a_tmp, mut a) = fresh();
+    a.apply(parts_shared.clone()).unwrap();
+    let (_b_tmp, mut b) = fresh();
+    b.apply(parts_shared).unwrap();
+
+    // Diverge.
+    put_data(&mut a, "alpha", b"a-version");
+    let snap_a_delta = a.snapshot().unwrap();
+    let mut parts_a_delta = Parts::default();
+    parts_a_delta.apply(snap_a_delta);
+    put_data(&mut b, "alpha", b"b-version");
+
+    let status = b.apply(parts_a_delta).unwrap();
+    let mut progress = match status {
+        MergeStatus::Conflicted(p) => p,
+        _ => panic!("expected conflict from divergent puts"),
+    };
+    assert_eq!(progress.conflicts().len(), 1);
+    assert_eq!(progress.conflicts()[0].id.as_str(), "alpha");
+    progress.pick(mkid("alpha"), Side::Local).unwrap();
+    let resolution = progress.resolve().unwrap();
+    b.merge(resolution).unwrap();
+    assert_eq!(get_data(&b, "alpha").as_deref(), Some(&b"b-version"[..]));
+}
+
+#[test]
+fn apply_ff_only_accepts_fast_forward() {
+    // Build a's first state, hand to b via apply.
+    let (_a_tmp, mut a) = fresh();
+    put_data(&mut a, "alpha", b"v1");
+    let snap_v1 = a.snapshot().unwrap();
+    let mut parts_v1 = Parts::default();
+    parts_v1.apply(snap_v1);
+
+    let (_b_tmp, mut b) = fresh();
+    b.apply(parts_v1).unwrap();
+
+    // Advance a; the next snapshot is a fast-forward delta on top
+    // of the state b already has.
+    put_data(&mut a, "alpha", b"v2");
+    let snap_v2 = a.snapshot().unwrap();
+    let mut parts_v2 = Parts::default();
+    parts_v2.apply(snap_v2);
+
+    let status = b.apply_with(parts_v2, ApplyMode::FastForwardOnly).unwrap();
+    match status {
+        MergeStatus::Clean(advanced) => {
+            assert!(advanced.contains_key(&mkid("alpha")));
+        }
+        _ => panic!("expected clean ff"),
+    }
+    assert_eq!(get_data(&b, "alpha").as_deref(), Some(&b"v2"[..]));
+}
+
+#[test]
+fn apply_ff_only_accepts_new_id() {
+    // b sends a wholly-new id to a. New ids are ff-equivalent.
+    let (_a_tmp, mut a) = fresh();
+    put_data(&mut a, "alpha", b"a");
+    let snap_a = a.snapshot().unwrap();
+    let mut parts_a = Parts::default();
+    parts_a.apply(snap_a);
+    let (_b_tmp, mut b) = fresh();
+    b.apply(parts_a).unwrap();
+
+    put_data(&mut b, "beta", b"b");
+    let snap_b = b.snapshot().unwrap();
+    let mut parts_b = Parts::default();
+    parts_b.apply(snap_b);
+
+    let status = a.apply_with(parts_b, ApplyMode::FastForwardOnly).unwrap();
+    match status {
+        MergeStatus::Clean(advanced) => {
+            assert!(advanced.contains_key(&mkid("beta")));
+        }
+        _ => panic!("expected clean for new-id ff"),
+    }
+}
+
+#[test]
+fn apply_ff_only_rejects_divergent() {
+    // Both sides write to alpha from a shared base -> divergent.
+    let (_seed_tmp, mut seed) = fresh();
+    put_data(&mut seed, "alpha", b"shared");
+    let snap_shared = seed.snapshot().unwrap();
+    let mut parts_shared = Parts::default();
+    parts_shared.apply(snap_shared);
+
+    let (_a_tmp, mut a) = fresh();
+    a.apply(parts_shared.clone()).unwrap();
+    let (_b_tmp, mut b) = fresh();
+    b.apply(parts_shared).unwrap();
+
+    put_data(&mut a, "alpha", b"a-v");
+    let snap_a_delta = a.snapshot().unwrap();
+    let mut parts_a_delta = Parts::default();
+    parts_a_delta.apply(snap_a_delta);
+    put_data(&mut b, "alpha", b"b-v");
+
+    let result = b.apply_with(parts_a_delta, ApplyMode::FastForwardOnly);
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("expected NotFastForward error"),
+    };
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("non-fast-forward") && msg.contains("alpha"),
+        "expected NotFastForward listing alpha, got: {msg}"
+    );
+    // Local state must be untouched: alpha still at b-v.
+    assert_eq!(get_data(&b, "alpha").as_deref(), Some(&b"b-v"[..]));
+}
+
+#[test]
+fn apply_ff_only_no_op_on_identical() {
+    let (_a_tmp, mut a) = fresh();
+    put_data(&mut a, "alpha", b"x");
+    let snap_a = a.snapshot().unwrap();
+    let mut parts_a = Parts::default();
+    parts_a.apply(snap_a);
+    let (_b_tmp, mut b) = fresh();
+    b.apply(parts_a.clone()).unwrap();
+
+    let status = b.apply_with(parts_a, ApplyMode::FastForwardOnly).unwrap();
+    match status {
+        MergeStatus::Clean(advanced) => assert!(advanced.is_empty()),
+        _ => panic!("expected clean no-op"),
+    }
+}
+
+#[test]
+fn abort_clears_merge_state_sub() {
+    let (_a_tmp, mut a) = fresh();
+    let (_b_tmp, mut b) = fresh();
+    put_data(&mut a, "alpha", b"shared");
+    flush_sub(&mut a);
+    a.add_remote("b", &pull_url_sub(&b)).unwrap();
+    b.add_remote("a", &pull_url_sub(&a)).unwrap();
+    b.pull("a").unwrap();
+    put_data(&mut a, "alpha", b"a-v");
+    flush_sub(&mut a);
+    put_data(&mut b, "alpha", b"b-v");
+    flush_sub(&mut b);
+    let status = a.pull("b").unwrap();
+    assert!(matches!(status, MergeStatus::Conflicted(_)));
+    assert!(a.merge_in_progress());
+    a.abort().unwrap();
+    assert!(!a.merge_in_progress());
+    a.put(&mkid("alpha"), None, Some(b"new")).unwrap();
+}
+
+#[test]
+fn bidirectional_pull_converges_after_archive_delete_and_add() {
+    // Mirrors examples/sync.rs: a shared seed, divergent edits on A
+    // and B (including archive on A and delete on B), then pull both
+    // ways. Both sides must converge to the same state.
+    let (_seed_tmp, mut seed) = fresh();
+    put_data(&mut seed, "alpha", b"a1");
+    put_data(&mut seed, "beta", b"b1");
+    put_data(&mut seed, "gamma", b"g1");
+    flush_sub(&mut seed);
+    let blob = seed.save().unwrap();
+
+    let a_scratch = tempfile::tempdir().unwrap();
+    let b_scratch = tempfile::tempdir().unwrap();
+    let mut a = Store::<SubmoduleLayout>::load(&blob, a_scratch.path().join("a")).unwrap();
+    let mut b = Store::<SubmoduleLayout>::load(&blob, b_scratch.path().join("b")).unwrap();
+
+    a.put(&mkid("alpha"), None, Some(b"a2-from-A")).unwrap();
+    a.archive(&mkid("beta")).unwrap();
+    a.put(&mkid("delta"), None, Some(b"d1")).unwrap();
+    flush_sub(&mut a);
+
+    b.put(&mkid("alpha"), None, Some(b"a3-from-B")).unwrap();
+    b.delete(&mkid("gamma")).unwrap();
+    b.put(&mkid("epsilon"), None, Some(b"e1")).unwrap();
+    flush_sub(&mut b);
+
+    a.add_remote("b", &pull_url_sub(&b)).unwrap();
+    b.add_remote("a", &pull_url_sub(&a)).unwrap();
+
+    // A pulls B: alpha conflict, A picks Local.
+    let status = a.pull("b").unwrap();
+    let mut progress = match status {
+        MergeStatus::Conflicted(p) => p,
+        _ => panic!("expected conflict on alpha"),
+    };
+    let ids: Vec<EntryId> = progress.conflicts().iter().map(|c| c.id.clone()).collect();
+    for id in ids {
+        progress.pick(id, Side::Local).unwrap();
+    }
+    let resolution = progress.resolve().unwrap();
+    a.merge(resolution).unwrap();
+
+    // B pulls A.
+    let status = b.pull("a").unwrap();
+    if let MergeStatus::Conflicted(mut p) = status {
+        let ids: Vec<EntryId> = p.conflicts().iter().map(|c| c.id.clone()).collect();
+        for id in ids {
+            p.pick(id, Side::Incoming).unwrap();
+        }
+        let resolution = p.resolve().unwrap();
+        b.merge(resolution).unwrap();
+    }
+
+    // Convergence: every id should resolve to the same value on both sides.
+    for id_str in ["alpha", "beta", "gamma", "delta", "epsilon"] {
+        let id = mkid(id_str);
+        let a_data = get_data(&a, id_str);
+        let b_data = get_data(&b, id_str);
+        assert_eq!(
+            a_data, b_data,
+            "diverged on {id}: A={a_data:?} B={b_data:?}"
+        );
+    }
+
+    // Specific final values reflecting the operations:
+    assert_eq!(get_data(&a, "alpha").as_deref(), Some(&b"a2-from-A"[..]));
+    assert!(get_data(&a, "beta").is_none(), "A archived beta");
+    assert!(get_data(&a, "gamma").is_none(), "B deleted gamma");
+    assert_eq!(get_data(&a, "delta").as_deref(), Some(&b"d1"[..]));
+    assert_eq!(get_data(&a, "epsilon").as_deref(), Some(&b"e1"[..]));
 }

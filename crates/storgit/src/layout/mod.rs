@@ -33,6 +33,25 @@ pub mod subdir;
 pub mod submodule;
 
 pub trait Layout: Sized {
+    /// Summary of what moved in the local store as a result of
+    /// an `apply` / `pull` / `merge`. Shape is layout-specific:
+    /// submodule carries a per-entry map of new HEAD oids; subdir
+    /// carries the list of commits on the one ref, oldest first.
+    type Advanced;
+
+    /// Per-layout extras the merge kernel needs to carry from a
+    /// `Conflicted` return through to `Store::merge` so the
+    /// resolution can apply non-conflicting work the kernel had
+    /// planned but couldn't commit until the user resolved.
+    /// `()` for layouts that produce a single merged tree (subdir),
+    /// since the tree already encodes every non-conflicting outcome.
+    type PlannedOps: Default + std::fmt::Debug;
+
+    /// Path to the bare git repository that owns this store's
+    /// remote configuration and sync surface. Submodule: the
+    /// parent repo. Subdir: the store's single repo.
+    fn git_dir(&self) -> PathBuf;
+
     /// Initialize a fresh storgit repo at `path`. Creates `path` as
     /// a new directory; errors if `path` already exists. The parent
     /// directory must already exist -- `new` does not create

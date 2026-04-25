@@ -126,3 +126,211 @@ fn put_is_noop_detection_works_across_interleaved_writes() {
         "identical alpha put is still a no-op even after an intervening beta write",
     );
 }
+
+// --- Merge tests (subdir layout) -----------------------------------
+
+use storgit::merge::{MergeStatus, Side};
+
+fn pull_url(store: &Handle<SubdirLayout>) -> String {
+    format!("file://{}", store.git_dir().display())
+}
+
+#[test]
+fn pull_no_op_on_identical_state() {
+    let mut a = open();
+    let b = open();
+    a.add_remote("b", &pull_url(&b)).unwrap();
+    let status = a.pull("b").unwrap();
+    match status {
+        MergeStatus::Clean(applied) => assert!(applied.is_empty()),
+        _ => panic!("expected clean no-op"),
+    }
+}
+
+#[test]
+fn pull_loads_into_empty_store() {
+    let mut src = open();
+    put_data(&mut src, "alpha", b"hi");
+    let mut dst = open();
+    dst.add_remote("src", &pull_url(&src)).unwrap();
+    let status = dst.pull("src").unwrap();
+    match status {
+        MergeStatus::Clean(applied) => assert!(!applied.is_empty()),
+        _ => panic!("expected clean"),
+    }
+    assert_eq!(
+        dst.get(&mkid("alpha")).unwrap().and_then(|e| e.data),
+        Some(b"hi".to_vec())
+    );
+}
+
+#[test]
+fn pull_fast_forwards_when_local_is_ancestor() {
+    let mut src = open();
+    put_data(&mut src, "alpha", b"v1");
+    let mut dst = open();
+    dst.add_remote("src", &pull_url(&src)).unwrap();
+    dst.pull("src").unwrap();
+    // Now src advances.
+    put_data(&mut src, "alpha", b"v2");
+    let status = dst.pull("src").unwrap();
+    match status {
+        MergeStatus::Clean(applied) => assert!(!applied.is_empty()),
+        _ => panic!("expected ff"),
+    }
+    assert_eq!(
+        dst.get(&mkid("alpha")).unwrap().and_then(|e| e.data),
+        Some(b"v2".to_vec())
+    );
+}
+
+#[test]
+fn pull_clean_3way_when_disjoint_ids() {
+    let mut a = open();
+    let mut b = open();
+    put_data(&mut a, "alpha", b"a");
+    a.add_remote("b", &pull_url(&b)).unwrap();
+    a.pull("b").unwrap(); // a takes empty b -> no-op
+    put_data(&mut b, "beta", b"b");
+    let status = a.pull("b").unwrap();
+    // a has alpha, b has beta -> clean merge
+    let _ = match status {
+        MergeStatus::Clean(applied) => applied,
+        MergeStatus::Conflicted(_) => {
+            panic!("expected clean merge for disjoint ids");
+        }
+    };
+    assert_eq!(
+        a.get(&mkid("alpha")).unwrap().and_then(|e| e.data),
+        Some(b"a".to_vec())
+    );
+    assert_eq!(
+        a.get(&mkid("beta")).unwrap().and_then(|e| e.data),
+        Some(b"b".to_vec())
+    );
+}
+
+#[test]
+fn pull_conflict_then_resolve_local() {
+    let mut a = open();
+    let mut b = open();
+    put_data(&mut a, "alpha", b"shared");
+    a.add_remote("b", &pull_url(&b)).unwrap();
+    b.add_remote("a", &pull_url(&a)).unwrap();
+    b.pull("a").unwrap(); // b is now at a's state
+
+    // Diverge.
+    put_data(&mut a, "alpha", b"a-version");
+    put_data(&mut b, "alpha", b"b-version");
+
+    let status = a.pull("b").unwrap();
+    let mut progress = match status {
+        MergeStatus::Conflicted(p) => p,
+        _ => panic!("expected conflicts"),
+    };
+    assert!(a.merge_in_progress());
+    assert_eq!(progress.conflicts().len(), 1);
+    assert_eq!(progress.conflicts()[0].id.as_str(), "alpha");
+
+    progress.pick(mkid("alpha"), Side::Local).unwrap();
+    let resolution = progress.resolve().unwrap();
+    a.merge(resolution).unwrap();
+    assert!(!a.merge_in_progress());
+
+    assert_eq!(
+        a.get(&mkid("alpha")).unwrap().and_then(|e| e.data),
+        Some(b"a-version".to_vec())
+    );
+}
+
+#[test]
+fn pull_conflict_then_resolve_incoming() {
+    let mut a = open();
+    let mut b = open();
+    put_data(&mut a, "alpha", b"shared");
+    a.add_remote("b", &pull_url(&b)).unwrap();
+    b.add_remote("a", &pull_url(&a)).unwrap();
+    b.pull("a").unwrap();
+
+    put_data(&mut a, "alpha", b"a-version");
+    put_data(&mut b, "alpha", b"b-version");
+
+    let status = a.pull("b").unwrap();
+    let mut progress = match status {
+        MergeStatus::Conflicted(p) => p,
+        _ => panic!("expected conflicts"),
+    };
+    progress.pick(mkid("alpha"), Side::Incoming).unwrap();
+    let resolution = progress.resolve().unwrap();
+    a.merge(resolution).unwrap();
+
+    assert_eq!(
+        a.get(&mkid("alpha")).unwrap().and_then(|e| e.data),
+        Some(b"b-version".to_vec())
+    );
+}
+
+#[test]
+fn put_during_merge_errors_subdir() {
+    let mut a = open();
+    let mut b = open();
+    put_data(&mut a, "alpha", b"shared");
+    a.add_remote("b", &pull_url(&b)).unwrap();
+    b.add_remote("a", &pull_url(&a)).unwrap();
+    b.pull("a").unwrap();
+
+    put_data(&mut a, "alpha", b"a-v");
+    put_data(&mut b, "alpha", b"b-v");
+
+    let status = a.pull("b").unwrap();
+    assert!(matches!(status, MergeStatus::Conflicted(_)));
+    assert!(a.put(&mkid("alpha"), None, Some(b"x")).is_err());
+}
+
+#[test]
+fn abort_clears_merge_state() {
+    let mut a = open();
+    let mut b = open();
+    put_data(&mut a, "alpha", b"shared");
+    a.add_remote("b", &pull_url(&b)).unwrap();
+    b.add_remote("a", &pull_url(&a)).unwrap();
+    b.pull("a").unwrap();
+    put_data(&mut a, "alpha", b"a-v");
+    put_data(&mut b, "alpha", b"b-v");
+
+    let status = a.pull("b").unwrap();
+    assert!(matches!(status, MergeStatus::Conflicted(_)));
+    assert!(a.merge_in_progress());
+    a.abort().unwrap();
+    assert!(!a.merge_in_progress());
+    // After abort, put works again.
+    a.put(&mkid("alpha"), None, Some(b"new")).unwrap();
+}
+
+#[test]
+fn merge_creates_two_parent_commit() {
+    let mut a = open();
+    let mut b = open();
+    put_data(&mut a, "alpha", b"shared");
+    a.add_remote("b", &pull_url(&b)).unwrap();
+    b.add_remote("a", &pull_url(&a)).unwrap();
+    b.pull("a").unwrap();
+
+    put_data(&mut a, "alpha", b"a-v");
+    put_data(&mut b, "beta", b"b-v");
+
+    let status = a.pull("b").unwrap();
+    if let MergeStatus::Conflicted(_) = status {
+        panic!("disjoint ids should not conflict");
+    }
+    // Walk HEAD's commit, verify two parents.
+    let repo = gix::open(a.git_dir()).unwrap();
+    let head_oid = std::fs::read_to_string(a.git_dir().join("refs/heads/main"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let head_oid = gix::ObjectId::from_hex(head_oid.as_bytes()).unwrap();
+    let commit = repo.find_object(head_oid).unwrap().into_commit();
+    let parents: Vec<_> = commit.decode().unwrap().parents().collect();
+    assert_eq!(parents.len(), 2, "merge commit must have two parents");
+}

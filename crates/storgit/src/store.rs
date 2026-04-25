@@ -107,4 +107,92 @@ impl<L: Layout> Store<L> {
     pub fn list_labels(&self) -> Vec<(EntryId, Vec<u8>)> {
         self.layout.list_labels()
     }
+
+    /// Path to the bare git repository that owns this store's
+    /// remote configuration and sync surface. See
+    /// [`Layout::git_dir`].
+    pub fn git_dir(&self) -> PathBuf {
+        self.layout.git_dir()
+    }
+
+    /// Configure a named remote pointing at `url`. Stored as a
+    /// standard `[remote "<name>"]` entry in the layout's git
+    /// config, visible to `gix::remote` and every other git tool.
+    /// Errors if `name` already exists or is invalid.
+    pub fn add_remote(&mut self, name: &str, url: &str) -> Result<(), Error> {
+        crate::remote::Remotes::new(&self.layout.git_dir()).add(name, url)
+    }
+
+    /// Remove a previously-configured remote. Errors if no such
+    /// remote is configured.
+    pub fn remove_remote(&mut self, name: &str) -> Result<(), Error> {
+        crate::remote::Remotes::new(&self.layout.git_dir()).remove(name)
+    }
+
+    /// Iterate the (name, url) of every configured remote.
+    pub fn remotes(&self) -> Result<Vec<(String, String)>, Error> {
+        Ok(crate::remote::Remotes::new(&self.layout.git_dir())
+            .list()?
+            .into_iter()
+            .map(|r| (r.name, r.url))
+            .collect())
+    }
+
+    /// Push local refs to a configured remote. Currently
+    /// unimplemented: `gix` 0.81 does not yet ship a push
+    /// transport, and storgit does not shell out. Callers
+    /// needing one-way replication can use `snapshot`/`apply`
+    /// or `save`/`load` over any pipe in the meantime.
+    pub fn push(&self, remote: &str) -> Result<(), Error> {
+        let remotes = self.remotes()?;
+        if !remotes.iter().any(|(n, _)| n == remote) {
+            return Err(Error::Other(format!("push: remote {remote:?} not found")));
+        }
+        Err(Error::PushRejected {
+            remote: remote.to_string(),
+            reason: "push transport not yet supported (gix 0.81 lacks \
+                     push); use snapshot/apply or save/load over a \
+                     non-git pipe instead"
+                .to_string(),
+        })
+    }
+
+    /// Fetch from the named remote into the local object database.
+    /// Updates `refs/remotes/<name>/*`; does not touch local HEAD
+    /// or any local branch. Errors if `remote` is not configured.
+    pub fn fetch(&mut self, remote: &str) -> Result<(), Error> {
+        let repo = gix::open(self.layout.git_dir())?;
+        let remote_obj = repo
+            .find_remote(remote)
+            .map_err(|e| Error::Other(format!("fetch: remote {remote:?} not found: {e}")))?;
+        crate::remote::do_fetch(remote_obj)
+    }
+}
+
+/// Generic delegation for every layout that implements
+/// [`MergeKernel`]. Lets callers write `store.pull(...)`,
+/// `store.merge(...)`, etc. without knowing which layout they have.
+impl<L: crate::merge::MergeKernel> Store<L> {
+    /// See [`MergeKernel::merge_in_progress`].
+    pub fn merge_in_progress(&self) -> bool {
+        L::merge_in_progress(self)
+    }
+
+    /// See [`MergeKernel::abort`].
+    pub fn abort(&mut self) -> Result<(), Error> {
+        L::abort(self)
+    }
+
+    /// See [`MergeKernel::merge`].
+    pub fn merge(
+        &mut self,
+        resolution: crate::merge::MergeResolution<L>,
+    ) -> Result<L::Advanced, Error> {
+        L::merge(self, resolution)
+    }
+
+    /// See [`MergeKernel::pull`].
+    pub fn pull(&mut self, remote: &str) -> Result<crate::merge::MergeStatus<L>, Error> {
+        L::pull(self, remote)
+    }
 }
