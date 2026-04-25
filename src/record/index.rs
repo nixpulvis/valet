@@ -4,6 +4,7 @@ use crate::{
     uuid::Uuid,
 };
 use std::collections::BTreeMap;
+use storgit::Layout;
 
 /// An in-memory map from `Label` to `Uuid<Record>` for a single lot.
 ///

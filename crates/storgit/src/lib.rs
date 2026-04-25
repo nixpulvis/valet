@@ -12,9 +12,9 @@
 //! [`history`][history] walks the entry's commits. More information can be
 //! found on the [`Layout`] trait, or each implementation's docs.
 //!
-//! [put]: Store::put
-//! [get]: Store::get
-//! [history]: Store::history
+//! [put]: Layout::put
+//! [get]: Layout::get
+//! [history]: Layout::history
 //! [label]: Entry::label
 //! [data]: Entry::data
 //!
@@ -23,19 +23,26 @@
 //!
 //! [`Layout`]: layout::Layout
 
+mod config;
 mod entry;
 mod error;
 mod git;
 pub mod id;
 pub mod layout;
-mod module;
-mod parent;
+pub mod merge;
+mod remote;
 mod store;
 mod tarball;
 
 pub use entry::Entry;
 pub use error::Error;
 pub use id::{CommitId, EntryId};
+pub use layout::Layout;
 pub use layout::subdir::SubdirLayout;
 pub use layout::submodule::SubmoduleLayout;
+pub use merge::{
+    ApplyMode, BlobType, Conflict, FastForward, Merge, MergeProgress, MergeStatus, Outcome,
+    Side,
+};
+pub use remote::Remote;
 pub use store::Store;

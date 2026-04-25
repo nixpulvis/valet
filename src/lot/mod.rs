@@ -19,9 +19,9 @@ use sea_orm::{
 use std::fmt;
 use std::sync::Arc;
 #[cfg(feature = "db")]
-use storgit::SubmoduleLayout;
-#[cfg(feature = "db")]
 use storgit::layout::submodule::{ModuleFetcher, Modules, Parts};
+#[cfg(feature = "db")]
+use storgit::{Layout, SubmoduleLayout};
 
 pub const DEFAULT_LOT: &str = "main";
 
@@ -381,15 +381,16 @@ impl Lot {
             .prefix("valet-lot-")
             .tempdir()
             .map_err(|e| Error::Record(record::Error::Storgit(storgit::Error::Io(e))))?;
-        let store = storgit::Store::<SubmoduleLayout>::new(scratch.path().join("repo"))
-            .and_then(|s| {
-                s.with_parts(Parts {
+        let layout = SubmoduleLayout::new(scratch.path().join("repo"))
+            .and_then(|l| {
+                l.with_parts(Parts {
                     parent: parent_bytes,
                     modules: Modules::new(),
                 })
             })
-            .map(|s| s.with_fetcher(fetcher))
+            .map(|l| l.with_fetcher(fetcher))
             .map_err(|e| Error::Record(record::Error::Storgit(e)))?;
+        let store = storgit::Store { layout };
         let index = RecordIndex::from_store(&store).map_err(Error::Record)?;
 
         Ok(Lot {

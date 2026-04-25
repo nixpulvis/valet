@@ -8,6 +8,8 @@ use bitcode::{Decode, Encode};
 use sea_orm::{IntoActiveModel, TransactionTrait, entity::prelude::*, sea_query::OnConflict};
 use std::fmt;
 #[cfg(feature = "db")]
+use storgit::Layout;
+#[cfg(feature = "db")]
 use storgit::layout::submodule::{ModuleChange, Snapshot};
 
 /// One historical revision of a record, produced by [`Record::history`].

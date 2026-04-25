@@ -12,6 +12,7 @@ use std::time::Duration;
 use criterion::{Throughput, criterion_group, criterion_main};
 
 use common::{CORPUS_SIZE, entry_id, new_id};
+use storgit::layout::Layout;
 use storgit::layout::subdir::SubdirLayout;
 use storgit::layout::submodule::SubmoduleLayout;
 

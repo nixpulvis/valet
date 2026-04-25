@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use criterion::{Throughput, criterion_group, criterion_main};
 use storgit::layout::submodule::{ModuleChange, Parts, Snapshot};
-use storgit::{EntryId, Store, SubmoduleLayout};
+use storgit::{EntryId, Layout, Store, SubmoduleLayout};
 
 use common::{Handle, entry_id, new_id};
 
@@ -62,12 +62,12 @@ impl Storage {
 /// management.
 fn new_with_parts(parts: Parts, scratch: tempfile::TempDir) -> Handle<SubmoduleLayout> {
     let path = scratch.path().join("repo");
-    let store = Store::<SubmoduleLayout>::new(path)
+    let layout = SubmoduleLayout::new(path)
         .unwrap()
         .with_parts(parts)
         .unwrap();
     Handle {
-        store,
+        store: Store { layout },
         scratch: Some(scratch),
     }
 }
@@ -138,9 +138,9 @@ bench!(bench_lazy_get,
     setup: |(storage, pairs), _n| {
         (new_with_parts_tmp(storage.metadata_only_parts()), pairs.clone())
     },
-    body: |(mut h, pairs)| {
+    body: |(h, pairs)| {
         for (id, bytes) in pairs {
-            h.store.load_module(id.clone(), bytes);
+            h.store.ensure_loaded(&id, Some(bytes)).expect("load");
             let _entry = h.store.get(&id).expect("get").expect("live");
         }
         h

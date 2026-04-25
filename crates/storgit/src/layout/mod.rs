@@ -21,6 +21,7 @@
 //! [`SubdirLayout`]: crate::SubdirLayout
 //! [`SubmoduleLayout`]: crate::SubmoduleLayout
 
+use std::io;
 use std::path::PathBuf;
 
 use crate::entry::Entry;
@@ -32,7 +33,17 @@ use crate::tarball::untar_into;
 pub mod subdir;
 pub mod submodule;
 
+/// Hash function the bare repos under any storgit layout use for
+/// object ids. SHA-1 today; revisit if/when storgit learns to init
+/// repos with SHA-256.
+pub(crate) const HASH_TYPE: gix::hash::Kind = gix::hash::Kind::Sha1;
+
 pub trait Layout: Sized {
+    /// Path to the bare git repository that owns this store's
+    /// remote configuration and sync surface. Submodule: the
+    /// parent repo. Subdir: the store's single repo.
+    fn git_dir(&self) -> PathBuf;
+
     /// Initialize a fresh storgit repo at `path`. Creates `path` as
     /// a new directory; errors if `path` already exists. The parent
     /// directory must already exist -- `new` does not create
@@ -43,15 +54,15 @@ pub trait Layout: Sized {
     /// does not exist or is not a valid storgit repo for this layout.
     fn open(path: PathBuf) -> Result<Self, Error>;
 
-    /// Bundle the store into a single self-contained tarball. See
-    /// per-layout docs for what "self-contained" means (e.g.
-    /// submodule force-loads every live module before tarring).
-    fn save(&mut self) -> Result<Vec<u8>, Error>;
+    /// Raw tarball of the on-disk repo state. See per-layout docs
+    /// for what "self-contained" means (e.g. submodule force-loads
+    /// every live module before tarring).
+    fn save_tar(&mut self) -> Result<Vec<u8>, Error>;
 
     /// Untar `bytes` into `path`, then open the result. `path` must
     /// not exist or must be empty. Default impl works for any layout
-    /// whose on-disk shape is what `save` produced.
-    fn load(bytes: &[u8], path: PathBuf) -> Result<Self, Error> {
+    /// whose on-disk shape is what `save_tar` produced.
+    fn load_tar(bytes: &[u8], path: PathBuf) -> Result<Self, Error> {
         if path.exists() && path.read_dir()?.next().is_some() {
             return Err(Error::Other(format!(
                 "load: target path {path:?} is not empty"
@@ -59,6 +70,25 @@ pub trait Layout: Sized {
         }
         untar_into(bytes, &path)?;
         Self::open(path)
+    }
+
+    /// Snap-compressed self-contained bundle of the on-disk repo
+    /// state. Pairs with [`load`](Self::load) over any non-git pipe.
+    fn save(&mut self) -> Result<Vec<u8>, Error> {
+        let tarball = self.save_tar()?;
+        let mut compressed = Vec::new();
+        let mut encoder = snap::read::FrameEncoder::new(tarball.as_slice());
+        io::copy(&mut encoder, &mut compressed)?;
+        Ok(compressed)
+    }
+
+    /// Snap-decompress `bytes`, untar into `path`, and open the
+    /// resulting repo. Inverse of [`save`](Self::save).
+    fn load(bytes: &[u8], path: PathBuf) -> Result<Self, Error> {
+        let mut tarball = Vec::new();
+        let mut decoder = snap::read::FrameDecoder::new(bytes);
+        io::copy(&mut decoder, &mut tarball)?;
+        Self::load_tar(&tarball, path)
     }
 
     /// Write a new version of entry `id` carrying the given `label`

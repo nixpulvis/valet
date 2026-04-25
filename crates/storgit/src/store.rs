@@ -1,15 +1,20 @@
-//! The generic [`Store`] wrapper. Delegates every I/O method to its
-//! [`Layout`], and picks up layout-specific methods (like
-//! [`Store::<SubmoduleLayout>::open`] / [`Store::<SubmoduleLayout>::snapshot`])
-//! via inherent impls in each layout's module.
+//! [`Store`] = [`Layout`] (record I/O on disk) plus the remote
+//! configuration shared across both layouts.
+//!
+//! Record-level operations and the merge primitives that bracket a
+//! pull's lifecycle (`merge_in_progress`, `abort`, `merge`, `pull`)
+//! live on the layout itself: `store.layout.put(...)`,
+//! `store.layout.snapshot()`, `store.layout.pull(remote)`,
+//! `store.layout.merge(resolution)`. Remote configuration management
+//! (`add_remote` / `remove_remote` / `remotes` / `fetch` / `push`)
+//! lives here, because a remote is a single concept that applies the
+//! same way to subdir's repo and to submodule's parent (with the
+//! per-module URLs derived from the parent's remote at fetch time).
 
-use std::io;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
-use crate::entry::Entry;
 use crate::error::Error;
-use crate::id::CommitId;
-use crate::id::EntryId;
 use crate::layout::Layout;
 use crate::layout::submodule::SubmoduleLayout;
 
@@ -18,7 +23,20 @@ use crate::layout::submodule::SubmoduleLayout;
 /// The [`Layout`] selects the on-disk layout, which defaults to
 /// [`SubmoduleLayout`].
 pub struct Store<L: Layout = SubmoduleLayout> {
-    pub(crate) layout: L,
+    pub layout: L,
+}
+
+impl<L: Layout> Deref for Store<L> {
+    type Target = L;
+    fn deref(&self) -> &L {
+        &self.layout
+    }
+}
+
+impl<L: Layout> DerefMut for Store<L> {
+    fn deref_mut(&mut self) -> &mut L {
+        &mut self.layout
+    }
 }
 
 impl<L: Layout> Store<L> {
@@ -38,73 +56,59 @@ impl<L: Layout> Store<L> {
         })
     }
 
-    /// Bundle the store into a single self-contained snap-compressed
-    /// tarball. See [`Layout::save`].
-    pub fn save(&mut self) -> Result<Vec<u8>, Error> {
-        let tarball = self.layout.save()?;
-        let mut compressed = Vec::new();
-        let mut encoder = snap::read::FrameEncoder::new(tarball.as_slice());
-        io::copy(&mut encoder, &mut compressed)?;
-        Ok(compressed)
-    }
-
     /// Snap-decompress `bytes`, untar into `path`, and open the
     /// resulting repo. See [`Layout::load`].
     pub fn load(bytes: &[u8], path: PathBuf) -> Result<Self, Error> {
-        let mut tarball = Vec::new();
-        let mut decoder = snap::read::FrameDecoder::new(bytes);
-        io::copy(&mut decoder, &mut tarball)?;
         Ok(Store {
-            layout: L::load(&tarball, path)?,
+            layout: L::load(bytes, path)?,
         })
     }
 
-    /// Write a new version of entry `id` with the given `label` and/or
-    /// `data` slots. See [`Layout::put`].
-    pub fn put(
-        &mut self,
-        id: &EntryId,
-        label: Option<&[u8]>,
-        data: Option<&[u8]>,
-    ) -> Result<Option<CommitId>, Error> {
-        self.layout.put(id, label, data)
+    /// Configure a named remote pointing at `url`. Stored as a
+    /// standard `[remote "<name>"]` entry in the layout's git
+    /// config, visible to `gix::remote` and every other git tool.
+    /// Errors if `name` already exists or is invalid.
+    pub fn add_remote(&mut self, name: &str, url: &str) -> Result<(), Error> {
+        crate::config::GitConfig::add_remote(&self.layout.git_dir(), name, url)
     }
 
-    /// Return the latest [`Entry`] for `id`. See [`Layout::get`].
-    pub fn get(&self, id: &EntryId) -> Result<Option<Entry>, Error> {
-        self.layout.get(id)
+    /// Remove a previously-configured remote. Errors if no such
+    /// remote is configured.
+    pub fn remove_remote(&mut self, name: &str) -> Result<(), Error> {
+        crate::config::GitConfig::remove_remote(&self.layout.git_dir(), name)
     }
 
-    /// Soft-delete `id`. See [`Layout::archive`].
-    pub fn archive(&mut self, id: &EntryId) -> Result<(), Error> {
-        self.layout.archive(id)
+    /// Every configured remote, as [`Remote`](crate::Remote) values.
+    pub fn remotes(&self) -> Result<Vec<crate::Remote>, Error> {
+        crate::config::GitConfig::list_remotes(&self.layout.git_dir())
     }
 
-    /// Hard-delete `id`. See [`Layout::delete`].
-    pub fn delete(&mut self, id: &EntryId) -> Result<(), Error> {
-        self.layout.delete(id)
+    /// Push local refs to a configured remote. Currently
+    /// unimplemented: `gix` 0.81 does not yet ship a push
+    /// transport, and storgit does not shell out. Callers
+    /// needing one-way replication can use `snapshot`/`apply`
+    /// or `save`/`load` over any pipe in the meantime.
+    pub fn push(&self, remote: &str) -> Result<(), Error> {
+        crate::config::GitConfig::lookup_remote(&self.layout.git_dir(), remote)?;
+        Err(Error::PushRejected {
+            remote: remote.to_string(),
+            reason: "push transport not yet supported (gix 0.81 lacks \
+                     push); use snapshot/apply or save/load over a \
+                     non-git pipe instead"
+                .to_string(),
+        })
     }
 
-    /// List the ids of all live entries. See [`Layout::list`].
-    pub fn list(&self) -> Result<Vec<EntryId>, Error> {
-        self.layout.list()
-    }
-
-    /// Walk every historical version of `id`, newest first.
-    /// See [`Layout::history`].
-    pub fn history(&self, id: &EntryId) -> Result<Vec<Entry>, Error> {
-        self.layout.history(id)
-    }
-
-    /// Return the current label blob for `id`, if any.
-    /// See [`Layout::label`].
-    pub fn label(&self, id: &EntryId) -> Option<&[u8]> {
-        self.layout.label(id)
-    }
-
-    /// Return every live entry with a non-empty label.
-    /// See [`Layout::list_labels`].
-    pub fn list_labels(&self) -> Vec<(EntryId, Vec<u8>)> {
-        self.layout.list_labels()
+    /// Fetch from the named remote into the local object database.
+    /// Updates `refs/remotes/<name>/*`; does not touch local HEAD
+    /// or any local branch. Errors if `remote` is not configured.
+    pub fn fetch(&mut self, remote: &str) -> Result<(), Error> {
+        // Confirm the remote is configured (clearer error than gix's).
+        crate::config::GitConfig::lookup_remote(&self.layout.git_dir(), remote)?;
+        let repo = gix::open(self.layout.git_dir())?;
+        let remote_obj = repo
+            .find_remote(remote)
+            .map_err(|e| Error::Other(format!("fetch: remote {remote:?}: {e}")))?;
+        crate::remote::do_fetch(remote_obj)
     }
 }
