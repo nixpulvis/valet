@@ -28,6 +28,7 @@ Valet is a password management framework and manager CLI/GUI application.
 [lib]
 # staticlib is always produced so the `ffi` feature can build `libvalet.a`.
 crate-type = ["rlib", "staticlib"]
+bench = false
 
 [package.metadata.bundle.bin.gui]
 name = "Valet"
@@ -35,11 +36,13 @@ name = "Valet"
 [[bin]]
 name = "gui"
 required-features = ["gui"]
+bench = false
 
 [[bin]]
 name = "valet"
 path = "src/bin/cli.rs"
 required-features = ["cli"]
+bench = false
 
 [[bin]]
 name = "valetd"
@@ -49,6 +52,7 @@ path = "src/bin/valetd/main.rs"
 # clear error. `protocol-all` remains a convenience bundle for callers
 # that want every transport compiled in.
 required-features = ["_protocols"]
+bench = false
 
 # `cargo test --test protocol` on the default feature set would
 # otherwise silently report 0 tests (every submodule is gated). Gate
