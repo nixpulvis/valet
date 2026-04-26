@@ -192,9 +192,7 @@ impl Record {
             // its own invariant.
             let bundle = lot.store_mut().bundle().map_err(Error::Storgit)?;
             let module_bytes = bundle.modules.get(&storgit_id).cloned().unwrap_or_else(|| {
-                unreachable!(
-                    "storgit invariant: bundle after put(Some) must include {storgit_id}",
-                )
+                unreachable!("storgit invariant: bundle after put(Some) must include {storgit_id}",)
             });
             let aad = Record::module_aad(&self.uuid, lot.uuid());
             let encrypted = lot.key().encrypt_with_aad(&module_bytes, &aad)?;
@@ -333,8 +331,8 @@ impl Record {
         // modules go through the fetcher (decrypt under lot key); a
         // byte-identical put returns Ok(None) and contributes no
         // dirty module to the snapshot, so we skip persisting it.
-        let (active_models, changed_ids, new_parent) = tokio::task::block_in_place(
-            || -> Result<SaveBatch, Error> {
+        let (active_models, changed_ids, new_parent) =
+            tokio::task::block_in_place(|| -> Result<SaveBatch, Error> {
                 for (rec, p) in records.iter().zip(&prepared) {
                     lot.store_mut()
                         .put(&p.storgit_id, Some(&p.label_bytes), Some(&p.data_bytes))
@@ -365,8 +363,7 @@ impl Record {
                     changed_ids.insert(p.storgit_id.clone());
                 }
                 Ok((active_models, changed_ids, bundle.parent))
-            },
-        )?;
+            })?;
 
         let store_packed = if new_parent.is_empty() {
             None

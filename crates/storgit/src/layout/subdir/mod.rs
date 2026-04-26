@@ -501,8 +501,7 @@ impl Layout for SubdirLayout {
         if bundle.repo.is_empty() {
             return Ok(MergeStatus::Clean(Vec::new()));
         }
-        let Some(incoming_head) =
-            crate::tarball::import_tarball_objects(&bundle.repo, &self.path)?
+        let Some(incoming_head) = crate::tarball::import_tarball_objects(&bundle.repo, &self.path)?
         else {
             return Ok(MergeStatus::Clean(Vec::new()));
         };

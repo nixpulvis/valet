@@ -123,10 +123,7 @@ fn bundle_only_reports_touched_modules() {
     let _first = store.bundle().unwrap();
     put_data(&mut store, "alpha", b"2");
     let second = store.bundle().unwrap();
-    assert!(
-        !second.parent.is_empty(),
-        "parent advances on every put"
-    );
+    assert!(!second.parent.is_empty(), "parent advances on every put");
     assert!(second.modules.contains_key(&mkid("alpha")));
     assert!(
         !second.modules.contains_key(&mkid("beta")),
@@ -298,10 +295,7 @@ fn parent_ref_is_not_updated_between_puts_without_bundle() {
         put_data(&mut store, &format!("entry-{i:04}"), b"x");
     }
     let bundle = store.bundle().unwrap();
-    assert!(
-        !bundle.parent.is_empty(),
-        "parent emitted on first bundle"
-    );
+    assert!(!bundle.parent.is_empty(), "parent emitted on first bundle");
     let tmp = tempfile::tempdir().unwrap();
     tar::Archive::new(std::io::Cursor::new(&bundle.parent))
         .unpack(tmp.path())
@@ -897,9 +891,7 @@ fn apply_ff_only_rejects_divergent() {
     let bundle_a_delta = fold_full(&mut a);
     put_data(&mut b, "alpha", b"b-v");
 
-    let result = b
-        .layout
-        .apply(bundle_a_delta, ApplyMode::FastForwardOnly);
+    let result = b.layout.apply(bundle_a_delta, ApplyMode::FastForwardOnly);
     let err = match result {
         Err(e) => e,
         Ok(_) => panic!("expected NotFastForward error"),
@@ -919,9 +911,7 @@ fn apply_ff_only_no_op_on_identical() {
     put_data(&mut a, "alpha", b"x");
     let bundle_a = fold_full(&mut a);
     let (_b_tmp, mut b) = fresh();
-    b.layout
-        .apply(bundle_a.clone(), ApplyMode::Merge)
-        .unwrap();
+    b.layout.apply(bundle_a.clone(), ApplyMode::Merge).unwrap();
 
     let status = b
         .layout

@@ -245,11 +245,14 @@ store_test!(archive_clears_label_from_cache, |store| {
     assert!(store.list_labels().is_empty());
 });
 
-store_test!(delete_unknown_id_does_not_leak_into_bundle_deleted, |store| {
-    store.delete(&mkid("never-existed")).unwrap();
-    let bundle = store.bundle().unwrap();
-    assert!(bundle.deleted.is_empty());
-});
+store_test!(
+    delete_unknown_id_does_not_leak_into_bundle_deleted,
+    |store| {
+        store.delete(&mkid("never-existed")).unwrap();
+        let bundle = store.bundle().unwrap();
+        assert!(bundle.deleted.is_empty());
+    }
+);
 
 // -- new / open / save / load (layout-agnostic trait methods) ----------
 //

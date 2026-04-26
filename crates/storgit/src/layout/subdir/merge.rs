@@ -180,13 +180,16 @@ impl Merge for SubdirLayout {
             commit: merge_commit.into(),
         }])
     }
-
 }
 
 impl Distribute for SubdirLayout {
     fn pull(&mut self, remote: &str) -> Result<MergeStatus, Error> {
         self.fetch(remote)?;
-        let tracking = self.git_dir().join("refs/remotes").join(remote).join("main");
+        let tracking = self
+            .git_dir()
+            .join("refs/remotes")
+            .join(remote)
+            .join("main");
         let Some(incoming) = read_ref_file(&tracking)? else {
             return Ok(MergeStatus::Clean(Vec::new()));
         };
