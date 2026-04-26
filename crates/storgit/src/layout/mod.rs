@@ -13,9 +13,9 @@
 //! `<path>/modules/<id>/{data,label}` bare repos each holding that entry's
 //! `{data,label}` blobs in their own object database.
 //!
-//! Operations that are specific to one layout (persistence envelopes like
-//! [`submodule::Parts`] / [`submodule::Snapshot`], etc.) stay as inherent
-//! methods on that layout's `Store<L>` rather than living on this trait.
+//! Each layout publishes a per-layout `Bundle` (see [`Layout::Bundle`]),
+//! the self-contained transferable object graph + refs that
+//! [`Layout::apply`] consumes and [`Layout::bundle`] produces.
 //!
 //! [`Store`]: crate::Store
 //! [`SubdirLayout`]: crate::SubdirLayout
@@ -28,6 +28,7 @@ use crate::entry::Entry;
 use crate::error::Error;
 use crate::id::CommitId;
 use crate::id::EntryId;
+use crate::merge::{ApplyMode, MergeStatus};
 use crate::tarball::untar_into;
 
 pub mod subdir;
@@ -39,6 +40,29 @@ pub mod submodule;
 pub(crate) const HASH_TYPE: gix::hash::Kind = gix::hash::Kind::Sha1;
 
 pub trait Layout: Sized {
+    /// Self-contained transferable form of this layout's persisted
+    /// state: object graph + refs, in whatever shape the layout
+    /// finds natural (submodule: parent + per-module tarballs;
+    /// subdir: the single repo's tarball). Pairs with
+    /// [`Layout::apply`] (consumer) and [`Layout::bundle`] (producer).
+    type Bundle;
+
+    /// Re-bundle everything touched since the previous
+    /// [`bundle`](Self::bundle) call (or since [`open`](Self::open)
+    /// for the first call) and hand the caller exactly the parts
+    /// that need repersisting. Clears dirty tracking on success, so
+    /// back-to-back calls with no intervening writes return an empty
+    /// bundle.
+    fn bundle(&mut self) -> Result<Self::Bundle, Error>;
+
+    /// Fold `bundle` into this layout, merging or fast-forwarding
+    /// per `mode`. Returns [`MergeStatus::Clean`] when the merge is
+    /// finalised, [`MergeStatus::Conflicted`] when the caller needs
+    /// to drive a [`MergeProgress`](crate::MergeProgress) resolution.
+    /// Errors with [`Error::NotFastForward`] under
+    /// [`ApplyMode::FastForwardOnly`] when the bundle is divergent.
+    fn apply(&mut self, bundle: Self::Bundle, mode: ApplyMode) -> Result<MergeStatus, Error>;
+
     /// Path to the bare git repository that owns this store's
     /// remote configuration and sync surface. Submodule: the
     /// parent repo. Subdir: the store's single repo.
@@ -122,7 +146,11 @@ pub trait Layout: Sized {
     /// appearing in [`Layout::list`] / [`Layout::get`], but its prior
     /// versions remain reachable via [`Layout::history`]. Archiving
     /// an unknown or already-archived id is a no-op.
-    fn archive(&mut self, id: &EntryId) -> Result<(), Error>;
+    ///
+    /// Returns `true` when a tombstone was actually written, `false`
+    /// when the call was a no-op (id wasn't live). Lets callers
+    /// distinguish "I just archived this" from "nothing to do."
+    fn archive(&mut self, id: &EntryId) -> Result<bool, Error>;
 
     /// Hard-delete `id`: remove the entry and, where the layout
     /// supports it, its history as well. Layouts that cannot cheaply

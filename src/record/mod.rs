@@ -8,9 +8,7 @@ use bitcode::{Decode, Encode};
 use sea_orm::{IntoActiveModel, TransactionTrait, entity::prelude::*, sea_query::OnConflict};
 use std::fmt;
 #[cfg(feature = "db")]
-use storgit::Layout;
-#[cfg(feature = "db")]
-use storgit::layout::submodule::{ModuleChange, Snapshot};
+use storgit::{Layout, layout::submodule::Bundle};
 
 /// One historical revision of a record, produced by [`Record::history`].
 ///
@@ -38,32 +36,34 @@ pub struct Revision {
 /// 2. [`PutRecord`](Self::PutRecord) per record, as it's staged into the
 ///    store. Modules missing from storgit's scratch are lazily
 ///    decrypted via the lot's fetcher inside `put`.
-/// 3. [`Snapshot`](Self::Snapshot) once, after the single `snapshot()` call.
+/// 3. [`Bundle`](Self::Bundle) once, after the single `bundle()` call.
 /// 4. [`SaveRecord`](Self::SaveRecord) once, after the batched insert of
 ///    every record's ciphertext commits.
 /// 5. [`SaveLot`](Self::SaveLot) once, after the lot's parent tarball is
-///    repersisted. Only fires if the snapshot advanced the parent.
+///    repersisted. Only fires if the bundle advanced the parent.
 #[cfg(feature = "db")]
 pub enum SaveProgress<'a> {
     OpenedStore,
     PutRecord(&'a Record),
-    Snapshot(&'a Snapshot),
+    Bundle(&'a Bundle),
     SaveRecord,
     SaveLot,
 }
 
 /// What [`Record::save`] returns from the `block_in_place` closure
 /// when it commits a single record: `(module_bytes, parent_bytes)`.
+/// `parent_bytes` is empty when the bundle didn't advance the parent.
 #[cfg(feature = "db")]
-type SaveSingle = Option<(Vec<u8>, Option<Vec<u8>>)>;
+type SaveSingle = Option<(Vec<u8>, Vec<u8>)>;
 
 /// What [`Record::save_many`] returns from the `block_in_place`
-/// closure: `(active_models, changed_ids, new_parent)`.
+/// closure: `(active_models, changed_ids, parent_bytes)`.
+/// `parent_bytes` is empty when the bundle didn't advance the parent.
 #[cfg(feature = "db")]
 type SaveBatch = (
     Vec<self::orm::ActiveModel>,
     std::collections::HashSet<storgit::EntryId>,
-    Option<Vec<u8>>,
+    Vec<u8>,
 );
 
 #[derive(Encode, Decode)]
@@ -187,20 +187,18 @@ impl Record {
                 return Ok(None);
             }
             // `put` returned Ok(Some(_)), so storgit marked the
-            // module dirty; the next snapshot must carry it as
-            // ModuleChange::Changed. Anything else is storgit
-            // violating its own invariant.
-            let snap = lot.store_mut().snapshot().map_err(Error::Storgit)?;
-            let module_bytes = match snap.modules.get(&storgit_id) {
-                Some(ModuleChange::Changed(bytes)) => bytes.clone(),
-                other => unreachable!(
-                    "storgit invariant: snapshot after put(Some) must yield Changed for {}; got {:?}",
-                    storgit_id, other
-                ),
-            };
+            // module dirty; the next bundle must carry it in
+            // `bundle.modules`. Anything else is storgit violating
+            // its own invariant.
+            let bundle = lot.store_mut().bundle().map_err(Error::Storgit)?;
+            let module_bytes = bundle.modules.get(&storgit_id).cloned().unwrap_or_else(|| {
+                unreachable!(
+                    "storgit invariant: bundle after put(Some) must include {storgit_id}",
+                )
+            });
             let aad = Record::module_aad(&self.uuid, lot.uuid());
             let encrypted = lot.key().encrypt_with_aad(&module_bytes, &aad)?;
-            Ok(Some((encrypted.pack(), snap.parent)))
+            Ok(Some((encrypted.pack(), bundle.parent)))
         })?;
 
         let Some((module_packed, new_parent)) = changed else {
@@ -220,10 +218,11 @@ impl Record {
         // Atomic: records.module and lots.store must advance together, or the
         // parent's gitlinks drift from the submodule tarball and `show` / the
         // label cache read stale state on next load.
-        let store_packed = new_parent
-            .as_ref()
-            .map(|bytes| lot.encrypt_store(bytes))
-            .transpose()?;
+        let store_packed = if new_parent.is_empty() {
+            None
+        } else {
+            Some(lot.encrypt_store(&new_parent)?)
+        };
         let txn = db.connection().begin().await?;
         self::orm::Entity::insert(active)
             .on_conflict(on_conflict)
@@ -342,23 +341,16 @@ impl Record {
                         .map_err(Error::Storgit)?;
                     on_progress(SaveProgress::PutRecord(rec));
                 }
-                let snap = lot.store_mut().snapshot().map_err(Error::Storgit)?;
-                on_progress(SaveProgress::Snapshot(&snap));
+                let bundle = lot.store_mut().bundle().map_err(Error::Storgit)?;
+                on_progress(SaveProgress::Bundle(&bundle));
 
                 let mut active_models = Vec::with_capacity(records.len());
                 let mut changed_ids = std::collections::HashSet::with_capacity(records.len());
                 for p in &prepared {
-                    let Some(change) = snap.modules.get(&p.storgit_id) else {
+                    let Some(module_bytes) = bundle.modules.get(&p.storgit_id) else {
                         // Byte-identical put; nothing to persist for
                         // this record.
                         continue;
-                    };
-                    let module_bytes = match change {
-                        ModuleChange::Changed(bytes) => bytes,
-                        other => unreachable!(
-                            "storgit invariant: snapshot after put must yield Changed for {}; got {:?}",
-                            p.storgit_id, other
-                        ),
                     };
                     let aad = Record::module_aad(&p.uuid, lot.uuid());
                     let encrypted = lot.key().encrypt_with_aad(module_bytes, &aad)?;
@@ -372,14 +364,15 @@ impl Record {
                     );
                     changed_ids.insert(p.storgit_id.clone());
                 }
-                Ok((active_models, changed_ids, snap.parent))
+                Ok((active_models, changed_ids, bundle.parent))
             },
         )?;
 
-        let store_packed = new_parent
-            .as_ref()
-            .map(|bytes| lot.encrypt_store(bytes))
-            .transpose()?;
+        let store_packed = if new_parent.is_empty() {
+            None
+        } else {
+            Some(lot.encrypt_store(&new_parent)?)
+        };
 
         let on_conflict = OnConflict::column(self::orm::Column::Uuid)
             .update_columns([self::orm::Column::LotUuid, self::orm::Column::Module])
@@ -414,7 +407,7 @@ impl Record {
             }
         }
 
-        if new_parent.is_some() {
+        if !new_parent.is_empty() {
             on_progress(SaveProgress::SaveLot);
         }
 
@@ -448,19 +441,20 @@ impl Record {
         // archive() needs the module on disk; storgit's fetcher will
         // pull it in on the ensure_loaded path inside archive. Wrap
         // in block_in_place for the fetcher's Handle::block_on.
-        let new_parent = tokio::task::block_in_place(|| -> Result<Option<Vec<u8>>, Error> {
+        let new_parent = tokio::task::block_in_place(|| -> Result<Vec<u8>, Error> {
             lot.store_mut().archive(&id).map_err(Error::Storgit)?;
-            let snap = lot.store_mut().snapshot().map_err(Error::Storgit)?;
-            Ok(snap.parent)
+            let bundle = lot.store_mut().bundle().map_err(Error::Storgit)?;
+            Ok(bundle.parent)
         })?;
 
         // Atomic: dropping the records row and advancing lots.store must
         // land together, or on next load the parent's gitlink set disagrees
         // with the live rows.
-        let store_packed = new_parent
-            .as_ref()
-            .map(|bytes| lot.encrypt_store(bytes))
-            .transpose()?;
+        let store_packed = if new_parent.is_empty() {
+            None
+        } else {
+            Some(lot.encrypt_store(&new_parent)?)
+        };
         let txn = db.connection().begin().await?;
         self::orm::Entity::delete_by_id(self.uuid.to_string())
             .exec(&txn)
@@ -845,7 +839,7 @@ mod tests {
             events.push(match ev {
                 SaveProgress::OpenedStore => "opened",
                 SaveProgress::PutRecord(_) => "put",
-                SaveProgress::Snapshot(_) => "snap",
+                SaveProgress::Bundle(_) => "snap",
                 SaveProgress::SaveRecord => "save_r",
                 SaveProgress::SaveLot => "save_l",
             });

@@ -19,9 +19,10 @@ use sea_orm::{
 use std::fmt;
 use std::sync::Arc;
 #[cfg(feature = "db")]
-use storgit::layout::submodule::{ModuleFetcher, Modules, Parts};
-#[cfg(feature = "db")]
-use storgit::{Layout, SubmoduleLayout};
+use storgit::{
+    Layout, SubmoduleLayout,
+    layout::submodule::{Bundle, ModuleFetcher, Modules},
+};
 
 pub const DEFAULT_LOT: &str = "main";
 
@@ -237,17 +238,17 @@ impl Lot {
     pub async fn save(&mut self, db: &Database, user: &User) -> Result<Uuid<Self>, Error> {
         let uuid = self.uuid.to_string();
         // Persist whatever parent state the store currently has. A
-        // fresh store snapshots an empty-parent tarball (dirty on
-        // open); a loaded store with no mutations returns None and
-        // we skip the write. We upsert on conflict so a dirty parent
-        // flushed through here overwrites the existing row rather
-        // than being discarded.
-        if let Some(parent_bytes) = self
+        // fresh store bundles an empty-parent tarball (dirty on
+        // open); a loaded store with no mutations returns an empty
+        // parent and we skip the write. We upsert on conflict so a
+        // dirty parent flushed through here overwrites the existing
+        // row rather than being discarded.
+        let parent_bytes = self
             .store
-            .snapshot()
+            .bundle()
             .map_err(|e| Error::Record(record::Error::Storgit(e)))?
-            .parent
-        {
+            .parent;
+        if !parent_bytes.is_empty() {
             let initial_store = self.encrypt_store(&parent_bytes)?;
             let active = self::orm::ActiveModel {
                 uuid: Unchanged(uuid.clone()),
@@ -383,12 +384,13 @@ impl Lot {
             .map_err(|e| Error::Record(record::Error::Storgit(storgit::Error::Io(e))))?;
         let layout = SubmoduleLayout::new(scratch.path().join("repo"))
             .and_then(|l| {
-                l.with_parts(Parts {
+                l.with_bundle(Bundle {
                     parent: parent_bytes,
                     modules: Modules::new(),
+                    deleted: Vec::new(),
                 })
             })
-            .map(|l| l.with_fetcher(fetcher))
+            .map(|l: SubmoduleLayout| l.with_fetcher(fetcher))
             .map_err(|e| Error::Record(record::Error::Storgit(e)))?;
         let store = storgit::Store { layout };
         let index = RecordIndex::from_store(&store).map_err(Error::Record)?;

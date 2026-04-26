@@ -11,9 +11,11 @@ pub enum Error {
         remote: String,
         reason: String,
     },
-    /// `apply_ff_only` rejected the incoming Parts because applying
-    /// it would not be a fast-forward. `ids` lists the entries
-    /// whose local and incoming heads diverged.
+    /// `apply` with [`crate::ApplyMode::FastForwardOnly`] rejected
+    /// the incoming bundle because applying it would not be a
+    /// fast-forward. `ids` lists the entries whose local and
+    /// incoming heads diverged. Empty for the subdir layout (single
+    /// shared ref; rejection is layout-wide, not per-id).
     NotFastForward {
         ids: Vec<String>,
     },

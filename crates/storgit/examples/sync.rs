@@ -6,11 +6,11 @@
 //!
 //! Default layout is `--submodule`.
 
-use storgit::layout::Layout;
-use storgit::layout::subdir::SubdirLayout;
-use storgit::layout::submodule::SubmoduleLayout;
-use storgit::merge::{MergeStatus, Side};
-use storgit::{EntryId, Merge, Store};
+use storgit::{
+    Distribute, EntryId, Merge, Store,
+    layout::{Layout, subdir::SubdirLayout, submodule::SubmoduleLayout},
+    merge::{MergeStatus, Side},
+};
 
 enum LayoutChoice {
     Submodule,
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn run<L: Merge>(
+fn run<L: Distribute + Merge>(
     scratch: &std::path::Path,
     flush: fn(&mut Store<L>) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -157,7 +157,7 @@ fn print_state<L: Layout>(
 }
 
 fn flush_submodule(store: &mut Store<SubmoduleLayout>) -> Result<(), Box<dyn std::error::Error>> {
-    store.snapshot()?;
+    store.bundle()?;
     Ok(())
 }
 

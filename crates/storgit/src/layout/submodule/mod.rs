@@ -23,6 +23,7 @@ use crate::git::{BareRepo, init_bare_on_branch, write_commit};
 use crate::id::CommitId;
 use crate::id::EntryId;
 use crate::layout::Layout;
+use crate::merge::{ApplyMode, MergeStatus};
 use crate::tarball::{tar_dir, untar_into};
 
 /// Parent bare repo directory inside the scratch dir.
@@ -70,9 +71,10 @@ pub type Modules = HashMap<EntryId, Vec<u8>>;
 
 /// Caller-supplied lookup for module bytes. Called by
 /// [`SubmoduleLayout`] when an operation first touches an id whose
-/// bytes are neither on disk nor in [`Parts::modules`]. A fetcher is
-/// assumed to reflect live backing storage at call time. Install one
-/// with [`SubmoduleLayout::with_fetcher`].
+/// bytes are neither on disk nor previously seeded via
+/// [`SubmoduleLayout::with_bundle`]. A fetcher is assumed to reflect
+/// live backing storage at call time. Install one with
+/// [`SubmoduleLayout::with_fetcher`].
 ///
 /// Return values:
 /// - `Ok(Some(bytes))` - module exists, here are its tarball bytes.
@@ -88,99 +90,47 @@ pub type ModuleFetcher = Arc<
         + Sync,
 >;
 
-/// The persisted form of a submodule-layout [`Store`][crate::Store].
+/// The persisted, transferable form of a submodule-layout
+/// [`Store`][crate::Store]. Pairs with [`Layout::apply`] (consumer)
+/// and [`Layout::bundle`] (producer).
 ///
-/// Feed this to [`SubmoduleLayout::with_parts`] to seed a
-/// store with previously-persisted bytes. An empty `parent` means
-/// "fresh store"; the first [`SubmoduleLayout::snapshot`]
-/// will emit the newly-initialised state so the caller can persist
-/// it.
+/// Feed this to [`SubmoduleLayout::with_bundle`] to seed a store
+/// with previously-persisted bytes. An empty `parent` means "fresh
+/// store"; the first [`Layout::bundle`] call will emit the
+/// newly-initialised state so the caller can persist it.
+///
+/// Re-bundling after writes returns a *delta* against the previous
+/// bundle: only `parent` (when changed) and only the touched
+/// `modules`. Persistence layers fold each bundle into their own
+/// state by overwriting `parent` (when non-empty), upserting each
+/// `modules` entry, and dropping every id in `deleted`.
 ///
 /// Whether the store is lazy is an orthogonal concern, controlled by
 /// [`SubmoduleLayout::with_fetcher`]:
 ///
-/// - No fetcher: the caller promises [`Parts::modules`] lists every
+/// - No fetcher: the caller promises [`Bundle::modules`] lists every
 ///   live module. A miss for a live id at `ensure_loaded` time is an
 ///   error; a miss for an unknown id is treated as fresh.
-/// - With a fetcher: [`Parts::modules`] is a prewarm cache consulted
+/// - With a fetcher: [`Bundle::modules`] is a prewarm cache consulted
 ///   first; misses fall through to the fetcher, whose answer is
 ///   authoritative.
 #[derive(Debug, Default, Clone)]
-pub struct Parts {
-    /// Tarball of the parent bare repo.
+pub struct Bundle {
+    /// Tarball of the parent bare repo. Empty means "no change":
+    /// either a fresh store with nothing to publish yet, or a
+    /// re-bundle after no parent-touching writes.
     pub parent: Vec<u8>,
     /// Tarball of each submodule bare repo the caller has in hand,
-    /// keyed by entry [`EntryId`]. With no fetcher, this is the complete
-    /// set of live modules; with a fetcher, it's an optional prewarm
-    /// cache consulted before the fetcher.
+    /// keyed by entry [`EntryId`]. From [`Layout::bundle`] this is
+    /// only the modules touched since the previous bundle. From a
+    /// caller seeding via [`SubmoduleLayout::with_bundle`] without a
+    /// fetcher, it must list every live module; with a fetcher it's
+    /// an optional prewarm cache consulted before the fetcher.
     pub modules: Modules,
-}
-
-impl Parts {
-    /// Fold a [`Snapshot`] delta into this [`Parts`]. After applying,
-    /// `self` reflects the store's state at the moment the snapshot was
-    /// taken, and can be fed straight back into
-    /// [`SubmoduleLayout::open`].
-    ///
-    /// - A `Some` parent in the snapshot overwrites [`Parts::parent`].
-    /// - [`ModuleChange::Changed`] overwrites or inserts the module.
-    /// - [`ModuleChange::Deleted`] removes the module if present.
-    pub fn apply(&mut self, snap: Snapshot) {
-        if let Some(parent) = snap.parent {
-            self.parent = parent;
-        }
-        for (id, change) in snap.modules {
-            match change {
-                ModuleChange::Changed(bytes) => {
-                    self.modules.insert(id, bytes);
-                }
-                ModuleChange::Deleted => {
-                    self.modules.remove(&id);
-                }
-            }
-        }
-    }
-}
-
-impl From<Snapshot> for Parts {
-    /// Build a fresh [`Parts`] by calling [`Parts::apply`] on an
-    /// empty one with `snap`.
-    ///
-    /// Use this only when the snapshot is known to describe the entire store,
-    /// not a delta against something already persisted. In practice that means
-    /// the first snapshot taken from a store opened with [`Parts::default`]:
-    /// every module is dirty, the parent is dirty, and there are no deletions
-    /// to express because there was nothing there to delete.
-    ///
-    /// For any subsequent snapshot, apply it to the [`Parts`] you already have.
-    /// A plain conversion there would drop every module not mentioned in the
-    /// delta, since each snapshot only contains the changes from the last.
-    fn from(snap: Snapshot) -> Self {
-        let mut parts = Parts::default();
-        parts.apply(snap);
-        parts
-    }
-}
-
-/// The delta produced by [`SubmoduleLayout::snapshot`]: only
-/// the parts touched since the previous snapshot (or, for the first
-/// call, since [`SubmoduleLayout::open`]).
-#[derive(Debug, Default)]
-pub struct Snapshot {
-    /// `Some` when the parent tarball changed and should be repersisted.
-    pub parent: Option<Vec<u8>>,
-    /// Touched submodules only. Ids absent from this map are
-    /// unchanged in storage.
-    pub modules: HashMap<EntryId, ModuleChange>,
-}
-
-/// What happened to a submodule between two snapshots.
-#[derive(Debug, Clone)]
-pub enum ModuleChange {
-    /// The submodule's tarball; write it to storage.
-    Changed(Vec<u8>),
-    /// The submodule was deleted; drop it from storage.
-    Deleted,
+    /// Ids hard-deleted since the previous bundle. The persistence
+    /// pipeline drops these from backing storage. The merge pipeline
+    /// ignores `deleted` (see `TODO-sync-deletes.md`).
+    pub deleted: Vec<EntryId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,15 +147,15 @@ enum ModuleDirt {
 /// ```text
 /// <path>/
 ///   parent.git/           bare repo: the store's index
-///     HEAD -> refs/heads/storgit
-///     refs/heads/storgit  -> the single parent commit
+///     HEAD -> refs/heads/main
+///     refs/heads/main     -> the single parent commit
 ///   modules/
 ///     <id>.git/           bare repo: one per live entry, its own object DB
 /// ```
 ///
 /// # Parent tree
 ///
-/// The parent repo's `refs/heads/storgit` points at a single commit whose
+/// The parent repo's `refs/heads/main` points at a single commit whose
 /// tree holds:
 ///
 /// - one gitlink per live entry, filename is the entry's [`EntryId`], oid is the
@@ -294,10 +244,6 @@ impl SubmoduleLayout {
         }
     }
 
-    pub(crate) fn pending_modules_mut(&mut self) -> &mut Modules {
-        self.pending_modules.get_mut().unwrap()
-    }
-
     fn current_module_commit(&self, id: &EntryId) -> Option<gix::ObjectId> {
         self.gitlinks.get(id).copied()
     }
@@ -321,7 +267,7 @@ impl SubmoduleLayout {
     ///   through the prewarm cache when the caller has bytes in
     ///   hand (e.g. just-decrypted from a backing store).
     /// - `bytes` is `None`: storgit looks for the bytes in the
-    ///   prewarm cache populated by [`Parts::modules`], then falls
+    ///   prewarm cache populated by [`Bundle::modules`], then falls
     ///   back to the installed [`ModuleFetcher`] (if any). Errors
     ///   when neither produces bytes and `id` is live in the parent
     ///   (the on-disk state would have diverged from the parent's
@@ -459,6 +405,8 @@ pub(crate) struct PlannedOps {
 }
 
 impl Layout for SubmoduleLayout {
+    type Bundle = Bundle;
+
     fn git_dir(&self) -> PathBuf {
         self.parent_dir()
     }
@@ -563,9 +511,9 @@ impl Layout for SubmoduleLayout {
         Ok(Some(ModuleRepo::new(&repo).read_entry(commit)?))
     }
 
-    fn archive(&mut self, id: &EntryId) -> Result<(), Error> {
+    fn archive(&mut self, id: &EntryId) -> Result<bool, Error> {
         if !self.gitlinks.contains_key(id) {
-            return Ok(());
+            return Ok(false);
         }
         self.ensure_loaded(id, None)?;
         let module = gix::open(self.module_dir(id))?;
@@ -574,7 +522,7 @@ impl Layout for SubmoduleLayout {
         self.label_cache.remove(id);
         self.gitlinks_dirty = true;
         self.mark_module_changed(id);
-        Ok(())
+        Ok(true)
     }
 
     fn delete(&mut self, id: &EntryId) -> Result<(), Error> {
@@ -623,6 +571,61 @@ impl Layout for SubmoduleLayout {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     }
+
+    /// Re-tar everything touched since the previous bundle (or since
+    /// [`Layout::open`] for the first call). Empty `parent` means
+    /// no parent advance since the previous bundle; only modules
+    /// touched since then appear in `modules` / `deleted`.
+    fn bundle(&mut self) -> Result<Bundle, Error> {
+        self.flush_parent()?;
+        let mut bundle = Bundle::default();
+        if self.dirty_parent {
+            bundle.parent = tar_dir(&self.parent_dir())?;
+        }
+        let dirty = std::mem::take(&mut self.dirty_modules);
+        for (name, state) in dirty {
+            match state {
+                ModuleDirt::Changed => {
+                    let bytes = tar_dir(&self.module_dir(&name))?;
+                    bundle.modules.insert(name, bytes);
+                }
+                ModuleDirt::Deleted => {
+                    bundle.deleted.push(name);
+                }
+            }
+        }
+        self.dirty_parent = false;
+        Ok(bundle)
+    }
+
+    /// Fold `bundle` into this layout. With [`ApplyMode::Merge`] the
+    /// kernel runs and may surface conflicts; with
+    /// [`ApplyMode::FastForwardOnly`] divergent gitlinks return
+    /// [`Error::NotFastForward`]. An empty `bundle.parent` is a
+    /// clean no-op (no incoming state to merge).
+    fn apply(&mut self, bundle: Bundle, mode: ApplyMode) -> Result<MergeStatus, Error> {
+        if bundle.parent.is_empty() {
+            return Ok(MergeStatus::Clean(Vec::new()));
+        }
+        let Some(incoming_parent) = self.import_bundle(&bundle)? else {
+            return Ok(MergeStatus::Clean(Vec::new()));
+        };
+        let parent_path = self.parent_dir();
+        let incoming_gitlinks = ParentTree::gitlinks_at(&parent_path, incoming_parent)?;
+
+        if mode == ApplyMode::FastForwardOnly {
+            let diverging = crate::layout::submodule::merge::preflight_ff_check(
+                self.gitlinks(),
+                &incoming_gitlinks,
+                |id| self.module_dir(id),
+            )?;
+            if !diverging.is_empty() {
+                return Err(Error::NotFastForward { ids: diverging });
+            }
+        }
+
+        self.run_merge_kernel(incoming_parent, incoming_gitlinks)
+    }
 }
 
 impl Drop for SubmoduleLayout {
@@ -632,7 +635,7 @@ impl Drop for SubmoduleLayout {
     /// gitlink-set / label-cache batched in memory needs flushing.
     ///
     /// Errors are swallowed -- Drop can't surface them. Callers who
-    /// need error-handling should call `snapshot` or `save`
+    /// need error-handling should call `bundle` or `save`
     /// explicitly.
     fn drop(&mut self) {
         let _ = self.flush_parent();
@@ -666,24 +669,28 @@ fn validate_submodule_repo(path: &std::path::Path) -> Result<(), Error> {
 // --- Submodule-layout-specific inherent methods ---
 
 impl SubmoduleLayout {
-    /// Fold [`Parts`] into an opened submodule layout.
+    /// Seed an opened submodule layout with previously-persisted
+    /// [`Bundle`] bytes.
     ///
-    /// - `parts.parent`: if non-empty, untarred into `parent.git`,
+    /// - `bundle.parent`: if non-empty, untarred into `parent.git`,
     ///   replacing whatever `open` produced. Requires the existing
-    ///   parent to be empty (freshly initialised). TODO: once
-    ///   merging lands (see PLAN-MERGE.md), allow applying parent
-    ///   bytes onto an existing non-empty parent by merging.
-    /// - `parts.modules`: inserted into the pending-modules cache;
+    ///   parent to be empty (freshly initialised). TODO: allow
+    ///   applying parent bytes onto an existing non-empty parent
+    ///   by routing through [`Layout::apply`].
+    /// - `bundle.modules`: inserted into the pending-modules cache;
     ///   each id's tarball is untarred on first touch.
-    pub fn with_parts(mut self, parts: Parts) -> Result<Self, Error> {
-        if !parts.parent.is_empty() {
-            // TODO: merge parts.parent with the on-disk parent when
+    /// - `bundle.deleted`: ignored. `with_bundle` is for seeding
+    ///   from already-pruned storage; nothing is "live" yet for
+    ///   `deleted` to remove.
+    pub fn with_bundle(mut self, bundle: Bundle) -> Result<Self, Error> {
+        if !bundle.parent.is_empty() {
+            // TODO: merge bundle.parent with the on-disk parent when
             // the latter already has history. For now, require the
             // on-disk parent to be freshly init'd (dirty_parent is
             // the in-memory signal for that state).
             if !self.dirty_parent {
                 return Err(Error::Other(
-                    "with_parts: parts.parent is non-empty but the layout's parent.git already \
+                    "with_bundle: bundle.parent is non-empty but the layout's parent.git already \
                      has state; merging is not yet implemented"
                         .into(),
                 ));
@@ -692,14 +699,14 @@ impl SubmoduleLayout {
             if parent_path.exists() {
                 std::fs::remove_dir_all(&parent_path)?;
             }
-            untar_into(&parts.parent, &parent_path)?;
+            untar_into(&bundle.parent, &parent_path)?;
             let ParentTree { gitlinks, labels } = ParentTree::load(&parent_path)?;
             self.gitlinks = gitlinks;
             self.label_cache = labels;
             self.dirty_parent = false;
         }
         let pending = self.pending_modules.get_mut().unwrap();
-        for (id, bytes) in parts.modules {
+        for (id, bytes) in bundle.modules {
             pending.insert(id, bytes);
         }
         Ok(self)
@@ -711,31 +718,5 @@ impl SubmoduleLayout {
     pub fn with_fetcher(mut self, fetcher: ModuleFetcher) -> Self {
         self.fetcher = Some(fetcher);
         self
-    }
-
-    /// Re-tar everything touched since the previous snapshot (or since
-    /// [`SubmoduleLayout::open`] for the first call) and hand the
-    /// caller exactly the parts that need repersisting. Clears
-    /// dirty tracking on success, so back-to-back snapshots with no
-    /// intervening writes return an empty [`Snapshot`].
-    pub fn snapshot(&mut self) -> Result<Snapshot, Error> {
-        self.flush_parent()?;
-        let mut snap = Snapshot::default();
-        if self.dirty_parent {
-            snap.parent = Some(tar_dir(&self.parent_dir())?);
-        }
-        let dirty = std::mem::take(&mut self.dirty_modules);
-        for (name, state) in dirty {
-            let change = match state {
-                ModuleDirt::Changed => {
-                    let bytes = tar_dir(&self.module_dir(&name))?;
-                    ModuleChange::Changed(bytes)
-                }
-                ModuleDirt::Deleted => ModuleChange::Deleted,
-            };
-            snap.modules.insert(name, change);
-        }
-        self.dirty_parent = false;
-        Ok(snap)
     }
 }

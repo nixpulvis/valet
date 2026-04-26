@@ -19,10 +19,34 @@ use crate::git::{
 use crate::id::CommitId;
 use crate::id::EntryId;
 use crate::layout::Layout;
+use crate::merge::{ApplyMode, MergeStatus};
 use crate::tarball::tar_dir;
 
 /// Subtree name inside the repo's root tree that holds every entry.
 const RECORDS_DIR: &str = "records";
+
+/// The persisted, transferable form of a subdir-layout
+/// [`Store`][crate::Store]. Pairs with [`Layout::apply`] (consumer)
+/// and [`Layout::bundle`] (producer).
+///
+/// Subdir keeps its whole state in one bare repo, so the bundle
+/// carries one tarball of that repo plus the ids hard-deleted since
+/// the previous bundle.
+#[derive(Debug, Default, Clone)]
+pub struct Bundle {
+    /// Tarball of the bare repo. Empty means "no change since the
+    /// previous bundle": either a fresh store with no commits, or a
+    /// re-bundle after no writes.
+    pub repo: Vec<u8>,
+    /// Ids hard-deleted since the previous bundle. The persistence
+    /// pipeline drops these from backing storage.
+    ///
+    /// Subdir's `delete` today archives (single shared ref can't
+    /// cheaply rewrite history; see `TODO-sync-deletes.md`); the
+    /// receiver should log a warning that history-rewrite isn't
+    /// implemented yet and proceed.
+    pub deleted: Vec<EntryId>,
+}
 
 /// Backed by a single bare repo at `path`. Every entry lives as a
 /// subtree of that repo's root tree, and a single shared ref
@@ -32,8 +56,8 @@ const RECORDS_DIR: &str = "records";
 ///
 /// ```text
 /// <path>/                 bare repo
-///   HEAD -> refs/heads/storgit
-///   refs/heads/storgit    -> the latest commit
+///   HEAD -> refs/heads/main
+///   refs/heads/main       -> the latest commit
 ///   objects/              the shared object DB for every entry
 /// ```
 ///
@@ -66,12 +90,15 @@ const RECORDS_DIR: &str = "records";
 /// splices it into a new `records/` tree (copying the other ids
 /// unchanged), wraps that in a new root tree, and commits with the
 /// prior tip as parent. The new commit is published by rewriting
-/// `refs/heads/storgit` to point at it. `put` is a no-op when the
+/// `refs/heads/main` to point at it. `put` is a no-op when the
 /// rebuilt `records/<id>/` subtree is byte-identical to the prior
 /// one; in that case no commit is written and the ref is unchanged.
-/// `delete` is currently an alias for `archive`: a single shared ref
-/// can't cheaply excise one entry's history without rewriting every
-/// commit that touched it.
+/// `delete` runs the same in-repo write as `archive` (a single
+/// shared ref can't cheaply excise one entry's history without
+/// rewriting every commit that touched it) and additionally
+/// records the id in `pending_deletes`, so the next [`Layout::bundle`]
+/// surfaces it in `Bundle.deleted` for the persistence layer to
+/// drop from backing storage.
 ///
 /// # Per-entry history
 ///
@@ -92,6 +119,23 @@ const RECORDS_DIR: &str = "records";
 pub struct SubdirLayout {
     path: PathBuf,
     label_cache: BTreeMap<EntryId, Vec<u8>>,
+    /// True when a `put`, `archive`, `delete`, `apply`, or `merge`
+    /// has advanced HEAD since the last [`Layout::bundle`]. Drives
+    /// the bundle's `repo` slot.
+    dirty: bool,
+    /// Hard-delete intent accumulated since the last [`Layout::bundle`].
+    /// `delete()` archives in storgit (subdir can't cheaply rewrite
+    /// history) and pushes the id here; the next bundle drains it
+    /// into [`Bundle::deleted`].
+    ///
+    /// NOTE: this is in-memory only. A process killed between
+    /// `delete()` and `bundle()` loses the deletion intent: the
+    /// archive commit is durable in the repo, but the persistence
+    /// layer never gets told to drop the id from backing storage.
+    /// Durable tracking would need a real ref or sidecar file in
+    /// `<git_dir>/storgit/`; revisit alongside the broader
+    /// process-kill durability story.
+    pending_deletes: Vec<EntryId>,
 }
 
 impl SubdirLayout {
@@ -110,6 +154,7 @@ impl SubdirLayout {
     /// Refresh derived state after HEAD advanced via something
     /// other than `put`/`archive` (e.g. a merge commit).
     pub(crate) fn rebuild_after_advance(&mut self) -> Result<(), Error> {
+        self.dirty = true;
         self.rebuild_label_cache()
     }
 
@@ -226,6 +271,8 @@ fn subtree_entry(
 }
 
 impl Layout for SubdirLayout {
+    type Bundle = Bundle;
+
     fn git_dir(&self) -> PathBuf {
         self.path.clone()
     }
@@ -241,6 +288,8 @@ impl Layout for SubdirLayout {
         Ok(SubdirLayout {
             path,
             label_cache: BTreeMap::new(),
+            dirty: false,
+            pending_deletes: Vec::new(),
         })
     }
 
@@ -249,6 +298,8 @@ impl Layout for SubdirLayout {
         let mut layout = SubdirLayout {
             path,
             label_cache: BTreeMap::new(),
+            dirty: false,
+            pending_deletes: Vec::new(),
         };
         layout.rebuild_label_cache()?;
         Ok(layout)
@@ -313,6 +364,7 @@ impl Layout for SubdirLayout {
             }
             None => {}
         }
+        self.dirty = true;
         Ok(Some(commit_id.into()))
     }
 
@@ -328,20 +380,21 @@ impl Layout for SubdirLayout {
         Ok(Some(read_subdir_entry_at(&repo, head, id)?))
     }
 
-    fn archive(&mut self, id: &EntryId) -> Result<(), Error> {
+    fn archive(&mut self, id: &EntryId) -> Result<bool, Error> {
         let repo = self.open_repo()?;
         let Some(prior_commit) = self.head_commit(&repo)? else {
-            return Ok(());
+            return Ok(false);
         };
         let rt = RecordsTree::at_commit(&repo, Some(prior_commit))?;
         if rt.id_subtree(id)?.is_none() {
-            return Ok(());
+            return Ok(false);
         }
         let root_tree_id = rt.with_id(id, None)?;
         let commit_id = write_commit(&repo, root_tree_id, vec![prior_commit], "archive")?;
         self.bare().write_head(commit_id)?;
         self.label_cache.remove(id);
-        Ok(())
+        self.dirty = true;
+        Ok(true)
     }
 
     fn delete(&mut self, id: &EntryId) -> Result<(), Error> {
@@ -349,7 +402,13 @@ impl Layout for SubdirLayout {
         // record without rewriting the ref. For now `delete` behaves
         // like `archive`: the entry is removed from the tree, and the
         // past commits that touched it remain reachable from HEAD.
-        self.archive(id)
+        // The hard-delete intent is recorded in `pending_deletes`
+        // (gated on archive actually doing work) so the next
+        // `bundle()` carries it through to the persistence layer.
+        if self.archive(id)? {
+            self.pending_deletes.push(id.clone());
+        }
+        Ok(())
     }
 
     fn list(&self) -> Result<Vec<EntryId>, Error> {
@@ -412,6 +471,59 @@ impl Layout for SubdirLayout {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
+    }
+
+    /// Re-tar the bare repo when [`SubdirLayout`] has advanced HEAD
+    /// since the previous bundle, otherwise leave `repo` empty. Drains
+    /// `pending_deletes` into `bundle.deleted`.
+    fn bundle(&mut self) -> Result<Bundle, Error> {
+        let repo = if self.dirty {
+            tar_dir(&self.path)?
+        } else {
+            Vec::new()
+        };
+        let deleted = std::mem::take(&mut self.pending_deletes);
+        self.dirty = false;
+        Ok(Bundle { repo, deleted })
+    }
+
+    /// Fold `bundle` into this layout. With [`ApplyMode::Merge`] the
+    /// kernel runs and may surface conflicts; with
+    /// [`ApplyMode::FastForwardOnly`] a divergent incoming HEAD
+    /// returns [`Error::NotFastForward`] with an empty `ids` (the
+    /// single shared ref is rejected layout-wide). An empty
+    /// `bundle.repo` is a clean no-op.
+    ///
+    /// `bundle.deleted` is ignored on the merge side (deletes are a
+    /// persistence concern; subdir can't cheaply rewrite history yet
+    /// -- see `TODO-sync-deletes.md`).
+    fn apply(&mut self, bundle: Bundle, mode: ApplyMode) -> Result<MergeStatus, Error> {
+        if bundle.repo.is_empty() {
+            return Ok(MergeStatus::Clean(Vec::new()));
+        }
+        let Some(incoming_head) =
+            crate::tarball::import_tarball_objects(&bundle.repo, &self.path)?
+        else {
+            return Ok(MergeStatus::Clean(Vec::new()));
+        };
+
+        if mode == ApplyMode::FastForwardOnly {
+            let local_head = self.bare().read_head()?;
+            if let Some(local) = local_head
+                && local != incoming_head
+            {
+                let repo = self.open_repo()?;
+                let merge_base = repo
+                    .merge_base(local, incoming_head)
+                    .ok()
+                    .map(|i| i.detach());
+                if merge_base != Some(local) {
+                    return Err(Error::NotFastForward { ids: Vec::new() });
+                }
+            }
+        }
+
+        self.run_merge_kernel(incoming_head)
     }
 }
 

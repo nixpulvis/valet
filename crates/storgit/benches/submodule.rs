@@ -1,5 +1,5 @@
-//! Submodule-layout-specific benches: persistence envelopes ([`Parts`] /
-//! [`Snapshot`]), save/load bundling, and workloads that exercise the lazy-load
+//! Submodule-layout-specific benches: the [`Bundle`] envelope,
+//! save/load bundling, and workloads that exercise the lazy-load
 //! path via `load_module`.
 //!
 //! Layout-agnostic benches (put / get / n_put_fresh) live in
@@ -20,8 +20,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use criterion::{Throughput, criterion_group, criterion_main};
-use storgit::layout::submodule::{ModuleChange, Parts, Snapshot};
-use storgit::{EntryId, Layout, Store, SubmoduleLayout};
+use storgit::{EntryId, Layout, Store, SubmoduleLayout, layout::submodule::Bundle};
 
 use common::{Handle, entry_id, new_id};
 
@@ -33,38 +32,35 @@ struct Storage {
 }
 
 impl Storage {
-    fn apply(&mut self, snap: Snapshot) {
-        if let Some(bytes) = snap.parent {
-            self.parent = bytes;
+    fn apply(&mut self, bundle: Bundle) {
+        if !bundle.parent.is_empty() {
+            self.parent = bundle.parent;
         }
-        for (id, change) in snap.modules {
-            match change {
-                ModuleChange::Changed(bytes) => {
-                    self.modules.insert(id, bytes);
-                }
-                ModuleChange::Deleted => {
-                    self.modules.remove(&id);
-                }
-            }
+        for (id, bytes) in bundle.modules {
+            self.modules.insert(id, bytes);
+        }
+        for id in bundle.deleted {
+            self.modules.remove(&id);
         }
     }
 
-    fn metadata_only_parts(&self) -> Parts {
-        Parts {
+    fn metadata_only_bundle(&self) -> Bundle {
+        Bundle {
             parent: self.parent.clone(),
             modules: HashMap::new(),
+            deleted: Vec::new(),
         }
     }
 }
 
 /// Build a fresh store at a newly-allocated scratch path and apply
-/// `parts`. The `Handle` carries the scratch TempDir for lifetime
+/// `bundle`. The `Handle` carries the scratch TempDir for lifetime
 /// management.
-fn new_with_parts(parts: Parts, scratch: tempfile::TempDir) -> Handle<SubmoduleLayout> {
+fn new_with_bundle(bundle: Bundle, scratch: tempfile::TempDir) -> Handle<SubmoduleLayout> {
     let path = scratch.path().join("repo");
     let layout = SubmoduleLayout::new(path)
         .unwrap()
-        .with_parts(parts)
+        .with_bundle(bundle)
         .unwrap();
     Handle {
         store: Store { layout },
@@ -72,8 +68,8 @@ fn new_with_parts(parts: Parts, scratch: tempfile::TempDir) -> Handle<SubmoduleL
     }
 }
 
-fn new_with_parts_tmp(parts: Parts) -> Handle<SubmoduleLayout> {
-    new_with_parts(parts, tempdir())
+fn new_with_bundle_tmp(bundle: Bundle) -> Handle<SubmoduleLayout> {
+    new_with_bundle(bundle, tempdir())
 }
 
 fn load_bytes(bytes: &[u8]) -> Handle<SubmoduleLayout> {
@@ -101,24 +97,25 @@ fn build_storage(n: usize) -> Storage {
             .expect("populate put");
     }
     let mut storage = Storage::default();
-    storage.apply(h.store.snapshot().expect("snapshot"));
+    storage.apply(h.store.bundle().expect("bundle"));
     storage
 }
 
 fn build_blob(n: usize) -> Vec<u8> {
     let storage = build_storage(n);
-    let parts = Parts {
+    let bundle = Bundle {
         parent: storage.parent,
         modules: storage.modules,
+        deleted: Vec::new(),
     };
-    new_with_parts_tmp(parts).store.save().expect("save")
+    new_with_bundle_tmp(bundle).store.save().expect("save")
 }
 
-bench!(bench_new_with_parts,
+bench!(bench_new_with_bundle,
     seed: |n| build_storage(n),
     throughput: |n, _s| Throughput::Elements(n as u64),
-    setup: |storage, _n| (storage.metadata_only_parts(), tempdir()),
-    body: |(parts, path)| new_with_parts(parts, path),
+    setup: |storage, _n| (storage.metadata_only_bundle(), tempdir()),
+    body: |(bundle, path)| new_with_bundle(bundle, path),
     layouts<L>: [SubmoduleLayout],
 );
 
@@ -136,7 +133,7 @@ bench!(bench_lazy_get,
     },
     throughput: |n, _s| Throughput::Elements(n as u64),
     setup: |(storage, pairs), _n| {
-        (new_with_parts_tmp(storage.metadata_only_parts()), pairs.clone())
+        (new_with_bundle_tmp(storage.metadata_only_bundle()), pairs.clone())
     },
     body: |(h, pairs)| {
         for (id, bytes) in pairs {
@@ -148,11 +145,11 @@ bench!(bench_lazy_get,
     layouts<L>: [SubmoduleLayout],
 );
 
-bench!(bench_snapshot,
+bench!(bench_bundle,
     seed: |_n| build_storage(common::CORPUS_SIZE),
     throughput: |n, _s| Throughput::Elements(n as u64),
     setup: |storage, n| {
-        let mut h = new_with_parts_tmp(storage.metadata_only_parts());
+        let mut h = new_with_bundle_tmp(storage.metadata_only_bundle());
         for i in 0..n {
             h.store
                 .put(&new_id(i), Some(b"label"), Some(b"payload"))
@@ -161,14 +158,14 @@ bench!(bench_snapshot,
         h
     },
     body: |mut h| {
-        let _ = h.store.snapshot().unwrap();
+        let _ = h.store.bundle().unwrap();
         h
     },
     measurement_time: Duration::from_secs(12),
     layouts<L>: [SubmoduleLayout],
 );
 
-bench!(bench_n_put_1_snapshot,
+bench!(bench_n_put_1_bundle,
     setup: common::fresh(),
     throughput: |n| Throughput::Elements(n as u64),
     |h, n| {
@@ -177,12 +174,12 @@ bench!(bench_n_put_1_snapshot,
                 .put(&entry_id(i), Some(b"label"), Some(b"payload"))
                 .unwrap();
         }
-        let _ = h.store.snapshot().unwrap();
+        let _ = h.store.bundle().unwrap();
     },
     layouts<L>: [SubmoduleLayout],
 );
 
-bench!(bench_n_put_n_snapshot,
+bench!(bench_n_put_n_bundle,
     setup: common::fresh(),
     throughput: |n| Throughput::Elements(n as u64),
     |h, n| {
@@ -190,7 +187,7 @@ bench!(bench_n_put_n_snapshot,
             h.store
                 .put(&entry_id(i), Some(b"label"), Some(b"payload"))
                 .unwrap();
-            let _ = h.store.snapshot().unwrap();
+            let _ = h.store.bundle().unwrap();
         }
     },
     measurement_time: Duration::from_secs(40),
@@ -223,11 +220,11 @@ bench!(bench_save,
 
 criterion_group!(
     benches,
-    bench_new_with_parts,
+    bench_new_with_bundle,
     bench_lazy_get,
-    bench_snapshot,
-    bench_n_put_1_snapshot,
-    bench_n_put_n_snapshot,
+    bench_bundle,
+    bench_n_put_1_bundle,
+    bench_n_put_n_bundle,
     bench_load,
     bench_save,
 );

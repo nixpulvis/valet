@@ -41,8 +41,7 @@ pub use layout::Layout;
 pub use layout::subdir::SubdirLayout;
 pub use layout::submodule::SubmoduleLayout;
 pub use merge::{
-    ApplyMode, BlobType, Conflict, FastForward, Merge, MergeProgress, MergeStatus, Outcome,
-    Side,
+    ApplyMode, BlobType, Conflict, FastForward, Merge, MergeProgress, MergeStatus, Outcome, Side,
 };
-pub use remote::Remote;
+pub use remote::{Distribute, Remote};
 pub use store::Store;

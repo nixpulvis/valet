@@ -33,7 +33,7 @@ pub(crate) fn tar_dir(dir: &Path) -> Result<Vec<u8>, Error> {
 ///
 /// Git objects are content-addressed, so an oid that already exists
 /// locally is a byte-identical no-op. Used by the submodule layout's
-/// `apply` path to fold an incoming `Parts` bundle into the local
+/// `apply` path to fold an incoming `Bundle` into the local
 /// object DB without standing up a scratch dir and a throwaway
 /// remote to `git fetch` from.
 pub(crate) fn import_tarball_objects(

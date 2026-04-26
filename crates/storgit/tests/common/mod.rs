@@ -11,10 +11,14 @@
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
-use storgit::layout::Layout;
-use storgit::layout::subdir::SubdirLayout;
-use storgit::layout::submodule::{Parts, SubmoduleLayout};
-use storgit::{EntryId, Store};
+use storgit::{
+    EntryId, Store,
+    layout::{
+        Layout,
+        subdir::SubdirLayout,
+        submodule::{Bundle, SubmoduleLayout},
+    },
+};
 use tempfile::TempDir;
 
 pub fn mkid(s: &str) -> EntryId {
@@ -94,15 +98,15 @@ pub fn make_store_like<L: Layout>(_other: &Handle<L>) -> Handle<L> {
 }
 
 /// Ensure every pending write is flushed to refs on disk. No-op for
-/// layouts that commit on every `put`; snapshots the parent for
-/// submodule.
+/// layouts that commit on every `put`; calls `bundle()` for submodule
+/// to materialise the deferred parent commit.
 impl Handle<SubdirLayout> {
     pub fn flush_for_test(&mut self) {}
 }
 
 impl Handle<SubmoduleLayout> {
     pub fn flush_for_test(&mut self) {
-        self.store.snapshot().unwrap();
+        self.store.bundle().unwrap();
     }
 }
 
@@ -119,9 +123,31 @@ pub fn fresh_submodule() -> (TempDir, Store<SubmoduleLayout>) {
     (scratch, store)
 }
 
-/// Fresh submodule store under a new scratch dir with `parts` applied
+/// Fold a delta `bundle` into the persistence-side `target`. Mirrors
+/// what a backing store does on each [`Layout::bundle`]: overwrite
+/// `parent` when the delta carried it, upsert each touched module,
+/// drop every hard-deleted id from the live module set.
+///
+/// `target` is a *what-is-currently-live* accumulator: `delta.deleted`
+/// ids are consumed (removed from `target.modules`) but are *not*
+/// propagated into `target.deleted`. So feeding `target` back into a
+/// fresh layout via `with_bundle` reseeds the live set without
+/// re-asserting deletions that storage already honoured.
+pub fn fold_bundle(target: &mut Bundle, delta: Bundle) {
+    if !delta.parent.is_empty() {
+        target.parent = delta.parent;
+    }
+    for (id, bytes) in delta.modules {
+        target.modules.insert(id, bytes);
+    }
+    for id in delta.deleted {
+        target.modules.remove(&id);
+    }
+}
+
+/// Fresh submodule store under a new scratch dir with `bundle` applied
 /// via the builder.
-pub fn open_with_parts(parts: Parts) -> (TempDir, Store<SubmoduleLayout>) {
+pub fn open_with_bundle(bundle: Bundle) -> (TempDir, Store<SubmoduleLayout>) {
     let scratch = tempfile::Builder::new()
         .prefix("storgit-")
         .tempdir()
@@ -129,7 +155,7 @@ pub fn open_with_parts(parts: Parts) -> (TempDir, Store<SubmoduleLayout>) {
     let path = scratch.path().join("repo");
     let layout = SubmoduleLayout::new(path)
         .unwrap()
-        .with_parts(parts)
+        .with_bundle(bundle)
         .unwrap();
     (scratch, Store { layout })
 }

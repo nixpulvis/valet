@@ -6,9 +6,11 @@
 mod common;
 
 use common::{Handle, mkid, put_data};
-use storgit::layout::Layout;
-use storgit::layout::subdir::SubdirLayout;
-use storgit::merge::Merge;
+use storgit::{
+    Distribute,
+    layout::{Layout, subdir::SubdirLayout},
+    merge::{Merge, MergeStatus, Side},
+};
 
 fn open() -> Handle<SubdirLayout> {
     common::make_subdir_store()
@@ -130,8 +132,6 @@ fn put_is_noop_detection_works_across_interleaved_writes() {
 }
 
 // --- Merge tests (subdir layout) -----------------------------------
-
-use storgit::merge::{MergeStatus, Side};
 
 fn pull_url(store: &Handle<SubdirLayout>) -> String {
     format!("file://{}", store.git_dir().display())

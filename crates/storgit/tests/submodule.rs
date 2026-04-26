@@ -1,25 +1,25 @@
-//! Submodule-layout-specific tests: persistence envelopes
-//! ([`Parts`] / [`Snapshot`] / [`ModuleChange`]), the module fetcher,
-//! save/load bundling, and the on-disk shape of the parent repo
-//! (`.gitmodules`, loose-object budget, deferred parent commits).
+//! Submodule-layout-specific tests: the [`Bundle`] envelope, the
+//! module fetcher, save/load bundling, and the on-disk shape of the
+//! parent repo (`.gitmodules`, loose-object budget, deferred parent
+//! commits).
 
 mod common;
 
 use std::sync::{Arc, Mutex};
 
 use common::{
-    count_loose_objects, dir_size, extract_to_tmp, fresh_submodule as fresh, get_data,
-    load_submodule_bytes as load_bytes, mkid, open_with_parts as open_with, put_data,
+    count_loose_objects, dir_size, extract_to_tmp, fold_bundle, fresh_submodule as fresh, get_data,
+    load_submodule_bytes as load_bytes, mkid, open_with_bundle as open_with, put_data,
 };
-use storgit::layout::submodule::{ModuleChange, ModuleFetcher, Modules, Parts};
-use storgit::{EntryId, Layout, Merge, Store, SubmoduleLayout};
+use storgit::{
+    Distribute, EntryId, Layout, Merge, Store, SubmoduleLayout,
+    layout::submodule::{Bundle, ModuleFetcher, Modules},
+    merge::{ApplyMode, MergeStatus, Side},
+};
 use tempfile::TempDir;
 
-fn empty() -> Parts {
-    Parts {
-        parent: Vec::new(),
-        modules: Modules::new(),
-    }
+fn empty() -> Bundle {
+    Bundle::default()
 }
 
 /// Shared fetcher state for fetcher tests. Holds the module bytes
@@ -62,7 +62,7 @@ impl BackingStore {
 /// Like [`open_with`] but also installs a fetcher that serves from
 /// a fresh [`BackingStore`], returned so the test can populate it
 /// and inspect call history.
-fn open_with_fetcher(parts: Parts) -> (TempDir, Store<SubmoduleLayout>, BackingStore) {
+fn open_with_fetcher(bundle: Bundle) -> (TempDir, Store<SubmoduleLayout>, BackingStore) {
     let backing = BackingStore::new();
     let scratch = tempfile::Builder::new()
         .prefix("storgit-")
@@ -71,7 +71,7 @@ fn open_with_fetcher(parts: Parts) -> (TempDir, Store<SubmoduleLayout>, BackingS
     let path = scratch.path().join("repo");
     let layout = SubmoduleLayout::new(path)
         .unwrap()
-        .with_parts(parts)
+        .with_bundle(bundle)
         .unwrap()
         .with_fetcher(backing.fetcher());
     (scratch, Store { layout }, backing)
@@ -80,61 +80,67 @@ fn open_with_fetcher(parts: Parts) -> (TempDir, Store<SubmoduleLayout>, BackingS
 #[test]
 fn open_empty_roundtrips() {
     let (_tmp, mut store) = fresh();
-    let snap = store.snapshot().expect("snapshot");
-    assert!(snap.parent.is_some(), "fresh store must publish its parent");
-    assert!(snap.modules.is_empty());
-    let mut parts = empty();
-    parts.apply(snap);
-    let (_tmp2, _reopened) = open_with(parts);
+    let bundle = store.bundle().expect("bundle");
+    assert!(
+        !bundle.parent.is_empty(),
+        "fresh store must publish its parent"
+    );
+    assert!(bundle.modules.is_empty());
+    let mut accum = empty();
+    fold_bundle(&mut accum, bundle);
+    let (_tmp2, _reopened) = open_with(accum);
 }
 
 #[test]
-fn put_roundtrips_through_parts() {
-    let mut parts = empty();
+fn put_roundtrips_through_bundle() {
+    let mut accum = empty();
     let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"hello");
-    parts.apply(store.snapshot().unwrap());
-    let (_tmp2, reopened) = open_with(parts);
+    fold_bundle(&mut accum, store.bundle().unwrap());
+    let (_tmp2, reopened) = open_with(accum);
     assert_eq!(get_data(&reopened, "alpha").as_deref(), Some(&b"hello"[..]));
 }
 
 #[test]
-fn history_survives_parts_roundtrip() {
-    let mut parts = empty();
+fn history_survives_bundle_roundtrip() {
+    let mut accum = empty();
     let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"v1");
     put_data(&mut store, "alpha", b"v2");
-    parts.apply(store.snapshot().unwrap());
-    let (_tmp2, reopened) = open_with(parts);
+    fold_bundle(&mut accum, store.bundle().unwrap());
+    let (_tmp2, reopened) = open_with(accum);
     let history = reopened.history(&mkid("alpha")).unwrap();
     let payloads: Vec<Option<&[u8]>> = history.iter().map(|e| e.data.as_deref()).collect();
     assert_eq!(payloads, vec![Some(&b"v2"[..]), Some(&b"v1"[..])]);
 }
 
 #[test]
-fn snapshot_only_reports_touched_modules() {
+fn bundle_only_reports_touched_modules() {
     // Writing one entry must not mark any other entry's tarball as dirty.
     let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"1");
     put_data(&mut store, "beta", b"1");
-    let _first = store.snapshot().unwrap();
+    let _first = store.bundle().unwrap();
     put_data(&mut store, "alpha", b"2");
-    let second = store.snapshot().unwrap();
-    assert!(second.parent.is_some(), "parent advances on every put");
+    let second = store.bundle().unwrap();
+    assert!(
+        !second.parent.is_empty(),
+        "parent advances on every put"
+    );
     assert!(second.modules.contains_key(&mkid("alpha")));
     assert!(
         !second.modules.contains_key(&mkid("beta")),
-        "beta was untouched and must not reappear in the snapshot"
+        "beta was untouched and must not reappear in the bundle"
     );
 }
 
 #[test]
-fn snapshot_is_empty_when_nothing_changed() {
+fn bundle_is_empty_when_nothing_changed() {
     let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"1");
-    let _first = store.snapshot().unwrap();
-    let second = store.snapshot().unwrap();
-    assert!(second.parent.is_none());
+    let _first = store.bundle().unwrap();
+    let second = store.bundle().unwrap();
+    assert!(second.parent.is_empty());
     assert!(second.modules.is_empty());
 }
 
@@ -168,12 +174,12 @@ fn save_is_nondestructive() {
 }
 
 #[test]
-fn save_bundles_every_module_even_ones_not_touched_since_last_snapshot() {
-    // snapshot() reports incremental deltas; save() is the full bundle.
+fn save_bundles_every_module_even_ones_not_touched_since_last_bundle() {
+    // bundle() reports incremental deltas; save() is the full tar.
     let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"a");
     put_data(&mut store, "beta", b"b");
-    let _drain_dirty = store.snapshot().unwrap();
+    let _drain_dirty = store.bundle().unwrap();
     let bytes = store.save().unwrap();
 
     let (_tmp2, reloaded) = load_bytes(&bytes);
@@ -182,20 +188,18 @@ fn save_bundles_every_module_even_ones_not_touched_since_last_snapshot() {
 }
 
 #[test]
-fn delete_emits_module_deletion_in_snapshot() {
-    let mut parts = empty();
+fn delete_emits_module_deletion_in_bundle() {
+    let mut accum = empty();
     let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"1");
-    parts.apply(store.snapshot().unwrap());
-    assert!(parts.modules.contains_key(&mkid("alpha")));
+    fold_bundle(&mut accum, store.bundle().unwrap());
+    assert!(accum.modules.contains_key(&mkid("alpha")));
     store.delete(&mkid("alpha")).unwrap();
-    let snap = store.snapshot().unwrap();
-    assert!(matches!(
-        snap.modules.get(&mkid("alpha")),
-        Some(ModuleChange::Deleted)
-    ));
-    parts.apply(snap);
-    assert!(!parts.modules.contains_key(&mkid("alpha")));
+    let delta = store.bundle().unwrap();
+    assert!(delta.deleted.contains(&mkid("alpha")));
+    assert!(!delta.modules.contains_key(&mkid("alpha")));
+    fold_bundle(&mut accum, delta);
+    assert!(!accum.modules.contains_key(&mkid("alpha")));
 }
 
 #[test]
@@ -265,9 +269,9 @@ fn parent_chain_grows_with_each_flush() {
     // common ancestor during sync.
     let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"v1");
-    store.snapshot().unwrap();
+    store.bundle().unwrap();
     put_data(&mut store, "beta", b"v1");
-    store.snapshot().unwrap();
+    store.bundle().unwrap();
     put_data(&mut store, "gamma", b"v1");
     let bytes = store.save().unwrap();
 
@@ -279,24 +283,27 @@ fn parent_chain_grows_with_each_flush() {
 }
 
 #[test]
-fn parts_from_first_snapshot_can_be_reopened() {
+fn first_bundle_can_be_reopened() {
     let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"hi");
-    let parts: Parts = store.snapshot().unwrap().into();
-    let (_tmp2, reopened) = open_with(parts);
+    let bundle = store.bundle().unwrap();
+    let (_tmp2, reopened) = open_with(bundle);
     assert_eq!(get_data(&reopened, "alpha").as_deref(), Some(&b"hi"[..]));
 }
 
 #[test]
-fn parent_ref_is_not_updated_between_puts_without_snapshot() {
+fn parent_ref_is_not_updated_between_puts_without_bundle() {
     let (_tmp, mut store) = fresh();
     for i in 0..10 {
         put_data(&mut store, &format!("entry-{i:04}"), b"x");
     }
-    let snap = store.snapshot().unwrap();
-    let parent_bytes = snap.parent.expect("parent emitted on first snapshot");
+    let bundle = store.bundle().unwrap();
+    assert!(
+        !bundle.parent.is_empty(),
+        "parent emitted on first bundle"
+    );
     let tmp = tempfile::tempdir().unwrap();
-    tar::Archive::new(std::io::Cursor::new(&parent_bytes))
+    tar::Archive::new(std::io::Cursor::new(&bundle.parent))
         .unpack(tmp.path())
         .unwrap();
     let parent_objects = tmp.path().join("objects");
@@ -308,29 +315,29 @@ fn parent_ref_is_not_updated_between_puts_without_snapshot() {
 }
 
 #[test]
-fn parts_apply_merges_successive_snapshots() {
-    let mut parts = empty();
+fn fold_merges_successive_bundles() {
+    let mut accum = empty();
     let (_tmp, mut store) = fresh();
     put_data(&mut store, "alpha", b"1");
-    parts.apply(store.snapshot().unwrap());
+    fold_bundle(&mut accum, store.bundle().unwrap());
     put_data(&mut store, "beta", b"2");
-    parts.apply(store.snapshot().unwrap());
-    let (_tmp2, reopened) = open_with(parts);
+    fold_bundle(&mut accum, store.bundle().unwrap());
+    let (_tmp2, reopened) = open_with(accum);
     let mut ids = reopened.list().unwrap();
     ids.sort();
     assert_eq!(ids, vec![mkid("alpha"), mkid("beta")]);
 }
 
 #[test]
-fn label_cache_survives_parts_roundtrip() {
-    let mut parts = empty();
+fn label_cache_survives_bundle_roundtrip() {
+    let mut accum = empty();
     let (_tmp, mut store) = fresh();
     store
         .put(&mkid("alpha"), Some(b"label"), Some(b"data"))
         .unwrap();
-    parts.apply(store.snapshot().unwrap());
+    fold_bundle(&mut accum, store.bundle().unwrap());
 
-    let (_tmp2, reopened) = open_with(parts);
+    let (_tmp2, reopened) = open_with(accum);
     assert_eq!(reopened.label(&mkid("alpha")), Some(&b"label"[..]));
     assert_eq!(
         reopened.list_labels(),
@@ -433,24 +440,25 @@ fn gitmodules_parses_as_git_submodule_config() {
 
 // -- fetcher / lazy loading --------------------------------------------
 
-fn snapshot_backing(entries: &[(&str, &[u8])]) -> (Vec<u8>, Modules) {
+fn bundle_backing(entries: &[(&str, &[u8])]) -> (Vec<u8>, Modules) {
     let (_tmp, mut store) = fresh();
     for (name, data) in entries {
         store.put(&mkid(name), Some(b"label"), Some(data)).unwrap();
     }
-    let mut parts = empty();
-    parts.apply(store.snapshot().unwrap());
-    (parts.parent, parts.modules)
+    let mut accum = empty();
+    fold_bundle(&mut accum, store.bundle().unwrap());
+    (accum.parent, accum.modules)
 }
 
 #[test]
 fn fetcher_is_consulted_on_miss_and_result_round_trips() {
-    let (parent, modules) = snapshot_backing(&[("alpha", b"hello")]);
-    let parts = Parts {
+    let (parent, modules) = bundle_backing(&[("alpha", b"hello")]);
+    let bundle = Bundle {
         parent,
         modules: Modules::new(),
+        deleted: Vec::new(),
     };
-    let (_tmp, store, backing) = open_with_fetcher(parts);
+    let (_tmp, store, backing) = open_with_fetcher(bundle);
     backing.extend(modules);
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"hello"[..]));
     assert_eq!(
@@ -462,9 +470,13 @@ fn fetcher_is_consulted_on_miss_and_result_round_trips() {
 
 #[test]
 fn fetcher_prewarm_short_circuits_lookup() {
-    let (parent, modules) = snapshot_backing(&[("alpha", b"hi")]);
-    let parts = Parts { parent, modules };
-    let (_tmp, store, backing) = open_with_fetcher(parts);
+    let (parent, modules) = bundle_backing(&[("alpha", b"hi")]);
+    let bundle = Bundle {
+        parent,
+        modules,
+        deleted: Vec::new(),
+    };
+    let (_tmp, store, backing) = open_with_fetcher(bundle);
     assert_eq!(get_data(&store, "alpha").as_deref(), Some(&b"hi"[..]));
     assert!(
         backing.calls().is_empty(),
@@ -474,12 +486,13 @@ fn fetcher_prewarm_short_circuits_lookup() {
 
 #[test]
 fn fetcher_ok_none_for_live_id_surfaces_as_error() {
-    let (parent, _) = snapshot_backing(&[("alpha", b"hi")]);
-    let parts = Parts {
+    let (parent, _) = bundle_backing(&[("alpha", b"hi")]);
+    let bundle = Bundle {
         parent,
         modules: Modules::new(),
+        deleted: Vec::new(),
     };
-    let (_tmp, store, _backing) = open_with_fetcher(parts);
+    let (_tmp, store, _backing) = open_with_fetcher(bundle);
     let err = store
         .get(&mkid("alpha"))
         .expect_err("live id with no backing bytes must error");
@@ -499,10 +512,11 @@ fn fetcher_ok_none_for_unknown_id_is_fresh() {
 
 #[test]
 fn fetcher_error_propagates_as_error_fetch() {
-    let (parent, _) = snapshot_backing(&[("alpha", b"hi")]);
-    let parts = Parts {
+    let (parent, _) = bundle_backing(&[("alpha", b"hi")]);
+    let bundle = Bundle {
         parent,
         modules: Modules::new(),
+        deleted: Vec::new(),
     };
     let scratch = tempfile::Builder::new()
         .prefix("storgit-")
@@ -512,7 +526,7 @@ fn fetcher_error_propagates_as_error_fetch() {
     let fetcher: ModuleFetcher = Arc::new(|_id: &EntryId| Err("db unreachable".into()));
     let layout = SubmoduleLayout::new(path)
         .unwrap()
-        .with_parts(parts)
+        .with_bundle(bundle)
         .unwrap()
         .with_fetcher(fetcher);
     let store = Store { layout };
@@ -560,16 +574,14 @@ fn new_submodule_store_is_usable() {
 
 // --- Merge tests (submodule layout) ----------------------------
 
-use storgit::merge::{ApplyMode, MergeStatus, Side};
-
 fn pull_url_sub(store: &Store<SubmoduleLayout>) -> String {
     format!("file://{}", store.git_dir().display())
 }
 
 fn flush_sub(store: &mut Store<SubmoduleLayout>) {
-    // snapshot returns a delta; the side effect is that the parent
+    // bundle returns a delta; the side effect is that the parent
     // ref is materialised on disk so a remote can fetch from it.
-    store.snapshot().unwrap();
+    store.bundle().unwrap();
 }
 
 #[test]
@@ -725,17 +737,20 @@ fn put_during_merge_errors_sub() {
     assert!(a.put(&mkid("alpha"), None, Some(b"x")).is_err());
 }
 
+fn fold_full(store: &mut Store<SubmoduleLayout>) -> Bundle {
+    let mut accum = empty();
+    fold_bundle(&mut accum, store.bundle().unwrap());
+    accum
+}
+
 #[test]
 fn apply_into_empty_loads_state() {
-    // a's first snapshot is its full state (Parts.apply folds it).
     let (_a_tmp, mut a) = fresh();
     put_data(&mut a, "alpha", b"hello");
-    let snap = a.snapshot().unwrap();
-    let mut parts = Parts::default();
-    parts.apply(snap);
+    let bundle = fold_full(&mut a);
 
     let (_b_tmp, mut b) = fresh();
-    let status = b.layout.apply(parts).unwrap();
+    let status = b.layout.apply(bundle, ApplyMode::Merge).unwrap();
     match status {
         MergeStatus::Clean(forwards) => assert!(
             forwards
@@ -751,15 +766,13 @@ fn apply_into_empty_loads_state() {
 fn apply_onto_populated_clean_merge() {
     let (_a_tmp, mut a) = fresh();
     put_data(&mut a, "alpha", b"a");
-    let snap_a = a.snapshot().unwrap();
-    let mut parts_a = Parts::default();
-    parts_a.apply(snap_a);
+    let bundle_a = fold_full(&mut a);
 
     let (_b_tmp, mut b) = fresh();
     put_data(&mut b, "beta", b"b");
     flush_sub(&mut b);
 
-    let status = b.layout.apply(parts_a).unwrap();
+    let status = b.layout.apply(bundle_a, ApplyMode::Merge).unwrap();
     match status {
         MergeStatus::Clean(forwards) => {
             assert!(
@@ -776,26 +789,24 @@ fn apply_onto_populated_clean_merge() {
 
 #[test]
 fn apply_onto_populated_with_conflict() {
-    // Build a shared starting state via Parts.
+    // Build a shared starting state via Bundle.
     let (_seed_tmp, mut seed) = fresh();
     put_data(&mut seed, "alpha", b"shared");
-    let snap_shared = seed.snapshot().unwrap();
-    let mut parts_shared = Parts::default();
-    parts_shared.apply(snap_shared);
+    let bundle_shared = fold_full(&mut seed);
 
     let (_a_tmp, mut a) = fresh();
-    a.layout.apply(parts_shared.clone()).unwrap();
+    a.layout
+        .apply(bundle_shared.clone(), ApplyMode::Merge)
+        .unwrap();
     let (_b_tmp, mut b) = fresh();
-    b.layout.apply(parts_shared).unwrap();
+    b.layout.apply(bundle_shared, ApplyMode::Merge).unwrap();
 
     // Diverge.
     put_data(&mut a, "alpha", b"a-version");
-    let snap_a_delta = a.snapshot().unwrap();
-    let mut parts_a_delta = Parts::default();
-    parts_a_delta.apply(snap_a_delta);
+    let bundle_a_delta = fold_full(&mut a);
     put_data(&mut b, "alpha", b"b-version");
 
-    let status = b.layout.apply(parts_a_delta).unwrap();
+    let status = b.layout.apply(bundle_a_delta, ApplyMode::Merge).unwrap();
     let mut progress = match status {
         MergeStatus::Conflicted(p) => p,
         _ => panic!("expected conflict from divergent puts"),
@@ -813,23 +824,19 @@ fn apply_ff_only_accepts_fast_forward() {
     // Build a's first state, hand to b via apply.
     let (_a_tmp, mut a) = fresh();
     put_data(&mut a, "alpha", b"v1");
-    let snap_v1 = a.snapshot().unwrap();
-    let mut parts_v1 = Parts::default();
-    parts_v1.apply(snap_v1);
+    let bundle_v1 = fold_full(&mut a);
 
     let (_b_tmp, mut b) = fresh();
-    b.layout.apply(parts_v1).unwrap();
+    b.layout.apply(bundle_v1, ApplyMode::Merge).unwrap();
 
-    // Advance a; the next snapshot is a fast-forward delta on top
+    // Advance a; the next bundle is a fast-forward delta on top
     // of the state b already has.
     put_data(&mut a, "alpha", b"v2");
-    let snap_v2 = a.snapshot().unwrap();
-    let mut parts_v2 = Parts::default();
-    parts_v2.apply(snap_v2);
+    let bundle_v2 = fold_full(&mut a);
 
     let status = b
         .layout
-        .apply_with(parts_v2, ApplyMode::FastForwardOnly)
+        .apply(bundle_v2, ApplyMode::FastForwardOnly)
         .unwrap();
     match status {
         MergeStatus::Clean(forwards) => {
@@ -849,20 +856,16 @@ fn apply_ff_only_accepts_new_id() {
     // b sends a wholly-new id to a. New ids are ff-equivalent.
     let (_a_tmp, mut a) = fresh();
     put_data(&mut a, "alpha", b"a");
-    let snap_a = a.snapshot().unwrap();
-    let mut parts_a = Parts::default();
-    parts_a.apply(snap_a);
+    let bundle_a = fold_full(&mut a);
     let (_b_tmp, mut b) = fresh();
-    b.layout.apply(parts_a).unwrap();
+    b.layout.apply(bundle_a, ApplyMode::Merge).unwrap();
 
     put_data(&mut b, "beta", b"b");
-    let snap_b = b.snapshot().unwrap();
-    let mut parts_b = Parts::default();
-    parts_b.apply(snap_b);
+    let bundle_b = fold_full(&mut b);
 
     let status = a
         .layout
-        .apply_with(parts_b, ApplyMode::FastForwardOnly)
+        .apply(bundle_b, ApplyMode::FastForwardOnly)
         .unwrap();
     match status {
         MergeStatus::Clean(forwards) => {
@@ -881,24 +884,22 @@ fn apply_ff_only_rejects_divergent() {
     // Both sides write to alpha from a shared base -> divergent.
     let (_seed_tmp, mut seed) = fresh();
     put_data(&mut seed, "alpha", b"shared");
-    let snap_shared = seed.snapshot().unwrap();
-    let mut parts_shared = Parts::default();
-    parts_shared.apply(snap_shared);
+    let bundle_shared = fold_full(&mut seed);
 
     let (_a_tmp, mut a) = fresh();
-    a.layout.apply(parts_shared.clone()).unwrap();
+    a.layout
+        .apply(bundle_shared.clone(), ApplyMode::Merge)
+        .unwrap();
     let (_b_tmp, mut b) = fresh();
-    b.layout.apply(parts_shared).unwrap();
+    b.layout.apply(bundle_shared, ApplyMode::Merge).unwrap();
 
     put_data(&mut a, "alpha", b"a-v");
-    let snap_a_delta = a.snapshot().unwrap();
-    let mut parts_a_delta = Parts::default();
-    parts_a_delta.apply(snap_a_delta);
+    let bundle_a_delta = fold_full(&mut a);
     put_data(&mut b, "alpha", b"b-v");
 
     let result = b
         .layout
-        .apply_with(parts_a_delta, ApplyMode::FastForwardOnly);
+        .apply(bundle_a_delta, ApplyMode::FastForwardOnly);
     let err = match result {
         Err(e) => e,
         Ok(_) => panic!("expected NotFastForward error"),
@@ -916,15 +917,15 @@ fn apply_ff_only_rejects_divergent() {
 fn apply_ff_only_no_op_on_identical() {
     let (_a_tmp, mut a) = fresh();
     put_data(&mut a, "alpha", b"x");
-    let snap_a = a.snapshot().unwrap();
-    let mut parts_a = Parts::default();
-    parts_a.apply(snap_a);
+    let bundle_a = fold_full(&mut a);
     let (_b_tmp, mut b) = fresh();
-    b.layout.apply(parts_a.clone()).unwrap();
+    b.layout
+        .apply(bundle_a.clone(), ApplyMode::Merge)
+        .unwrap();
 
     let status = b
         .layout
-        .apply_with(parts_a, ApplyMode::FastForwardOnly)
+        .apply(bundle_a, ApplyMode::FastForwardOnly)
         .unwrap();
     match status {
         MergeStatus::Clean(forwards) => assert!(forwards.is_empty()),

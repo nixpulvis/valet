@@ -5,39 +5,25 @@
 //! the merge commit; a conflicted one stashes `MERGE_HEAD` so the
 //! caller can drive a [`MergeProgress`] resolution.
 
-use crate::error::Error;
-use crate::git::{BareRepo, decode_tree, read_ref_file, write_merge_commit};
-use crate::id::EntryId;
-use crate::layout::Layout;
-use crate::layout::subdir::{RecordsTree, SubdirLayout};
-use crate::merge::{
-    BlobType, Conflict, FastForward, Merge, MergeProgress, MergeStatus, Outcome, Side,
-    fold_conflict_blob_types, merge_tree_threeways,
+use crate::{
+    Distribute,
+    error::Error,
+    git::{BareRepo, decode_tree, read_ref_file, write_merge_commit},
+    id::EntryId,
+    layout::{
+        Layout,
+        subdir::{RecordsTree, SubdirLayout},
+    },
+    merge::{
+        BlobType, Conflict, FastForward, Merge, MergeProgress, MergeStatus, Outcome, Side,
+        fold_conflict_blob_types, merge_tree_threeways,
+    },
 };
 
 /// Subtree name inside the repo's root tree that holds every entry.
 const RECORDS_DIR: &str = "records";
 
 impl SubdirLayout {
-    /// Merge `incoming_head` (a commit reachable from this repo's
-    /// object database) into the current `HEAD`. Symmetric with
-    /// [`SubmoduleLayout::apply`][SubmoduleLayout]; subdir takes a
-    /// single oid because its state is one ref, where submodule
-    /// takes a [`Parts`] envelope describing the parent + per-module
-    /// tarballs.
-    ///
-    /// Today the only way to get incoming objects into the local
-    /// repo without going through [`Merge::pull`] is to fetch
-    /// from a `file://` URL into a tracking ref. A future subdir
-    /// `Snapshot`/`Parts` envelope (mirroring submodule's) would
-    /// give callers a tarball-shaped input here.
-    ///
-    /// [`Parts`]: crate::layout::submodule::Parts
-    /// [SubmoduleLayout]: crate::SubmoduleLayout::apply
-    pub fn apply(&mut self, incoming_head: gix::ObjectId) -> Result<MergeStatus, Error> {
-        self.run_merge_kernel(incoming_head)
-    }
-
     /// Run the merge kernel. Merges `incoming_head` into the current
     /// `HEAD`. Returns [`MergeStatus::Clean`] when the merge is
     /// finalised and the ref advanced; [`MergeStatus::Conflicted`]
@@ -195,14 +181,12 @@ impl Merge for SubdirLayout {
         }])
     }
 
+}
+
+impl Distribute for SubdirLayout {
     fn pull(&mut self, remote: &str) -> Result<MergeStatus, Error> {
-        let git_dir = self.git_dir();
-        let repo = gix::open(&git_dir)?;
-        let remote_obj = repo
-            .find_remote(remote)
-            .map_err(|e| Error::Other(format!("fetch: remote {remote:?} not found: {e}")))?;
-        crate::remote::do_fetch(remote_obj)?;
-        let tracking = git_dir.join("refs/remotes").join(remote).join("main");
+        self.fetch(remote)?;
+        let tracking = self.git_dir().join("refs/remotes").join(remote).join("main");
         let Some(incoming) = read_ref_file(&tracking)? else {
             return Ok(MergeStatus::Clean(Vec::new()));
         };

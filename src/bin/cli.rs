@@ -625,8 +625,8 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
             put += 1;
             println!("Put {put}/{total} {lot_name}::{}", record.label());
         }
-        SaveProgress::Snapshot(_) => {
-            println!("Snapshot complete");
+        SaveProgress::Bundle(_) => {
+            println!("Bundle complete");
         }
         SaveProgress::SaveRecord => {
             println!("Saved {total} records");

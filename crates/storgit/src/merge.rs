@@ -4,15 +4,16 @@
 //! [`crate::layout::subdir`] and [`crate::layout::submodule`]); this
 //! module defines the cross-cutting vocabulary they speak.
 //!
-//! Both kernels drive [`apply`] and [`pull`] and return a
-//! [`MergeStatus`]. A `Clean` status means the merge is already
-//! finalised. A `Conflicted` status carries a [`MergeProgress`]
-//! the caller drives: inspect [`MergeProgress::conflicts`], call
-//! [`MergeProgress::pick`] for each, then [`MergeProgress::resolve`]
-//! to produce an [`Outcome`] that [`Merge::merge`] accepts.
+//! Both kernels drive [`Layout::apply`] and [`Distribute::pull`]
+//! and return a [`MergeStatus`]. A `Clean` status means the merge
+//! is already finalised. A `Conflicted` status carries a
+//! [`MergeProgress`] the caller drives: inspect
+//! [`MergeProgress::conflicts`], call [`MergeProgress::pick`] for
+//! each, then [`MergeProgress::resolve`] to produce an [`Outcome`]
+//! that [`Merge::merge`] accepts.
 //!
-//! [`apply`]: crate::SubmoduleLayout::apply
-//! [`pull`]: Merge::pull
+//! [`Layout::apply`]: crate::Layout::apply
+//! [`Distribute::pull`]: crate::Distribute::pull
 
 use std::collections::HashMap;
 
@@ -188,10 +189,8 @@ pub struct FastForward {
     pub commit: CommitId,
 }
 
-/// Outcome of [`apply`] or [`pull`].
-///
-/// [`apply`]: crate::SubmoduleLayout::apply
-/// [`pull`]: Merge::pull
+/// Outcome of [`Layout::apply`](crate::Layout::apply) or
+/// [`Distribute::pull`](crate::Distribute::pull).
 #[derive(Debug)]
 pub enum MergeStatus {
     /// Merge finalised; the list reports what moved in the local
@@ -279,9 +278,9 @@ impl Outcome {
     }
 }
 
-/// The common `apply` / `pull` / `merge` / `abort` surface both
-/// layouts expose on top of [`Layout`](crate::Layout). Per-layout
-/// implementations live next to their merge kernels.
+/// Resolve-and-finalise primitives shared by both layouts. The
+/// network-driven entry point (`pull`) lives on
+/// [`crate::Distribute`].
 pub trait Merge: crate::Layout {
     /// True when a merge is in progress and the operator still needs
     /// to call [`Self::merge`] or [`Self::abort`].
@@ -293,10 +292,6 @@ pub trait Merge: crate::Layout {
 
     /// Finalise an in-progress merge using the picks in `resolution`.
     fn merge(&mut self, resolution: Outcome) -> Result<Vec<FastForward>, Error>;
-
-    /// Fetch from `remote` and merge its branch into the local
-    /// store. A remote with no branch yet is a clean no-op.
-    fn pull(&mut self, remote: &str) -> Result<MergeStatus, Error>;
 }
 
 #[cfg(test)]

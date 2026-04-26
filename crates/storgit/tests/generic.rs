@@ -8,10 +8,10 @@
 mod common;
 
 use common::{get_data, mkid, put_data};
-use storgit::layout::Layout;
-use storgit::layout::subdir::SubdirLayout;
-use storgit::layout::submodule::SubmoduleLayout;
-use storgit::{CommitId, Entry, EntryId, Store, id};
+use storgit::{
+    CommitId, Distribute, Entry, EntryId, Store, id,
+    layout::{Layout, subdir::SubdirLayout, submodule::SubmoduleLayout},
+};
 
 macro_rules! store_test {
     ($name:ident, |$store:ident| $body:block) => {
@@ -243,6 +243,12 @@ store_test!(archive_clears_label_from_cache, |store| {
     store.archive(&mkid("alpha")).unwrap();
     assert_eq!(store.label(&mkid("alpha")), None);
     assert!(store.list_labels().is_empty());
+});
+
+store_test!(delete_unknown_id_does_not_leak_into_bundle_deleted, |store| {
+    store.delete(&mkid("never-existed")).unwrap();
+    let bundle = store.bundle().unwrap();
+    assert!(bundle.deleted.is_empty());
 });
 
 // -- new / open / save / load (layout-agnostic trait methods) ----------
@@ -497,8 +503,8 @@ store_test!(fetch_from_local_repo_lands_refs, |store| {
     // remote-tracking refs must land.
     let mut src = common::make_store_like(&store);
     put_data(&mut src, "alpha", b"hello");
-    // For submodule, puts buffer until snapshot/save flushes the
-    // parent ref; call snapshot to persist the parent HEAD.
+    // For submodule, puts buffer until bundle/save flushes the
+    // parent ref; call bundle to persist the parent HEAD.
     src.flush_for_test();
 
     let url = format!("file://{}", src.git_dir().display());

@@ -13,13 +13,16 @@ use gix::bstr::{BStr, BString, ByteSlice};
 use super::module::ModuleRepo;
 use super::parent::ParentTree;
 use super::{MODULES_DIR, PlannedOps, SubmoduleLayout, derive_module_url, ensure_module_repo};
-use crate::error::Error;
-use crate::git::{BareRepo, read_ref_file, write_commit, write_merge_commit};
-use crate::id::EntryId;
-use crate::layout::Layout;
-use crate::merge::{
-    ApplyMode, BlobType, Conflict, FastForward, Merge, MergeProgress, MergeStatus, Outcome,
-    Side, fold_conflict_blob_types, merge_tree_threeways,
+use crate::{
+    Distribute,
+    error::Error,
+    git::{BareRepo, read_ref_file, write_commit, write_merge_commit},
+    id::EntryId,
+    layout::Layout,
+    merge::{
+        BlobType, Conflict, FastForward, Merge, MergeProgress, MergeStatus, Outcome, Side,
+        fold_conflict_blob_types, merge_tree_threeways,
+    },
 };
 
 /// Build a parent-side gix index encoding the kernel's full decision
@@ -387,66 +390,23 @@ impl SubmoduleLayout {
         Ok(())
     }
 
-    /// Apply `parts` onto this layout with default merge semantics.
-    /// See [`SubmoduleLayout::apply_with`] for the full-control variant.
-    pub fn apply(&mut self, parts: crate::layout::submodule::Parts) -> Result<MergeStatus, Error> {
-        self.apply_with(parts, ApplyMode::Merge)
-    }
-
-    /// Apply `parts` with explicit [`ApplyMode`].
-    ///
-    /// - [`ApplyMode::Merge`]: client-side default. Merges via the
-    ///   kernel; returns [`MergeStatus::Conflicted`] when human
-    ///   resolution is needed.
-    /// - [`ApplyMode::FastForwardOnly`]: server-side accept-push.
-    ///   Errors with [`Error::NotFastForward`] if any gitlink
-    ///   change is divergent. Caller's recovery is to pull and
-    ///   merge locally, then resend.
-    pub fn apply_with(
-        &mut self,
-        parts: crate::layout::submodule::Parts,
-        mode: ApplyMode,
-    ) -> Result<MergeStatus, Error> {
-        if parts.parent.is_empty() {
-            stash_pending_modules(self, parts);
-            return Ok(MergeStatus::Clean(Vec::new()));
-        }
-
-        let Some(incoming_parent) = self.import_parts(&parts)? else {
-            return Ok(MergeStatus::Clean(Vec::new()));
-        };
-        let parent_path = self.parent_dir();
-        let incoming_gitlinks = ParentTree::gitlinks_at(&parent_path, incoming_parent)?;
-
-        if mode == ApplyMode::FastForwardOnly {
-            let diverging = preflight_ff_check(self.gitlinks(), &incoming_gitlinks, |id| {
-                self.module_dir(id)
-            })?;
-            if !diverging.is_empty() {
-                return Err(Error::NotFastForward { ids: diverging });
-            }
-        }
-
-        self.run_merge_kernel(incoming_parent, incoming_gitlinks)
-    }
-
-    /// Fold `parts`' object graphs into this layout's parent.git and
-    /// per-id module repos, creating any module repo that doesn't
-    /// yet exist. Returns the incoming parent commit id (the parent
-    /// tarball's `refs/heads/main`), or `None` if the parent tarball
-    /// has no HEAD yet.
+    /// Fold `bundle`'s object graphs into this layout's parent.git
+    /// and per-id module repos, creating any module repo that
+    /// doesn't yet exist. Returns the incoming parent commit id (the
+    /// parent tarball's `refs/heads/main`), or `None` if the parent
+    /// tarball has no HEAD yet.
     ///
     /// Does not touch local refs, gitlinks, or merge state: after
     /// this returns, the incoming objects are reachable in the local
     /// object DB but nothing has forwards. Feed the returned commit
     /// id into [`SubmoduleLayout::run_merge_kernel`] to actually merge.
-    pub(crate) fn import_parts(
+    pub(crate) fn import_bundle(
         &mut self,
-        parts: &crate::layout::submodule::Parts,
+        bundle: &crate::layout::submodule::Bundle,
     ) -> Result<Option<gix::ObjectId>, Error> {
         let incoming_parent =
-            crate::tarball::import_tarball_objects(&parts.parent, &self.parent_dir())?;
-        for (id, bytes) in &parts.modules {
+            crate::tarball::import_tarball_objects(&bundle.parent, &self.parent_dir())?;
+        for (id, bytes) in &bundle.modules {
             ensure_module_repo(self.root_path(), id)?;
             crate::tarball::import_tarball_objects(bytes, &self.module_dir(id))?;
         }
@@ -454,19 +414,10 @@ impl SubmoduleLayout {
     }
 }
 
-// --- Helpers for `apply` / `apply_with` ----------------------------
-
-fn stash_pending_modules(layout: &mut SubmoduleLayout, parts: crate::layout::submodule::Parts) {
-    let pending = layout.pending_modules_mut();
-    for (id, bytes) in parts.modules {
-        pending.insert(id, bytes);
-    }
-}
-
 /// Walk the gitlink union; for every (Some(local), Some(incoming))
 /// pair where local != incoming, verify local is an ancestor of
 /// incoming. Returns the ids that fail the check.
-fn preflight_ff_check(
+pub(crate) fn preflight_ff_check(
     local: &BTreeMap<EntryId, gix::ObjectId>,
     incoming: &BTreeMap<EntryId, gix::ObjectId>,
     module_path: impl Fn(&EntryId) -> std::path::PathBuf,
@@ -518,41 +469,6 @@ impl Merge for SubmoduleLayout {
             }
         }
         Ok(())
-    }
-
-    /// Fetch from `remote` (parent + every module whose gitlink
-    /// changed) and merge.
-    fn pull(&mut self, remote: &str) -> Result<MergeStatus, Error> {
-        // Fetch the parent first.
-        let parent_path = self.parent_dir();
-        {
-            let repo = gix::open(&parent_path)?;
-            let remote_obj = repo
-                .find_remote(remote)
-                .map_err(|e| Error::Other(format!("fetch: remote {remote:?} not found: {e}")))?;
-            crate::remote::do_fetch(remote_obj)?;
-        }
-
-        // Discover the incoming parent commit and its gitlinks.
-        let tracking = parent_path.join("refs/remotes").join(remote).join("main");
-        let Some(incoming_parent) = read_ref_file(&tracking)? else {
-            return Ok(MergeStatus::Clean(Vec::new()));
-        };
-        let incoming_gitlinks = ParentTree::gitlinks_at(&parent_path, incoming_parent)?;
-
-        // Look up the remote URL so we can derive per-module URLs.
-        let remote_url = crate::config::GitConfig::lookup_remote(&parent_path, remote)?.url;
-        for (id, incoming_oid) in &incoming_gitlinks {
-            let local_oid = self.gitlinks().get(id).copied();
-            if local_oid == Some(*incoming_oid) {
-                continue;
-            }
-            ensure_module_repo(self.root_path(), id)?;
-            let module_url = derive_module_url(&remote_url, id)?;
-            crate::remote::fetch_into(&self.module_dir(id), &module_url)?;
-        }
-
-        self.run_merge_kernel(incoming_parent, incoming_gitlinks)
     }
 
     /// Finalise an in-progress submodule merge using `resolution`.
@@ -702,6 +618,39 @@ impl Merge for SubmoduleLayout {
         parent_br.clear_merge_head()?;
         clear_merge_index(&parent_path)?;
         Ok(forwards)
+    }
+}
+
+impl Distribute for SubmoduleLayout {
+    /// Fetches the parent first, then for each gitlink whose oid
+    /// differs from local, fetches that module's repo from the URL
+    /// derived from the parent's remote URL. Then runs the merge
+    /// kernel.
+    fn pull(&mut self, remote: &str) -> Result<MergeStatus, Error> {
+        // Fetch the parent first.
+        self.fetch(remote)?;
+        let parent_path = self.parent_dir();
+
+        // Discover the incoming parent commit and its gitlinks.
+        let tracking = parent_path.join("refs/remotes").join(remote).join("main");
+        let Some(incoming_parent) = read_ref_file(&tracking)? else {
+            return Ok(MergeStatus::Clean(Vec::new()));
+        };
+        let incoming_gitlinks = ParentTree::gitlinks_at(&parent_path, incoming_parent)?;
+
+        // Look up the remote URL so we can derive per-module URLs.
+        let remote_url = crate::config::GitConfig::lookup_remote(&parent_path, remote)?.url;
+        for (id, incoming_oid) in &incoming_gitlinks {
+            let local_oid = self.gitlinks().get(id).copied();
+            if local_oid == Some(*incoming_oid) {
+                continue;
+            }
+            ensure_module_repo(self.root_path(), id)?;
+            let module_url = derive_module_url(&remote_url, id)?;
+            crate::remote::fetch_into(&self.module_dir(id), &module_url)?;
+        }
+
+        self.run_merge_kernel(incoming_parent, incoming_gitlinks)
     }
 }
 
