@@ -152,10 +152,19 @@ pub(crate) fn do_fetch(remote: gix::Remote<'_>) -> Result<(), Error> {
 }
 
 /// Fetch `refs/heads/main` from `url` into the bare repo at
-/// `repo_path`, updating its local `refs/heads/main` to match. Used
-/// by the merge kernel for one-shot fetches against an ad-hoc URL
-/// (e.g. a per-submodule URL derived from the parent's URL) without
+/// `repo_path`, landing it at `refs/storgit/incoming`. Used by the
+/// submodule merge kernel for one-shot fetches against an ad-hoc URL
+/// (a per-module URL derived from the parent's URL) without
 /// registering the URL as a configured remote.
+///
+/// **Does not touch local `refs/heads/main`.** The incoming oid is
+/// only addressable via `refs/storgit/incoming` afterwards and via
+/// the object DB; the merge kernel works on oids directly and
+/// updates `refs/heads/main` itself when it advances a gitlink.
+/// Force-writing local `refs/heads/main` here would orphan any
+/// commits the local side produced after its prior pull, causing
+/// the next push to send an outdated ref alongside a parent that
+/// references newer gitlink oids the remote never received.
 pub(crate) fn fetch_into(repo_path: &Path, url: &str) -> Result<(), Error> {
     use gix::remote::Direction;
 
@@ -166,7 +175,7 @@ pub(crate) fn fetch_into(repo_path: &Path, url: &str) -> Result<(), Error> {
         .remote_at(parsed_url)
         .map_err(|e| Error::Git(Box::new(e)))?
         .with_refspecs(
-            [b"+refs/heads/main:refs/heads/main".as_bstr()],
+            [b"+refs/heads/main:refs/storgit/incoming".as_bstr()],
             Direction::Fetch,
         )
         .map_err(|e| Error::Git(Box::new(e)))?;

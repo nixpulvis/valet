@@ -1,14 +1,12 @@
 #[cfg(feature = "db")]
-use crate::db::{self, Database};
+use crate::db;
 #[cfg(feature = "db")]
 use crate::encrypt::{Encrypted, Stash};
 use crate::{encrypt, lot::Lot, password::Password, uuid::Uuid};
 use bitcode::{Decode, Encode};
-#[cfg(feature = "db")]
-use sea_orm::{IntoActiveModel, TransactionTrait, entity::prelude::*, sea_query::OnConflict};
 use std::fmt;
 #[cfg(feature = "db")]
-use storgit::{Layout, layout::submodule::Bundle};
+use storgit::Layout;
 
 /// One historical revision of a record, produced by [`Record::history`].
 ///
@@ -30,41 +28,25 @@ pub struct Revision {
 /// on long bulk imports without polling.
 ///
 /// Events fire in this order:
-/// 1. [`OpenedStore`](Self::OpenedStore) after the lot's storgit store
-///    is ready to accept puts (already live on the lot; this fires
-///    once up front so callers can render a steady baseline).
-/// 2. [`PutRecord`](Self::PutRecord) per record, as it's staged into the
-///    store. Modules missing from storgit's scratch are lazily
-///    decrypted via the lot's fetcher inside `put`.
-/// 3. [`Bundle`](Self::Bundle) once, after the single `bundle()` call.
-/// 4. [`SaveRecord`](Self::SaveRecord) once, after the batched insert of
-///    every record's ciphertext commits.
-/// 5. [`SaveLot`](Self::SaveLot) once, after the lot's parent tarball is
-///    repersisted. Only fires if the bundle advanced the parent.
+/// 1. [`OpenedStore`](Self::OpenedStore) once the lot's storgit store is
+///    ready to accept puts.
+/// 2. [`PutRecord`](Self::PutRecord) per record, as it's written into
+///    the store.
+/// 3. [`ParentFlushed`](Self::ParentFlushed) once, after the parent
+///    commit is materialised.
+/// 4. [`SaveRecord`](Self::SaveRecord) once, after every record is
+///    persisted.
+/// 5. [`SaveLot`](Self::SaveLot) once, only when at least one record
+///    in the batch produced a new commit. Skipped on a fully
+///    byte-identical batch.
 #[cfg(feature = "db")]
 pub enum SaveProgress<'a> {
     OpenedStore,
     PutRecord(&'a Record),
-    Bundle(&'a Bundle),
+    ParentFlushed,
     SaveRecord,
     SaveLot,
 }
-
-/// What [`Record::save`] returns from the `block_in_place` closure
-/// when it commits a single record: `(module_bytes, parent_bytes)`.
-/// `parent_bytes` is empty when the bundle didn't advance the parent.
-#[cfg(feature = "db")]
-type SaveSingle = Option<(Vec<u8>, Vec<u8>)>;
-
-/// What [`Record::save_many`] returns from the `block_in_place`
-/// closure: `(active_models, changed_ids, parent_bytes)`.
-/// `parent_bytes` is empty when the bundle didn't advance the parent.
-#[cfg(feature = "db")]
-type SaveBatch = (
-    Vec<self::orm::ActiveModel>,
-    std::collections::HashSet<storgit::EntryId>,
-    Vec<u8>,
-);
 
 #[derive(Encode, Decode)]
 pub struct Record {
@@ -112,24 +94,14 @@ impl Record {
         self.data.password()
     }
 
+    /// AAD for the password ciphertext stored inside each storgit
+    /// per-record commit's `data` blob. Bound to the record uuid +
+    /// lot uuid so a ciphertext from one record cannot be replayed
+    /// onto another within the same lot.
     #[cfg(feature = "db")]
     pub(crate) fn data_aad(record_uuid: &Uuid<Self>, lot_uuid: &Uuid<Lot>) -> Vec<u8> {
         [
             b"d".as_slice(),
-            record_uuid.to_uuid().as_bytes(),
-            lot_uuid.to_uuid().as_bytes(),
-        ]
-        .concat()
-    }
-
-    /// AAD for the outer encryption wrapping the storgit submodule tarball.
-    /// The `b"m"` prefix domain-separates this from [`Record::data_aad`] so a
-    /// module ciphertext cannot authenticate as a data ciphertext under the
-    /// same lot key.
-    #[cfg(feature = "db")]
-    pub(crate) fn module_aad(record_uuid: &Uuid<Self>, lot_uuid: &Uuid<Lot>) -> Vec<u8> {
-        [
-            b"m".as_slice(),
             record_uuid.to_uuid().as_bytes(),
             lot_uuid.to_uuid().as_bytes(),
         ]
@@ -144,97 +116,42 @@ impl Record {
         storgit::EntryId::new(uuid.to_string()).expect("uuid string is a valid storgit id")
     }
 
-    /// Save this record to the database and return its uuid.
+    /// Persist this record into its lot's storgit store and return its
+    /// uuid. The password is encrypted under the lot key + record-scoped
+    /// AAD; the resulting ciphertext is what storgit stores in the
+    /// per-record commit's `data` blob. Labels are stored as-is.
     #[cfg(feature = "db")]
-    pub async fn save(&self, db: &Database, lot: &mut Lot) -> Result<Uuid<Self>, Error> {
+    pub async fn save(&self, lot: &mut Lot) -> Result<Uuid<Self>, Error> {
+        if self.lot_uuid != *lot.uuid() {
+            return Err(Error::LotMismatch {
+                expected: lot.uuid().clone(),
+                actual: self.lot_uuid.clone(),
+            });
+        }
         lot.index()
             .check_name_owner(self.label.name(), &self.uuid)?;
 
-        // Integrity check: if a row already exists for this uuid
-        // under a different lot, the INSERT ... ON CONFLICT below
-        // would silently rewrite its lot_uuid and claim it for ours.
-        // Bail cleanly instead.
-        if let Some(existing) = self::orm::Entity::find_by_id(self.uuid.to_string())
-            .one(db.connection())
-            .await?
-            && existing.lot_uuid != self.lot_uuid.to_string()
-        {
-            return Err(Error::LotMismatch {
-                expected: self.lot_uuid.clone(),
-                actual: Uuid::<Lot>::parse(&existing.lot_uuid)?,
-            });
-        }
-
-        // Storgit work runs under `block_in_place`: put/snapshot are
-        // synchronous and the fetcher may `Handle::block_on` the DB
-        // for a module miss (append-to-history case), which is only
-        // legal from a blocking-aware context. `put` returns Ok(None)
-        // for a byte-identical no-op; we skip the DB round trip in
-        // that case, trusting Store and records table stay in sync
-        // through this path.
         let label_bytes = self.label.encode();
         let data_ciphertext = self
             .data
             .encrypt_with_aad(lot.key(), &Record::data_aad(&self.uuid, &self.lot_uuid))?;
         let data_bytes = data_ciphertext.pack();
         let storgit_id = Record::storgit_id(&self.uuid);
-        let changed = tokio::task::block_in_place(|| -> Result<SaveSingle, Error> {
+        let changed = tokio::task::block_in_place(|| -> Result<bool, Error> {
             let commit = lot
                 .store_mut()
                 .put(&storgit_id, Some(&label_bytes), Some(&data_bytes))
                 .map_err(Error::Storgit)?;
-            if commit.is_none() {
-                return Ok(None);
-            }
-            // `put` returned Ok(Some(_)), so storgit marked the
-            // module dirty; the next bundle must carry it in
-            // `bundle.modules`. Anything else is storgit violating
-            // its own invariant.
-            let bundle = lot.store_mut().bundle().map_err(Error::Storgit)?;
-            let module_bytes = bundle.modules.get(&storgit_id).cloned().unwrap_or_else(|| {
-                unreachable!("storgit invariant: bundle after put(Some) must include {storgit_id}",)
-            });
-            let aad = Record::module_aad(&self.uuid, lot.uuid());
-            let encrypted = lot.key().encrypt_with_aad(&module_bytes, &aad)?;
-            Ok(Some((encrypted.pack(), bundle.parent)))
+            // Flush the parent so the on-disk repo carries the new
+            // gitlink + label-cache entry. Cheap when nothing's
+            // dirty.
+            let _ = lot.store_mut().bundle().map_err(Error::Storgit)?;
+            Ok(commit.is_some())
         })?;
 
-        let Some((module_packed, new_parent)) = changed else {
+        if !changed {
             return Ok(self.uuid.clone());
-        };
-
-        let model = self::orm::Model {
-            uuid: self.uuid.to_string(),
-            lot_uuid: self.lot_uuid.to_string(),
-            module: module_packed,
-        };
-        let active = model.into_active_model();
-        let on_conflict = OnConflict::column(self::orm::Column::Uuid)
-            .update_columns([self::orm::Column::LotUuid, self::orm::Column::Module])
-            .to_owned();
-
-        // Atomic: records.module and lots.store must advance together, or the
-        // parent's gitlinks drift from the submodule tarball and `show` / the
-        // label cache read stale state on next load.
-        let store_packed = if new_parent.is_empty() {
-            None
-        } else {
-            Some(lot.encrypt_store(&new_parent)?)
-        };
-        let txn = db.connection().begin().await?;
-        self::orm::Entity::insert(active)
-            .on_conflict(on_conflict)
-            .exec_with_returning(&txn)
-            .await?;
-        if let Some(store_packed) = store_packed {
-            crate::lot::orm::Entity::update(crate::lot::orm::ActiveModel {
-                uuid: sea_orm::ActiveValue::Unchanged(self.lot_uuid.to_string()),
-                store: sea_orm::ActiveValue::Set(store_packed),
-            })
-            .exec(&txn)
-            .await?;
         }
-        txn.commit().await?;
 
         lot.index_mut()
             .insert(self.label.clone(), self.uuid.clone());
@@ -242,21 +159,15 @@ impl Record {
         Ok(self.uuid.clone())
     }
 
-    /// Save many records against a single lot with one storgit snapshot and
-    /// one database transaction. Much faster than looping [`Record::save`]
-    /// (which reopens the store and round-trips the DB per record), which
-    /// matters for bulk imports.
+    /// Save many records against a single lot in one storgit pass.
+    /// Useful for bulk imports.
     ///
-    /// All records must belong to `lot`. Returns the uuids in the same order
-    /// as `records`. The in-memory parent tarball on `lot` is refreshed when
-    /// the snapshot advances it.
-    ///
-    /// `on_progress` fires at each [`SaveProgress`] milestone so callers
-    /// can render progress on large imports. Pass `|_| {}` if you don't
-    /// care. Final save events fire after the DB transaction commits.
+    /// All records must belong to `lot`. Returns the uuids in the same
+    /// order as `records`. `on_progress` fires at each
+    /// [`SaveProgress`] milestone so callers can render progress; pass
+    /// `|_| {}` if you don't care.
     #[cfg(feature = "db")]
     pub async fn save_many(
-        db: &Database,
         lot: &mut Lot,
         records: &[Record],
         mut on_progress: impl FnMut(SaveProgress<'_>),
@@ -287,29 +198,9 @@ impl Record {
             }
         }
 
-        // Integrity check: no row may claim any of these uuids under
-        // a different lot. Scanning up front is cheaper than failing
-        // part-way through the storgit work.
-        let uuid_strs: Vec<String> = records.iter().map(|r| r.uuid.to_string()).collect();
-        let existing_models = self::orm::Entity::find()
-            .filter(self::orm::Column::Uuid.is_in(uuid_strs))
-            .all(db.connection())
-            .await?;
-        for model in &existing_models {
-            let model_lot_uuid = Uuid::<Lot>::parse(&model.lot_uuid)?;
-            if &model_lot_uuid != lot.uuid() {
-                return Err(Error::LotMismatch {
-                    expected: lot.uuid().clone(),
-                    actual: model_lot_uuid,
-                });
-            }
-        }
         on_progress(SaveProgress::OpenedStore);
 
-        // Encrypt each record's data outside `block_in_place` so the
-        // sync section does only storgit work.
         struct Prepared {
-            uuid: Uuid<Record>,
             storgit_id: storgit::EntryId,
             label_bytes: Vec<u8>,
             data_bytes: Vec<u8>,
@@ -320,83 +211,35 @@ impl Record {
                 .data
                 .encrypt_with_aad(lot.key(), &Record::data_aad(&record.uuid, &record.lot_uuid))?;
             prepared.push(Prepared {
-                uuid: record.uuid.clone(),
                 storgit_id: Record::storgit_id(&record.uuid),
                 label_bytes: record.label.encode(),
                 data_bytes: data_ciphertext.pack(),
             });
         }
 
-        // One snapshot for the whole batch. Misses for existing
-        // modules go through the fetcher (decrypt under lot key); a
-        // byte-identical put returns Ok(None) and contributes no
-        // dirty module to the snapshot, so we skip persisting it.
-        let (active_models, changed_ids, new_parent) =
-            tokio::task::block_in_place(|| -> Result<SaveBatch, Error> {
-                for (rec, p) in records.iter().zip(&prepared) {
-                    lot.store_mut()
-                        .put(&p.storgit_id, Some(&p.label_bytes), Some(&p.data_bytes))
-                        .map_err(Error::Storgit)?;
-                    on_progress(SaveProgress::PutRecord(rec));
-                }
-                let bundle = lot.store_mut().bundle().map_err(Error::Storgit)?;
-                on_progress(SaveProgress::Bundle(&bundle));
-
-                let mut active_models = Vec::with_capacity(records.len());
-                let mut changed_ids = std::collections::HashSet::with_capacity(records.len());
-                for p in &prepared {
-                    let Some(module_bytes) = bundle.modules.get(&p.storgit_id) else {
-                        // Byte-identical put; nothing to persist for
-                        // this record.
-                        continue;
-                    };
-                    let aad = Record::module_aad(&p.uuid, lot.uuid());
-                    let encrypted = lot.key().encrypt_with_aad(module_bytes, &aad)?;
-                    active_models.push(
-                        self::orm::Model {
-                            uuid: p.uuid.to_string(),
-                            lot_uuid: lot.uuid().to_string(),
-                            module: encrypted.pack(),
+        let changed_ids: std::collections::HashSet<storgit::EntryId> =
+            tokio::task::block_in_place(
+                || -> Result<std::collections::HashSet<storgit::EntryId>, Error> {
+                    let mut changed = std::collections::HashSet::with_capacity(records.len());
+                    for (rec, p) in records.iter().zip(&prepared) {
+                        let commit = lot
+                            .store_mut()
+                            .put(&p.storgit_id, Some(&p.label_bytes), Some(&p.data_bytes))
+                            .map_err(Error::Storgit)?;
+                        if commit.is_some() {
+                            changed.insert(p.storgit_id.clone());
                         }
-                        .into_active_model(),
-                    );
-                    changed_ids.insert(p.storgit_id.clone());
-                }
-                Ok((active_models, changed_ids, bundle.parent))
-            })?;
-
-        let store_packed = if new_parent.is_empty() {
-            None
-        } else {
-            Some(lot.encrypt_store(&new_parent)?)
-        };
-
-        let on_conflict = OnConflict::column(self::orm::Column::Uuid)
-            .update_columns([self::orm::Column::LotUuid, self::orm::Column::Module])
-            .to_owned();
-        let txn = db.connection().begin().await?;
-        if !active_models.is_empty() {
-            self::orm::Entity::insert_many(active_models)
-                .on_conflict(on_conflict)
-                .exec(&txn)
-                .await?;
-        }
-        if let Some(store_packed) = store_packed {
-            crate::lot::orm::Entity::update(crate::lot::orm::ActiveModel {
-                uuid: sea_orm::ActiveValue::Unchanged(lot.uuid().to_string()),
-                store: sea_orm::ActiveValue::Set(store_packed),
-            })
-            .exec(&txn)
-            .await?;
-        }
-        txn.commit().await?;
+                        on_progress(SaveProgress::PutRecord(rec));
+                    }
+                    // Flush the parent so the on-disk repo reflects
+                    // every put in this batch as one parent commit.
+                    let _ = lot.store_mut().bundle().map_err(Error::Storgit)?;
+                    Ok(changed)
+                },
+            )?;
+        on_progress(SaveProgress::ParentFlushed);
         on_progress(SaveProgress::SaveRecord);
 
-        // Only records whose put marked the module dirty need an
-        // index update; byte-identical repeats already have the same
-        // (label, uuid) in the index from a prior save. Matches the
-        // single `Record::save` path, which skips the insert on the
-        // byte-identical early return.
         for (record, p) in records.iter().zip(&prepared) {
             if changed_ids.contains(&p.storgit_id) {
                 lot.index_mut()
@@ -404,70 +247,31 @@ impl Record {
             }
         }
 
-        if !new_parent.is_empty() {
+        if !changed_ids.is_empty() {
             on_progress(SaveProgress::SaveLot);
         }
 
         Ok(records.iter().map(|r| r.uuid.clone()).collect())
     }
 
-    /// Delete this record from the database.
-    ///
-    /// The storgit submodule is archived (tombstone commit) inside the lot's
-    /// store; the `records` row is then removed and the lot's in-memory
-    /// parent is refreshed.
+    /// Archive this record in its lot's storgit store (tombstone
+    /// commit, gitlink dropped from the parent) and remove it from
+    /// the in-memory index.
     #[cfg(feature = "db")]
-    pub async fn delete(&self, db: &Database, lot: &mut Lot) -> Result<(), Error> {
-        let id = Record::storgit_id(&self.uuid);
-
-        // Integrity check before we touch storgit: if the row
-        // belongs to a different lot, don't archive in our store.
-        let Some(model) = self::orm::Entity::find_by_id(self.uuid.to_string())
-            .one(db.connection())
-            .await?
-        else {
-            return Ok(());
-        };
-        if model.lot_uuid != self.lot_uuid.to_string() {
+    pub async fn delete(&self, lot: &mut Lot) -> Result<(), Error> {
+        if self.lot_uuid != *lot.uuid() {
             return Err(Error::LotMismatch {
-                expected: self.lot_uuid.clone(),
-                actual: Uuid::<Lot>::parse(&model.lot_uuid)?,
+                expected: lot.uuid().clone(),
+                actual: self.lot_uuid.clone(),
             });
         }
-
-        // archive() needs the module on disk; storgit's fetcher will
-        // pull it in on the ensure_loaded path inside archive. Wrap
-        // in block_in_place for the fetcher's Handle::block_on.
-        let new_parent = tokio::task::block_in_place(|| -> Result<Vec<u8>, Error> {
+        let id = Record::storgit_id(&self.uuid);
+        tokio::task::block_in_place(|| -> Result<(), Error> {
             lot.store_mut().archive(&id).map_err(Error::Storgit)?;
-            let bundle = lot.store_mut().bundle().map_err(Error::Storgit)?;
-            Ok(bundle.parent)
+            let _ = lot.store_mut().bundle().map_err(Error::Storgit)?;
+            Ok(())
         })?;
-
-        // Atomic: dropping the records row and advancing lots.store must
-        // land together, or on next load the parent's gitlink set disagrees
-        // with the live rows.
-        let store_packed = if new_parent.is_empty() {
-            None
-        } else {
-            Some(lot.encrypt_store(&new_parent)?)
-        };
-        let txn = db.connection().begin().await?;
-        self::orm::Entity::delete_by_id(self.uuid.to_string())
-            .exec(&txn)
-            .await?;
-        if let Some(store_packed) = store_packed {
-            crate::lot::orm::Entity::update(crate::lot::orm::ActiveModel {
-                uuid: sea_orm::ActiveValue::Unchanged(self.lot_uuid.to_string()),
-                store: sea_orm::ActiveValue::Set(store_packed),
-            })
-            .exec(&txn)
-            .await?;
-        }
-        txn.commit().await?;
-
         lot.index_mut().remove(&self.uuid);
-
         Ok(())
     }
 
@@ -479,28 +283,12 @@ impl Record {
     /// secret (e.g. copy-to-clipboard, reveal-in-UI, CLI `get`). Listing and
     /// searching should go through [`RecordIndex`] instead.
     #[cfg(feature = "db")]
-    pub async fn show(db: &Database, lot: &Lot, uuid: &Uuid<Self>) -> Result<Option<Self>, Error> {
-        // Lot check: return None rather than decode a record that
-        // doesn't belong to this lot (don't leak cross-lot state).
-        let Some(model) = self::orm::Entity::find_by_id(uuid.to_string())
-            .one(db.connection())
-            .await?
-        else {
-            return Ok(None);
-        };
-        let lot_uuid = Uuid::<Lot>::parse(&model.lot_uuid)?;
-        if &lot_uuid != lot.uuid() {
-            return Ok(None);
-        }
-
-        // storgit's get consults the parent's gitlink set and opens
-        // the module tree; ensure_loaded invokes the fetcher for
-        // misses, which Handle::block_on's the DB. Hence
-        // block_in_place.
+    pub async fn show(lot: &Lot, uuid: &Uuid<Self>) -> Result<Option<Self>, Error> {
         let id = Record::storgit_id(uuid);
         let entry = tokio::task::block_in_place(|| lot.store().get(&id)).map_err(Error::Storgit)?;
-        let entry =
-            entry.ok_or_else(|| Error::Storgit(storgit::Error::Other("entry missing".into())))?;
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
 
         let label_bytes = entry
             .label
@@ -514,12 +302,12 @@ impl Record {
         let data = Data::decrypt_with_aad(
             &data_ciphertext,
             lot.key(),
-            &Record::data_aad(uuid, &lot_uuid),
+            &Record::data_aad(uuid, lot.uuid()),
         )?;
 
         Ok(Some(Record {
             uuid: uuid.clone(),
-            lot_uuid,
+            lot_uuid: lot.uuid().clone(),
             label,
             data,
         }))
@@ -528,34 +316,20 @@ impl Record {
     /// Walk every historical revision of the record identified by `uuid`,
     /// newest commit first. Each live commit is decrypted into a
     /// [`Revision`]; tombstone commits (written by [`Record::delete`]) are
-    /// skipped. Returns `None` if the `records.module` row is gone or
-    /// belongs to a different lot.
+    /// skipped. Returns `None` if no such record is present in the lot.
     #[cfg(feature = "db")]
-    pub async fn history(
-        db: &Database,
-        lot: &Lot,
-        uuid: &Uuid<Self>,
-    ) -> Result<Option<Vec<Revision>>, Error> {
-        let Some(model) = self::orm::Entity::find_by_id(uuid.to_string())
-            .one(db.connection())
-            .await?
-        else {
-            return Ok(None);
-        };
-        let lot_uuid = Uuid::<Lot>::parse(&model.lot_uuid)?;
-        if &lot_uuid != lot.uuid() {
-            return Ok(None);
-        }
-
+    pub async fn history(lot: &Lot, uuid: &Uuid<Self>) -> Result<Option<Vec<Revision>>, Error> {
         let id = Record::storgit_id(uuid);
         let entries =
             tokio::task::block_in_place(|| lot.store().history(&id)).map_err(Error::Storgit)?;
+        if entries.is_empty() {
+            return Ok(None);
+        }
 
-        let data_aad = Record::data_aad(uuid, &lot_uuid);
+        let data_aad = Record::data_aad(uuid, lot.uuid());
         let mut revisions = Vec::with_capacity(entries.len());
         for entry in entries {
             let (Some(label_bytes), Some(data_bytes)) = (entry.label, entry.data) else {
-                // Tombstone commit (from `Record::delete` / `Store::archive`).
                 continue;
             };
             let label = Label::decode(&label_bytes)?;
@@ -666,11 +440,6 @@ pub use self::index::RecordIndex;
 pub mod query;
 pub use self::query::{Path, Query};
 
-#[cfg(all(feature = "db", feature = "orm"))]
-pub mod orm;
-#[cfg(all(feature = "db", not(feature = "orm")))]
-pub(crate) mod orm;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,9 +447,24 @@ mod tests {
     #[cfg(feature = "db")]
     use crate::{db::Database, user::User};
 
+    #[cfg(feature = "db")]
+    async fn fixture() -> (tempfile::TempDir, Database) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("valet.sqlite");
+        let url = format!("sqlite://{}?mode=rwc", db_path.display());
+        let db = Database::new(&url).await.unwrap();
+        (dir, db)
+    }
+
     #[test]
     fn new() {
+        #[cfg(feature = "db")]
+        let tmp = tempfile::tempdir().unwrap();
+        #[cfg(feature = "db")]
+        let lot = Lot::new("test", tmp.path()).unwrap();
+        #[cfg(not(feature = "db"))]
         let lot = Lot::new("test");
+
         let record = Record::new(
             &lot,
             "foo".parse::<Label>().unwrap(),
@@ -693,30 +477,15 @@ mod tests {
     }
 
     #[cfg(feature = "db")]
-    #[test]
-    fn module_and_data_aad_differ() {
-        // Different domain-separation prefixes so a module ciphertext cannot
-        // authenticate as a data ciphertext under the same key.
-        let uuid = Uuid::<Record>::parse("00000000-0000-0000-0000-000000000001").unwrap();
-        let lot_uuid = Uuid::<Lot>::parse("00000000-0000-0000-0000-000000000002").unwrap();
-        assert_ne!(
-            Record::module_aad(&uuid, &lot_uuid),
-            Record::data_aad(&uuid, &lot_uuid),
-        );
-    }
-
-    #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn show_roundtrip() {
-        let db = Database::new("sqlite://:memory:")
-            .await
-            .expect("failed to create database");
+        let (dir, db) = fixture().await;
         let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a", dir.path()).unwrap();
         lot.save(&db, &user).await.expect("failed to save lot");
         let record = Record::new(
             &lot,
@@ -724,10 +493,10 @@ mod tests {
             Data::new("bar".try_into().unwrap()),
         );
         let uuid = record
-            .save(&db, &mut lot)
+            .save(&mut lot)
             .await
             .expect("failed to save record");
-        let loaded = Record::show(&db, &lot, &uuid)
+        let loaded = Record::show(&lot, &uuid)
             .await
             .expect("failed to show record")
             .expect("record missing");
@@ -737,28 +506,27 @@ mod tests {
     #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn show_wrong_lot_returns_none() {
-        let db = Database::new("sqlite://:memory:")
-            .await
-            .expect("failed to create database");
+        let (dir, db) = fixture().await;
         let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot_a = Lot::new("lot a");
+        let mut lot_a = Lot::new("lot a", dir.path()).unwrap();
         lot_a.save(&db, &user).await.expect("failed to save lot");
-        let mut lot_b = Lot::new("lot b");
+        let mut lot_b = Lot::new("lot b", dir.path()).unwrap();
         lot_b.save(&db, &user).await.expect("failed to save lot");
         let uuid = Record::new(
             &lot_a,
             "foo".parse::<Label>().unwrap(),
             Data::new("bar".try_into().unwrap()),
         )
-        .save(&db, &mut lot_a)
+        .save(&mut lot_a)
         .await
         .expect("failed to save record");
+        // The record only lives in lot_a's store. lot_b never saw it.
         assert!(
-            Record::show(&db, &lot_b, &uuid)
+            Record::show(&lot_b, &uuid)
                 .await
                 .expect("failed to show")
                 .is_none()
@@ -768,15 +536,13 @@ mod tests {
     #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn delete() {
-        let db = Database::new("sqlite://:memory:")
-            .await
-            .expect("failed to create database");
+        let (dir, db) = fixture().await;
         let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a", dir.path()).unwrap();
         lot.save(&db, &user).await.expect("failed to save lot");
         let record = Record::new(
             &lot,
@@ -784,15 +550,15 @@ mod tests {
             Data::new("bar".try_into().unwrap()),
         );
         let uuid = record
-            .save(&db, &mut lot)
+            .save(&mut lot)
             .await
             .expect("failed to save record");
         record
-            .delete(&db, &mut lot)
+            .delete(&mut lot)
             .await
             .expect("failed to delete record");
         assert!(
-            Record::show(&db, &lot, &uuid)
+            Record::show(&lot, &uuid)
                 .await
                 .expect("failed to show record")
                 .is_none()
@@ -802,15 +568,13 @@ mod tests {
     #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn save_many_roundtrip() {
-        let db = Database::new("sqlite://:memory:")
-            .await
-            .expect("failed to create database");
+        let (dir, db) = fixture().await;
         let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a", dir.path()).unwrap();
         lot.save(&db, &user).await.expect("failed to save lot");
 
         let records = vec![
@@ -832,11 +596,11 @@ mod tests {
         ];
 
         let mut events: Vec<&'static str> = Vec::new();
-        let uuids = Record::save_many(&db, &mut lot, &records, |ev| {
+        let uuids = Record::save_many(&mut lot, &records, |ev| {
             events.push(match ev {
                 SaveProgress::OpenedStore => "opened",
                 SaveProgress::PutRecord(_) => "put",
-                SaveProgress::Bundle(_) => "snap",
+                SaveProgress::ParentFlushed => "flushed",
                 SaveProgress::SaveRecord => "save_r",
                 SaveProgress::SaveLot => "save_l",
             });
@@ -846,12 +610,12 @@ mod tests {
         assert_eq!(uuids.len(), records.len());
         assert_eq!(
             events,
-            vec!["opened", "put", "put", "put", "snap", "save_r", "save_l"]
+            vec!["opened", "put", "put", "put", "flushed", "save_r", "save_l"]
         );
 
         for (record, uuid) in records.iter().zip(uuids.iter()) {
             assert_eq!(uuid, record.uuid());
-            let loaded = Record::show(&db, &lot, uuid)
+            let loaded = Record::show(&lot, uuid)
                 .await
                 .expect("failed to show record")
                 .expect("record missing");
@@ -865,15 +629,15 @@ mod tests {
             "foo".parse::<Label>().unwrap(),
             Data::new("p1-new".try_into().unwrap()),
         )];
-        Record::save_many(&db, &mut lot, &updated, |_| {})
+        Record::save_many(&mut lot, &updated, |_| {})
             .await
             .expect("failed to re-save");
-        let loaded = Record::show(&db, &lot, records[0].uuid())
+        let loaded = Record::show(&lot, records[0].uuid())
             .await
             .expect("failed to show record")
             .expect("record missing");
         assert_eq!(loaded.password().to_string(), "p1-new");
-        let history = Record::history(&db, &lot, records[0].uuid())
+        let history = Record::history(&lot, records[0].uuid())
             .await
             .expect("failed to read history")
             .expect("history missing");
@@ -883,17 +647,15 @@ mod tests {
     #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn save_many_empty_is_noop() {
-        let db = Database::new("sqlite://:memory:")
-            .await
-            .expect("failed to create database");
+        let (dir, db) = fixture().await;
         let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a", dir.path()).unwrap();
         lot.save(&db, &user).await.expect("failed to save lot");
-        let uuids = Record::save_many(&db, &mut lot, &[], |_| {})
+        let uuids = Record::save_many(&mut lot, &[], |_| {})
             .await
             .expect("failed to save_many");
         assert!(uuids.is_empty());
@@ -902,24 +664,22 @@ mod tests {
     #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn save_many_rejects_foreign_lot() {
-        let db = Database::new("sqlite://:memory:")
-            .await
-            .expect("failed to create database");
+        let (dir, db) = fixture().await;
         let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot_a = Lot::new("lot a");
+        let mut lot_a = Lot::new("lot a", dir.path()).unwrap();
         lot_a.save(&db, &user).await.expect("failed to save lot");
-        let mut lot_b = Lot::new("lot b");
+        let mut lot_b = Lot::new("lot b", dir.path()).unwrap();
         lot_b.save(&db, &user).await.expect("failed to save lot");
         let foreign = Record::new(
             &lot_b,
             "foo".parse::<Label>().unwrap(),
             Data::new("p".try_into().unwrap()),
         );
-        let err = Record::save_many(&db, &mut lot_a, &[foreign], |_| {})
+        let err = Record::save_many(&mut lot_a, &[foreign], |_| {})
             .await
             .expect_err("expected LotMismatch");
         assert!(matches!(err, Error::LotMismatch { .. }));
@@ -928,25 +688,21 @@ mod tests {
     #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn save_rejects_name_collision_with_different_uuid() {
-        let db = Database::new("sqlite://:memory:")
-            .await
-            .expect("failed to create database");
+        let (dir, db) = fixture().await;
         let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a", dir.path()).unwrap();
         lot.save(&db, &user).await.expect("failed to save lot");
         let first = Record::new(
             &lot,
             "acct".parse::<Label>().unwrap(),
             Data::new("p1".try_into().unwrap()),
         );
-        let first_uuid = first.save(&db, &mut lot).await.unwrap();
+        let first_uuid = first.save(&mut lot).await.unwrap();
 
-        // A fresh Record::new for the same name mints a new uuid and
-        // must be rejected; the name is already owned.
         let collider = Record::new(
             &lot,
             "acct".parse::<Label>().unwrap(),
@@ -954,7 +710,7 @@ mod tests {
         );
         assert_ne!(&first_uuid, collider.uuid());
         let err = collider
-            .save(&db, &mut lot)
+            .save(&mut lot)
             .await
             .expect_err("expected LabelCollision");
         assert!(matches!(
@@ -962,14 +718,13 @@ mod tests {
             Error::LabelCollision { ref existing, .. } if existing == &first_uuid
         ));
 
-        // Reusing the existing uuid is the supported update path.
         Record::with_uuid(
             first_uuid.clone(),
             &lot,
             "acct".parse::<Label>().unwrap(),
             Data::new("p3".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .expect("reuse should succeed");
     }
@@ -977,22 +732,20 @@ mod tests {
     #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn save_many_rejects_name_collision() {
-        let db = Database::new("sqlite://:memory:")
-            .await
-            .expect("failed to create database");
+        let (dir, db) = fixture().await;
         let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a", dir.path()).unwrap();
         lot.save(&db, &user).await.expect("failed to save lot");
         Record::new(
             &lot,
             "acct".parse::<Label>().unwrap(),
             Data::new("p1".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
 
@@ -1001,7 +754,7 @@ mod tests {
             "acct".parse::<Label>().unwrap(),
             Data::new("p2".try_into().unwrap()),
         );
-        let err = Record::save_many(&db, &mut lot, &[collider], |_| {})
+        let err = Record::save_many(&mut lot, &[collider], |_| {})
             .await
             .expect_err("expected LabelCollision");
         assert!(matches!(err, Error::LabelCollision { .. }));
@@ -1010,20 +763,14 @@ mod tests {
     #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn save_many_rejects_intra_batch_collision() {
-        let db = Database::new("sqlite://:memory:")
-            .await
-            .expect("failed to create database");
+        let (dir, db) = fixture().await;
         let user = User::new("nixpulvis", "password".try_into().unwrap())
             .expect("failed to make user")
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a", dir.path()).unwrap();
         lot.save(&db, &user).await.expect("failed to save lot");
-        // Two fresh records minted with different uuids but the same
-        // label name. Neither is in the index yet, so the per-record
-        // check_name_owner passes for both; the intra-batch guard has
-        // to catch it.
         let a = Record::new(
             &lot,
             "dup".parse::<Label>().unwrap(),
@@ -1035,7 +782,7 @@ mod tests {
             Data::new("p2".try_into().unwrap()),
         );
         assert_ne!(a.uuid(), b.uuid());
-        let err = Record::save_many(&db, &mut lot, &[a, b], |_| {})
+        let err = Record::save_many(&mut lot, &[a, b], |_| {})
             .await
             .expect_err("expected LabelCollision");
         assert!(matches!(err, Error::LabelCollision { .. }));

@@ -1,0 +1,2 @@
+DROP TABLE records;
+ALTER TABLE lots DROP COLUMN store;

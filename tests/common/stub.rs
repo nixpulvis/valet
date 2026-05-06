@@ -36,6 +36,14 @@ struct StubState {
 
 impl StubHandler {
     pub fn new() -> Self {
+        // The stub never touches storgit; the `Record`s we keep
+        // only carry the lot uuid + key by value, so the tempdir
+        // backing `Lot::new` only needs to live until `new` returns.
+        #[cfg(feature = "db")]
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(feature = "db")]
+        let lot = Lot::new(STUB_LOT, dir.path()).expect("stub lot");
+        #[cfg(not(feature = "db"))]
         let lot = Lot::new(STUB_LOT);
         let records = vec![
             Record::with_uuid(

@@ -767,6 +767,11 @@ mod tests {
     fn sample_record() -> Record {
         use crate::Lot;
         use crate::record::Data;
+        #[cfg(feature = "db")]
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(feature = "db")]
+        let lot = Lot::new("test-lot", dir.path()).unwrap();
+        #[cfg(not(feature = "db"))]
         let lot = Lot::new("test-lot");
         Record::new(
             &lot,

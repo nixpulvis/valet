@@ -339,9 +339,10 @@ impl SubmoduleLayout {
     ) -> Result<Vec<FastForward>, Error> {
         let mut forwards: Vec<FastForward> = Vec::new();
         for (id, oid) in planned.advances {
-            let module = gix::open(self.module_dir(&id))?;
+            let module_path = self.module_dir(&id);
+            let module = gix::open(&module_path)?;
             let new_label = ModuleRepo::new(&module).read_label(oid)?;
-            self.set_gitlink(id.clone(), oid);
+            self.advance_module(id.clone(), oid)?;
             self.refresh_label_for(&id, new_label);
             forwards.push(FastForward {
                 id: Some(id),
@@ -528,9 +529,8 @@ impl Merge for SubmoduleLayout {
                         vec![local_head, incoming_head],
                         "merge",
                     )?;
-                    module_br.write_head(merge_commit)?;
                     let new_label = mr.read_label(chosen)?;
-                    self.set_gitlink(id.clone(), merge_commit);
+                    self.advance_module(id.clone(), merge_commit)?;
                     self.refresh_label_for(id, new_label);
                     forwards.push(FastForward {
                         id: Some(id.clone()),
@@ -543,7 +543,7 @@ impl Merge for SubmoduleLayout {
                 (None, Some(incoming_head), Side::Incoming) => {
                     let module = gix::open(&module_path)?;
                     let new_label = ModuleRepo::new(&module).read_label(incoming_head)?;
-                    self.set_gitlink(id.clone(), incoming_head);
+                    self.advance_module(id.clone(), incoming_head)?;
                     self.refresh_label_for(id, new_label);
                     forwards.push(FastForward {
                         id: Some(id.clone()),
@@ -579,7 +579,7 @@ impl Merge for SubmoduleLayout {
         // alive at that oid; any that was alive pre-merge but is
         // absent gets archived. The outer condition is true for
         // picks too (pre_merge was captured before the pick loop ran
-        // set_gitlink); the inner `forwards` check is what keeps
+        // advance_module); the inner `forwards` check is what keeps
         // this body from re-recording them. So in practice this
         // body only fires for non-conflict planned advances the
         // kernel persisted as stage-0 entries in the merge index.
@@ -590,7 +590,7 @@ impl Merge for SubmoduleLayout {
                 // Non-conflict planned advance from the kernel.
                 let module = gix::open(self.module_dir(id))?;
                 let new_label = ModuleRepo::new(&module).read_label(*oid)?;
-                self.set_gitlink(id.clone(), *oid);
+                self.advance_module(id.clone(), *oid)?;
                 self.refresh_label_for(id, new_label);
                 forwards.push(FastForward {
                     id: Some(id.clone()),

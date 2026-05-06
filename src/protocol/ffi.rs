@@ -189,11 +189,12 @@ pub unsafe extern "C" fn valet_ffi_client_new_embedded(
         not_null(db_path, "db_path")?;
         not_null(out, "out")?;
         let path = unsafe { cstr_to_string(db_path, "db_path") }?;
+        let data_dir = std::path::PathBuf::from(path);
         let rt = new_runtime()?;
         let db = rt
-            .block_on(crate::db::Database::new(&path))
+            .block_on(crate::db::Database::open_dir(&data_dir))
             .map_err(|e| FfiCallError::Io(io::Error::other(format!("{e:?}"))))?;
-        let inner = EmbeddedHandler::new(db, rt.handle());
+        let inner = EmbeddedHandler::new(db, data_dir, rt.handle());
         let boxed = Box::new(ValetClient { inner, rt });
         unsafe { *out = Box::into_raw(boxed) };
         Ok(())

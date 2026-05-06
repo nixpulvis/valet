@@ -234,11 +234,22 @@ impl SubmoduleLayout {
         &self.gitlinks
     }
 
-    pub(crate) fn set_gitlink(&mut self, id: EntryId, oid: gix::ObjectId) {
+    /// Record `oid` as the module's authoritative tip: update the
+    /// parent's gitlink record and the module's `refs/heads/main`
+    /// together. Pairing them here is the only way to record a module
+    /// advance; splitting the two has caused sync to advertise stale
+    /// module heads alongside parents that reference newer gitlinks.
+    pub(crate) fn advance_module(
+        &mut self,
+        id: EntryId,
+        oid: gix::ObjectId,
+    ) -> Result<(), Error> {
         self.gitlinks.insert(id.clone(), oid);
         self.label_cache.remove(&id);
         self.gitlinks_dirty = true;
         self.mark_module_changed(&id);
+        BareRepo::new(&self.module_dir(&id)).write_head(oid)?;
+        Ok(())
     }
 
     pub(crate) fn refresh_label_for(&mut self, id: &EntryId, label: Option<Vec<u8>>) {

@@ -70,6 +70,9 @@ pub const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 /// currently held in memory.
 pub struct State {
     pub db: Database,
+    /// Filesystem root for per-lot bare repos. Each lot's storgit
+    /// store lives at [`Lot::lot_path`] beneath this directory.
+    pub data_dir: std::path::PathBuf,
     pub users: HashMap<String, User>,
     /// Every lot any unlocked user can access, keyed by lot uuid.
     /// Shared lots (multiple users with access) occupy one slot, not
@@ -86,9 +89,10 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(db: Database) -> Self {
+    pub fn new(db: Database, data_dir: std::path::PathBuf) -> Self {
         Self {
             db,
+            data_dir,
             users: HashMap::new(),
             lots: HashMap::new(),
             user_lots: HashMap::new(),
@@ -164,22 +168,28 @@ impl EmbeddedHandler {
     /// function without naming a live runtime.
     ///
     /// [`Handle`]: tokio::runtime::Handle
-    pub fn new(db: Database, rt: &tokio::runtime::Handle) -> Self {
-        let state = Arc::new(Mutex::new(State::new(db)));
+    pub fn new(
+        db: Database,
+        data_dir: std::path::PathBuf,
+        rt: &tokio::runtime::Handle,
+    ) -> Self {
+        let state = Arc::new(Mutex::new(State::new(db, data_dir)));
         spawn_reaper(rt, state.clone(), IDLE_TIMEOUT, IDLE_CHECK_INTERVAL);
         Self { state }
     }
 
-    /// Open the database at `$VALET_DB` (or [`crate::db::default_url`]
-    /// when unset) and build a handler around it. Used by the `valetd`
-    /// binary and by any transport that just wants the default
-    /// location.
+    /// Open the database under `$VALET_DIR` (or
+    /// [`crate::db::default_dir`] when unset) and build a handler
+    /// around it. Used by the `valetd` binary and by any transport
+    /// that just wants the default location.
     pub async fn open_from_env(rt: &tokio::runtime::Handle) -> Result<Self, String> {
-        let db_url = std::env::var("VALET_DB").unwrap_or_else(|_| crate::db::default_url());
-        let db = Database::new(&db_url)
+        let data_dir = std::env::var_os("VALET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(crate::db::default_dir);
+        let db = Database::open_dir(&data_dir)
             .await
-            .map_err(|e| format!("failed to open database at {db_url}: {e:?}"))?;
-        Ok(Self::new(db, rt))
+            .map_err(|e| format!("failed to open database at {}: {e:?}", data_dir.display()))?;
+        Ok(Self::new(db, data_dir, rt))
     }
 }
 
@@ -293,8 +303,7 @@ async fn dispatch(state: &Arc<Mutex<State>>, req: Request) -> Result<Response, S
             let st = state.lock().await;
             let lot_uuid = lookup_lot_uuid(&st, &username, &lot)?;
             let l = st.get_lot(&lot_uuid)?;
-            let db = &st.db;
-            let record = Record::show(db, l, &uuid)
+            let record = Record::show(l, &uuid)
                 .await
                 .map_err(err)?
                 .ok_or_else(|| "record not found".to_string())?;
@@ -323,7 +332,7 @@ async fn dispatch(state: &Arc<Mutex<State>>, req: Request) -> Result<Response, S
                 .register(&st.db)
                 .await
                 .map_err(err)?;
-            let mut lot = Lot::new(DEFAULT_LOT);
+            let mut lot = Lot::new(DEFAULT_LOT, &st.data_dir).map_err(err)?;
             lot.save(&st.db, &user).await.map_err(err)?;
             // Leave the newly-registered user unlocked. The caller has
             // just proved the password; forcing a follow-up Unlock to
@@ -414,7 +423,7 @@ async fn fetch_any_lot(
     let lot_uuids = user_lot_uuids(&st, username)?.to_vec();
     for lot_uuid in lot_uuids {
         let lot = st.get_lot(&lot_uuid)?;
-        if let Some(record) = Record::show(&st.db, lot, uuid).await.map_err(err)? {
+        if let Some(record) = Record::show(lot, uuid).await.map_err(err)? {
             return Ok(Response::Record(record));
         }
     }
@@ -455,7 +464,7 @@ async fn create_record(
     if !extra.is_empty() {
         data = data.with_extra(extra);
     }
-    let State { db, lots, .. } = &mut *st;
+    let State { lots, .. } = &mut *st;
     let l = lots
         .get_mut(&lot_uuid)
         .ok_or_else(|| Error::LotCacheMiss(lot_uuid.clone()))?;
@@ -466,7 +475,7 @@ async fn create_record(
         Some(existing) => Record::with_uuid(existing, l, label, data),
         None => Record::new(l, label, data),
     };
-    record.save(db, l).await.map_err(err)?;
+    record.save(l).await.map_err(err)?;
     info!(user = %username, lot = %lot, uuid = %record.uuid(), "record saved");
     Ok(Response::Record(record))
 }
@@ -488,11 +497,11 @@ async fn create_lot(
     lot_name: &str,
 ) -> Result<Response, String> {
     let mut st = state.lock().await;
+    let mut lot = Lot::new(lot_name, &st.data_dir).map_err(err)?;
     let user = st
         .users
         .get(username)
         .ok_or_else(|| format!("user '{username}' is locked"))?;
-    let mut lot = Lot::new(lot_name);
     lot.save(&st.db, user).await.map_err(err)?;
     info!(user = %username, lot = %lot_name, "lot created");
     st.insert_lot(username, lot);
@@ -530,7 +539,7 @@ async fn history(
     let st = state.lock().await;
     let lot_uuid = lookup_lot_uuid(&st, username, lot_name)?;
     let l = st.get_lot(&lot_uuid)?;
-    let revisions = Record::history(&st.db, l, uuid)
+    let revisions = Record::history(l, uuid)
         .await
         .map_err(err)?
         .ok_or_else(|| format!("record '{uuid}' not found in lot '{lot_name}'"))?;
@@ -571,6 +580,7 @@ async fn remote_add(
         .collect::<Result<_, _>>()?;
     let mut out = Vec::with_capacity(lot_uuids.len());
     for (lot_name, lot_uuid) in lot_uuids {
+        let resolved = resolve_remote_url(url, &lot_uuid);
         let State {
             db, users, lots, ..
         } = &mut *st;
@@ -580,16 +590,57 @@ async fn remote_add(
         let l = lots
             .get_mut(&lot_uuid)
             .ok_or_else(|| Error::LotCacheMiss(lot_uuid.clone()))?;
-        let result: Result<(), String> = match l.store_mut().add_remote(name, url) {
+        let result: Result<(), String> = match l.store_mut().add_remote(name, &resolved) {
             Ok(()) => l.save(db, user).await.map_err(err).map(|_| ()),
             Err(e) => Err(err(e)),
         };
         if result.is_ok() {
-            info!(user = %username, lot = %lot_name, remote = %name, "remote added");
+            info!(
+                user = %username,
+                lot = %lot_name,
+                remote = %name,
+                url = %resolved,
+                "remote added",
+            );
         }
         out.push((lot_name, result));
     }
     Ok(Response::RemoteResults(out))
+}
+
+/// Resolve a `file://` URL the user typed at `remote add` into the
+/// canonical bare-repo path storgit/git want. Other schemes pass
+/// through.
+///
+/// Rules, first match wins:
+/// 1. URL already ends in `/parent.git`: returned as-is. The caller
+///    is being explicit; respect it.
+/// 2. `<path>` looks like a valet data dir (has a `lots/` subdir or
+///    a `valet.sqlite`): rewrite to
+///    `<path>/lots/<our-lot-uuid>/repo/parent.git`. The target may
+///    not exist yet; first push auto-inits it.
+/// 3. Otherwise: rewrite to `<path>/parent.git`. Treats `<path>` as
+///    a generic shared bare-remote location; first push auto-inits.
+fn resolve_remote_url(url: &str, lot_uuid: &Uuid<Lot>) -> String {
+    let Some(path) = url.strip_prefix("file://") else {
+        return url.to_string();
+    };
+    let p = std::path::Path::new(path);
+
+    if p.file_name() == Some(std::ffi::OsStr::new("parent.git")) {
+        return url.to_string();
+    }
+
+    let looks_like_data_dir = p.join("lots").is_dir() || p.join("valet.sqlite").is_file();
+    let target = if looks_like_data_dir {
+        p.join("lots")
+            .join(lot_uuid.to_string())
+            .join("repo")
+            .join("parent.git")
+    } else {
+        p.join("parent.git")
+    };
+    format!("file://{}", target.display())
 }
 
 async fn remote_remove(
@@ -770,7 +821,9 @@ async fn sync_user_lots(st: &mut State, username: &str) -> Result<(), String> {
         .users
         .get(username)
         .ok_or_else(|| format!("user '{username}' is locked"))?;
-    let lots = Lot::load_all(&st.db, user).await.map_err(err)?;
+    let lots = Lot::load_all(&st.db, user, &st.data_dir)
+        .await
+        .map_err(err)?;
     let mut uuids = Vec::with_capacity(lots.len());
     for lot in lots {
         let uuid = lot.uuid().clone();
@@ -811,4 +864,80 @@ fn user_lot_uuids<'a>(st: &'a State, username: &str) -> Result<&'a [Uuid<Lot>], 
 
 fn err<E: std::fmt::Debug>(e: E) -> String {
     format!("{e:?}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_uuid() -> Uuid<Lot> {
+        Uuid::<Lot>::parse("019f0000-0000-7000-8000-000000000abc").unwrap()
+    }
+
+    #[test]
+    fn resolve_passes_through_non_file_urls() {
+        let u = fake_uuid();
+        assert_eq!(
+            resolve_remote_url("ssh://host/path", &u),
+            "ssh://host/path"
+        );
+        assert_eq!(
+            resolve_remote_url("https://example.com/repo.git", &u),
+            "https://example.com/repo.git"
+        );
+    }
+
+    #[test]
+    fn resolve_keeps_explicit_parent_git_suffix() {
+        let u = fake_uuid();
+        assert_eq!(
+            resolve_remote_url("file:///tmp/x/parent.git", &u),
+            "file:///tmp/x/parent.git"
+        );
+    }
+
+    #[test]
+    fn resolve_uses_lot_uuid_path_for_valet_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        // Make the path look like a valet data dir.
+        std::fs::create_dir(dir.path().join("lots")).unwrap();
+        let u = fake_uuid();
+        let url = format!("file://{}", dir.path().display());
+        assert_eq!(
+            resolve_remote_url(&url, &u),
+            format!(
+                "file://{}/lots/{}/repo/parent.git",
+                dir.path().display(),
+                u
+            ),
+        );
+    }
+
+    #[test]
+    fn resolve_uses_lot_uuid_path_when_sqlite_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("valet.sqlite"), b"").unwrap();
+        let u = fake_uuid();
+        let url = format!("file://{}", dir.path().display());
+        assert_eq!(
+            resolve_remote_url(&url, &u),
+            format!(
+                "file://{}/lots/{}/repo/parent.git",
+                dir.path().display(),
+                u
+            ),
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_parent_git_for_generic_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // Empty dir, neither lots/ nor valet.sqlite.
+        let u = fake_uuid();
+        let url = format!("file://{}", dir.path().display());
+        assert_eq!(
+            resolve_remote_url(&url, &u),
+            format!("file://{}/parent.git", dir.path().display()),
+        );
+    }
 }

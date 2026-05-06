@@ -19,10 +19,13 @@ impl App {
             .enable_all()
             .build()
             .unwrap();
+        let data_dir = std::env::var_os("VALET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(valet::db::default_dir);
         let db = rt
-            .block_on(Database::new(&valet::db::default_url()))
+            .block_on(Database::open_dir(&data_dir))
             .expect("failed to open database");
-        let client = Arc::new(EmbeddedHandler::new(db, rt.handle()));
+        let client = Arc::new(EmbeddedHandler::new(db, data_dir, rt.handle()));
         App {
             client,
             rt,

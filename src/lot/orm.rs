@@ -6,9 +6,6 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub uuid: String,
-    pub store: Vec<u8>,
-    #[sea_orm(has_many, relation_enum = "Records")]
-    pub records: HasMany<crate::record::orm::Entity>,
     #[sea_orm(has_many, relation_enum = "UserLot")]
     pub user_lots: HasMany<user_lots::Entity>,
 }

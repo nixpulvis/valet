@@ -1069,3 +1069,35 @@ fn push_then_update_then_push_again_sub() {
     b.pull("origin").unwrap();
     assert_eq!(get_data(&b, "alpha").as_deref(), Some(&b"v2"[..]));
 }
+
+#[test]
+fn sync_round_trip_via_bare_remote_preserves_local_advances_sub() {
+    // Regression: pull from a remote with older state must not
+    // clobber the local module's `refs/heads/main`. If it did, the
+    // following push would advertise the older oid alongside a
+    // parent that references the newer oid the remote never got.
+    let bare = tempfile::tempdir().unwrap();
+    let url = bare_url(bare.path());
+
+    let (_a_tmp, mut a) = fresh();
+    put_data(&mut a, "alpha", b"v1");
+    flush_sub(&mut a);
+    a.add_remote("origin", &url).unwrap();
+    a.push("origin").unwrap();
+
+    // Round-trip: a pulls (its own state -- nothing to do), then
+    // updates and pulls again before pushing. The first pull is the
+    // landmine: it carries the remote's older module commits down
+    // into a's module repo. With force-clobbering refspecs, this
+    // would orphan a's just-written v2 commit.
+    put_data(&mut a, "alpha", b"v2");
+    flush_sub(&mut a);
+    a.pull("origin").unwrap();
+    a.push("origin").unwrap();
+
+    // A fresh peer pulls -- should see v2.
+    let (_b_tmp, mut b) = fresh();
+    b.add_remote("origin", &url).unwrap();
+    b.pull("origin").unwrap();
+    assert_eq!(get_data(&b, "alpha").as_deref(), Some(&b"v2"[..]));
+}
