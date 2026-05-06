@@ -9,7 +9,7 @@ use crate::common::embedded_client_with_user;
 use valet::SendHandler;
 use valet::protocol::message::{
     CreateRecord, Fetch, FindRecords, GenerateRecord, List, ListLots, ListUsers, Lock, LockAll,
-    Register, Status, Unlock,
+    Register, RemoteAdd, RemoteList, RemoteRemove, Status, Sync, Unlock,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -177,4 +177,93 @@ async fn generate_record_produces_password() {
         .await
         .unwrap();
     assert!(!record.password().as_bytes().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_add_list_remove_roundtrip() {
+    let client = embedded_client_with_user("alice", "sesame").await;
+    let lot = valet::lot::DEFAULT_LOT;
+
+    let add = client
+        .call(RemoteAdd {
+            username: "alice".into(),
+            name: "origin".into(),
+            url: "file:///tmp/valet-int-remote".into(),
+            lots: vec![lot.into()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(add.len(), 1);
+    assert_eq!(add[0].0, lot);
+    add[0].1.as_ref().unwrap();
+
+    let listed = client
+        .call(RemoteList {
+            username: "alice".into(),
+            lots: vec![],
+        })
+        .await
+        .unwrap();
+    let (lot_name, remotes) = listed.into_iter().find(|(n, _)| n == lot).unwrap();
+    assert_eq!(lot_name, lot);
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].name, "origin");
+    assert_eq!(remotes[0].url, "file:///tmp/valet-int-remote");
+
+    let remove = client
+        .call(RemoteRemove {
+            username: "alice".into(),
+            name: "origin".into(),
+            lots: vec![lot.into()],
+        })
+        .await
+        .unwrap();
+    remove[0].1.as_ref().unwrap();
+
+    let after = client
+        .call(RemoteList {
+            username: "alice".into(),
+            lots: vec![lot.into()],
+        })
+        .await
+        .unwrap();
+    assert!(after[0].1.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_add_duplicate_errors_per_lot() {
+    let client = embedded_client_with_user("alice", "sesame").await;
+    let lot = valet::lot::DEFAULT_LOT;
+    client
+        .call(RemoteAdd {
+            username: "alice".into(),
+            name: "origin".into(),
+            url: "file:///tmp/a".into(),
+            lots: vec![lot.into()],
+        })
+        .await
+        .unwrap();
+    let again = client
+        .call(RemoteAdd {
+            username: "alice".into(),
+            name: "origin".into(),
+            url: "file:///tmp/b".into(),
+            lots: vec![lot.into()],
+        })
+        .await
+        .unwrap();
+    assert!(again[0].1.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_with_no_remotes_returns_empty() {
+    let client = embedded_client_with_user("alice", "sesame").await;
+    let outcomes = client
+        .call(Sync {
+            username: "alice".into(),
+            lots: vec![],
+        })
+        .await
+        .unwrap();
+    assert!(outcomes.is_empty());
 }

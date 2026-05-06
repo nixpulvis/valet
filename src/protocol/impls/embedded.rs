@@ -7,7 +7,9 @@
 //! [`Lot`]: crate::Lot
 
 use crate::protocol::SendHandler;
-use crate::protocol::message::{Request, Response, RevisionEntry};
+use crate::protocol::message::{
+    RemoteEntry, Request, Response, RevisionEntry, SyncOutcome, SyncReport,
+};
 use crate::{
     Lot, Record,
     db::Database,
@@ -356,6 +358,19 @@ async fn dispatch(state: &Arc<Mutex<State>>, req: Request) -> Result<Response, S
             lot,
             uuid,
         } => history(state, &username, &lot, &uuid).await,
+        Request::RemoteAdd {
+            username,
+            name,
+            url,
+            lots,
+        } => remote_add(state, &username, &name, &url, &lots).await,
+        Request::RemoteRemove {
+            username,
+            name,
+            lots,
+        } => remote_remove(state, &username, &name, &lots).await,
+        Request::RemoteList { username, lots } => remote_list(state, &username, &lots).await,
+        Request::Sync { username, lots } => sync(state, &username, &lots).await,
     }
 }
 
@@ -536,6 +551,212 @@ async fn history(
         })
         .collect();
     Ok(Response::History(entries))
+}
+
+async fn remote_add(
+    state: &Arc<Mutex<State>>,
+    username: &str,
+    name: &str,
+    url: &str,
+    lots: &[String],
+) -> Result<Response, String> {
+    use storgit::Distribute;
+    if lots.is_empty() {
+        return Err("remote add: at least one lot is required".to_string());
+    }
+    let mut st = state.lock().await;
+    let lot_uuids: Vec<(String, Uuid<Lot>)> = lots
+        .iter()
+        .map(|name| lookup_lot_uuid(&st, username, name).map(|u| (name.clone(), u)))
+        .collect::<Result<_, _>>()?;
+    let mut out = Vec::with_capacity(lot_uuids.len());
+    for (lot_name, lot_uuid) in lot_uuids {
+        let State {
+            db, users, lots, ..
+        } = &mut *st;
+        let user = users
+            .get(username)
+            .ok_or_else(|| format!("user '{username}' is locked"))?;
+        let l = lots
+            .get_mut(&lot_uuid)
+            .ok_or_else(|| Error::LotCacheMiss(lot_uuid.clone()))?;
+        let result: Result<(), String> = match l.store_mut().add_remote(name, url) {
+            Ok(()) => l.save(db, user).await.map_err(err).map(|_| ()),
+            Err(e) => Err(err(e)),
+        };
+        if result.is_ok() {
+            info!(user = %username, lot = %lot_name, remote = %name, "remote added");
+        }
+        out.push((lot_name, result));
+    }
+    Ok(Response::RemoteResults(out))
+}
+
+async fn remote_remove(
+    state: &Arc<Mutex<State>>,
+    username: &str,
+    name: &str,
+    lots: &[String],
+) -> Result<Response, String> {
+    use storgit::Distribute;
+    if lots.is_empty() {
+        return Err("remote remove: at least one lot is required".to_string());
+    }
+    let mut st = state.lock().await;
+    let lot_uuids: Vec<(String, Uuid<Lot>)> = lots
+        .iter()
+        .map(|name| lookup_lot_uuid(&st, username, name).map(|u| (name.clone(), u)))
+        .collect::<Result<_, _>>()?;
+    let mut out = Vec::with_capacity(lot_uuids.len());
+    for (lot_name, lot_uuid) in lot_uuids {
+        let State {
+            db, users, lots, ..
+        } = &mut *st;
+        let user = users
+            .get(username)
+            .ok_or_else(|| format!("user '{username}' is locked"))?;
+        let l = lots
+            .get_mut(&lot_uuid)
+            .ok_or_else(|| Error::LotCacheMiss(lot_uuid.clone()))?;
+        let result: Result<(), String> = match l.store_mut().remove_remote(name) {
+            Ok(()) => l.save(db, user).await.map_err(err).map(|_| ()),
+            Err(e) => Err(err(e)),
+        };
+        if result.is_ok() {
+            info!(user = %username, lot = %lot_name, remote = %name, "remote removed");
+        }
+        out.push((lot_name, result));
+    }
+    Ok(Response::RemoteResults(out))
+}
+
+async fn remote_list(
+    state: &Arc<Mutex<State>>,
+    username: &str,
+    lots: &[String],
+) -> Result<Response, String> {
+    use storgit::Distribute;
+    let st = state.lock().await;
+    let target_lots = resolve_lots(&st, username, lots)?;
+    let mut out = Vec::with_capacity(target_lots.len());
+    for lot_name in target_lots {
+        let lot_uuid = lookup_lot_uuid(&st, username, &lot_name)?;
+        let l = st.get_lot(&lot_uuid)?;
+        let remotes = l
+            .store()
+            .remotes()
+            .map_err(err)?
+            .into_iter()
+            .map(|r| RemoteEntry {
+                name: r.name,
+                url: r.url,
+            })
+            .collect();
+        out.push((lot_name, remotes));
+    }
+    Ok(Response::RemoteList(out))
+}
+
+async fn sync(
+    state: &Arc<Mutex<State>>,
+    username: &str,
+    lots: &[String],
+) -> Result<Response, String> {
+    use storgit::{Distribute, MergeStatus};
+    let mut st = state.lock().await;
+    let target_lots = resolve_lots(&st, username, lots)?;
+    let lot_uuids: Vec<(String, Uuid<Lot>)> = target_lots
+        .iter()
+        .map(|name| lookup_lot_uuid(&st, username, name).map(|u| (name.clone(), u)))
+        .collect::<Result<_, _>>()?;
+    let mut out: Vec<SyncOutcome> = Vec::new();
+    for (lot_name, lot_uuid) in lot_uuids {
+        // Snapshot the configured remote list once before pulling so
+        // we don't iterate while the layout's git config is mutating.
+        let remote_names: Vec<String> = {
+            let l = st.get_lot(&lot_uuid)?;
+            match l.store().remotes() {
+                Ok(rs) => rs.into_iter().map(|r| r.name).collect(),
+                Err(e) => {
+                    out.push(SyncOutcome {
+                        lot: lot_name.clone(),
+                        remote: String::new(),
+                        result: Err(format!("{e:?}")),
+                    });
+                    continue;
+                }
+            }
+        };
+        for remote in remote_names {
+            let State {
+                db, users, lots, ..
+            } = &mut *st;
+            let user = users
+                .get(username)
+                .ok_or_else(|| format!("user '{username}' is locked"))?;
+            let l = lots
+                .get_mut(&lot_uuid)
+                .ok_or_else(|| Error::LotCacheMiss(lot_uuid.clone()))?;
+            // Pull first; conflicts stop the round before any push.
+            let pulled: Result<MergeStatus, String> =
+                l.store_mut().pull(&remote).map_err(|e| format!("{e:?}"));
+            let result: Result<SyncReport, String> = match pulled {
+                Ok(MergeStatus::Clean(ffs)) => {
+                    let advanced = ffs.len() as u32;
+                    match l.save(db, user).await {
+                        Err(e) => Err(format!("save after pull: {e:?}")),
+                        Ok(_) => {
+                            info!(user = %username, lot = %lot_name, remote = %remote, advanced, "sync pull clean");
+                            let pushed = match l.store().push(&remote) {
+                                Ok(()) => {
+                                    info!(user = %username, lot = %lot_name, remote = %remote, "sync push ok");
+                                    Ok(())
+                                }
+                                Err(e) => {
+                                    warn!(user = %username, lot = %lot_name, remote = %remote, "sync push failed: {e}");
+                                    Err(format!("{e}"))
+                                }
+                            };
+                            Ok(SyncReport::Clean { advanced, pushed })
+                        }
+                    }
+                }
+                Ok(MergeStatus::Conflicted(progress)) => {
+                    let conflicts: Vec<String> = progress
+                        .conflicts()
+                        .iter()
+                        .map(|c| c.id.to_string())
+                        .collect();
+                    warn!(user = %username, lot = %lot_name, remote = %remote, count = conflicts.len(), "sync conflicted");
+                    Ok(SyncReport::Conflicted { conflicts })
+                }
+                Err(e) => Err(e),
+            };
+            out.push(SyncOutcome {
+                lot: lot_name.clone(),
+                remote,
+                result,
+            });
+        }
+    }
+    Ok(Response::SyncResults(out))
+}
+
+/// Resolve the user-supplied lot name list into the lot names to act
+/// on. Empty input means "every lot the user has access to".
+fn resolve_lots(st: &State, username: &str, lots: &[String]) -> Result<Vec<String>, String> {
+    if !lots.is_empty() {
+        return Ok(lots.to_vec());
+    }
+    let uuids = user_lot_uuids(st, username)?;
+    uuids
+        .iter()
+        .map(|u| {
+            st.get_lot(u)
+                .map(|l| l.name().to_owned())
+                .map_err(Into::into)
+        })
+        .collect()
 }
 
 /// Eager-sync the cached lot set for `username` against SQLite. Loads

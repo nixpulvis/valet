@@ -622,6 +622,44 @@ impl Merge for SubmoduleLayout {
 }
 
 impl Distribute for SubmoduleLayout {
+    /// Override the default impl to mark the parent dirty so the next
+    /// `bundle()` re-tars `parent.git/` (which now carries the new
+    /// `[remote ...]` config section).
+    fn add_remote(&mut self, name: &str, url: &str) -> Result<(), Error> {
+        crate::config::GitConfig::add_remote(&self.git_dir(), name, url)?;
+        self.mark_parent_dirty();
+        Ok(())
+    }
+
+    /// Override the default impl to mark the parent dirty (config
+    /// changed).
+    fn remove_remote(&mut self, name: &str) -> Result<(), Error> {
+        crate::config::GitConfig::remove_remote(&self.git_dir(), name)?;
+        self.mark_parent_dirty();
+        Ok(())
+    }
+
+    /// Push the parent's `refs/heads/main` to the configured remote,
+    /// then push each live submodule's `refs/heads/main` to the URL
+    /// derived from the parent's remote URL (same convention
+    /// [`pull`](Self::pull) uses to fetch). Modules are pushed before
+    /// the parent so the gitlinks the parent commits have already
+    /// landed by the time a peer pulls.
+    fn push(&self, remote: &str) -> Result<(), Error> {
+        let parent_path = self.parent_dir();
+        let parent_url = crate::config::GitConfig::lookup_remote(&parent_path, remote)?.url;
+        for id in self.gitlinks().keys() {
+            let module_dir = self.module_dir(id);
+            if !module_dir.exists() {
+                continue;
+            }
+            let module_url = derive_module_url(&parent_url, id)?;
+            crate::remote::shell_push(&module_dir, &module_url)?;
+        }
+        crate::remote::shell_push(&parent_path, &parent_url)?;
+        Ok(())
+    }
+
     /// Fetches the parent first, then for each gitlink whose oid
     /// differs from local, fetches that module's repo from the URL
     /// derived from the parent's remote URL. Then runs the merge

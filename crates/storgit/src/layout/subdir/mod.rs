@@ -158,6 +158,13 @@ impl SubdirLayout {
         self.rebuild_label_cache()
     }
 
+    /// Mark dirty so the next `bundle()` re-tars the repo. Used when
+    /// something outside HEAD changes (e.g. remote config writes via
+    /// `Distribute::add_remote` / `remove_remote`).
+    pub(crate) fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
     /// Build and persist the label_cache by walking `HEAD:records/`.
     fn rebuild_label_cache(&mut self) -> Result<(), Error> {
         self.label_cache.clear();

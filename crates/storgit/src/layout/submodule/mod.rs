@@ -222,6 +222,14 @@ impl SubmoduleLayout {
         &self.path
     }
 
+    /// Mark the parent dirty so the next `bundle()` re-tars
+    /// `parent.git/`. Used when something outside the parent's commit
+    /// graph changes (currently: remote config writes via
+    /// `Distribute::add_remote` / `remove_remote`).
+    pub(crate) fn mark_parent_dirty(&mut self) {
+        self.dirty_parent = true;
+    }
+
     pub(crate) fn gitlinks(&self) -> &BTreeMap<EntryId, gix::ObjectId> {
         &self.gitlinks
     }

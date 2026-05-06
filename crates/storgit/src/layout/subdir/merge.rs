@@ -183,6 +183,18 @@ impl Merge for SubdirLayout {
 }
 
 impl Distribute for SubdirLayout {
+    fn add_remote(&mut self, name: &str, url: &str) -> Result<(), Error> {
+        crate::config::GitConfig::add_remote(&self.git_dir(), name, url)?;
+        self.mark_dirty();
+        Ok(())
+    }
+
+    fn remove_remote(&mut self, name: &str) -> Result<(), Error> {
+        crate::config::GitConfig::remove_remote(&self.git_dir(), name)?;
+        self.mark_dirty();
+        Ok(())
+    }
+
     fn pull(&mut self, remote: &str) -> Result<MergeStatus, Error> {
         self.fetch(remote)?;
         let tracking = self

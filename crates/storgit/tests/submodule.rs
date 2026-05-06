@@ -1016,3 +1016,56 @@ fn bidirectional_pull_converges_after_archive_delete_and_add() {
     assert_eq!(get_data(&a, "delta").as_deref(), Some(&b"d1"[..]));
     assert_eq!(get_data(&a, "epsilon").as_deref(), Some(&b"e1"[..]));
 }
+
+// --- Push tests (submodule layout) ----------------------------
+
+/// `<bare>/parent.git` URL pattern that `push` / `pull` expect: the
+/// parent URL ends in `/parent.git` so module URLs derive as
+/// `<bare>/modules/<id>.git`.
+fn bare_url(bare_root: &std::path::Path) -> String {
+    format!("file://{}/parent.git", bare_root.display())
+}
+
+#[test]
+fn push_round_trips_data_via_bare_remote_sub() {
+    let bare = tempfile::tempdir().unwrap();
+    let url = bare_url(bare.path());
+
+    let (_a_tmp, mut a) = fresh();
+    put_data(&mut a, "alpha", b"v1");
+    flush_sub(&mut a);
+    a.add_remote("origin", &url).unwrap();
+    // First push auto-inits the bare parent and module repos at the
+    // file:// destination.
+    a.push("origin").unwrap();
+
+    let (_b_tmp, mut b) = fresh();
+    b.add_remote("origin", &url).unwrap();
+    let status = b.pull("origin").unwrap();
+    match status {
+        MergeStatus::Clean(forwards) => assert_eq!(forwards.len(), 1),
+        _ => panic!("expected clean pull from bare remote"),
+    }
+    assert_eq!(get_data(&b, "alpha").as_deref(), Some(&b"v1"[..]));
+}
+
+#[test]
+fn push_then_update_then_push_again_sub() {
+    let bare = tempfile::tempdir().unwrap();
+    let url = bare_url(bare.path());
+
+    let (_a_tmp, mut a) = fresh();
+    put_data(&mut a, "alpha", b"v1");
+    flush_sub(&mut a);
+    a.add_remote("origin", &url).unwrap();
+    a.push("origin").unwrap();
+
+    put_data(&mut a, "alpha", b"v2");
+    flush_sub(&mut a);
+    a.push("origin").unwrap();
+
+    let (_b_tmp, mut b) = fresh();
+    b.add_remote("origin", &url).unwrap();
+    b.pull("origin").unwrap();
+    assert_eq!(get_data(&b, "alpha").as_deref(), Some(&b"v2"[..]));
+}

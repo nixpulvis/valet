@@ -531,6 +531,37 @@ mod tests {
 
     #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
+    async fn remote_persists_across_reload() {
+        use storgit::Distribute;
+
+        let db = Database::new("sqlite://:memory:")
+            .await
+            .expect("failed to create database");
+        let user = User::new("nixpulvis", "password".try_into().unwrap())
+            .expect("failed to make user")
+            .register(&db)
+            .await
+            .expect("failed to register user");
+        let mut lot = Lot::new("lot a");
+        lot.save(&db, &user).await.expect("failed to save lot");
+
+        lot.store_mut()
+            .add_remote("origin", "file:///tmp/valet-remote-test")
+            .expect("add_remote");
+        lot.save(&db, &user).await.expect("failed to re-save lot");
+
+        let reloaded = Lot::load(&db, lot.name(), &user)
+            .await
+            .expect("failed to load lot")
+            .expect("no lot");
+        let remotes = reloaded.store().remotes().expect("list remotes");
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].name, "origin");
+        assert_eq!(remotes[0].url, "file:///tmp/valet-remote-test");
+    }
+
+    #[cfg(feature = "db")]
+    #[tokio::test(flavor = "multi_thread")]
     async fn create_load_all() {
         let db = Database::new("sqlite://:memory:")
             .await

@@ -8,11 +8,13 @@
 //! tool see them transparently.
 
 use std::path::Path;
+use std::process::Command;
 
 use gix::bstr::ByteSlice;
 
 use crate::Layout;
 use crate::error::Error;
+use crate::git::{BRANCH, init_bare_on_branch};
 use crate::merge::MergeStatus;
 
 /// A named remote: a name and a URL. Pure data; the I/O lives on
@@ -76,21 +78,57 @@ pub trait Distribute: Layout {
     /// store. A remote with no branch yet is a clean no-op.
     fn pull(&mut self, remote: &str) -> Result<MergeStatus, Error>;
 
-    /// Push local refs to a configured remote. Currently
-    /// unimplemented: `gix` 0.81 does not yet ship a push
-    /// transport, and storgit does not shell out. Callers needing
-    /// one-way replication can use `bundle`/`apply` or `save`/`load`
-    /// over any pipe in the meantime.
+    /// Push the canonical [`BRANCH`] of the layout's bare repo to
+    /// `remote`. Default impl: shell out to the system `git` binary,
+    /// since `gix` 0.81 does not yet ship a push transport. Layouts
+    /// that span multiple bare repos (e.g. submodule's parent +
+    /// per-id modules) override this to push each.
+    ///
+    /// For `file://` URLs whose target directory does not exist, the
+    /// directory is initialised as a bare repo first. Other schemes
+    /// (`ssh://`, `https://`) are passed through to git unchanged;
+    /// the remote endpoint must exist already.
     fn push(&self, remote: &str) -> Result<(), Error> {
-        crate::config::GitConfig::lookup_remote(&self.git_dir(), remote)?;
-        Err(Error::PushRejected {
-            remote: remote.to_string(),
-            reason: "push transport not yet supported (gix 0.81 lacks \
-                     push); use bundle/apply or save/load over a \
-                     non-git pipe instead"
-                .to_string(),
-        })
+        let url = crate::config::GitConfig::lookup_remote(&self.git_dir(), remote)?.url;
+        shell_push(&self.git_dir(), &url)
     }
+}
+
+/// Push the canonical [`BRANCH`] of the bare repo at `repo_dir` to
+/// `url` by shelling out to `git push`. Auto-initialises a bare repo
+/// at the destination for `file://` URLs whose path does not yet
+/// exist, so a first push from a fresh remote succeeds without an
+/// out-of-band `git init --bare` step.
+pub(crate) fn shell_push(repo_dir: &Path, url: &str) -> Result<(), Error> {
+    if let Some(local) = url.strip_prefix("file://") {
+        let local_path = Path::new(local);
+        if !local_path.exists() {
+            if let Some(parent) = local_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            init_bare_on_branch(local_path)?;
+        }
+    }
+    let refspec = format!("{BRANCH}:{BRANCH}");
+    let output = Command::new("git")
+        .arg("push")
+        .arg(url)
+        .arg(&refspec)
+        .current_dir(repo_dir)
+        .output()
+        .map_err(|e| Error::Other(format!("git push: spawn failed: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(Error::PushRejected {
+            remote: url.to_string(),
+            reason: if stderr.is_empty() {
+                format!("git push exited with {}", output.status)
+            } else {
+                stderr
+            },
+        });
+    }
+    Ok(())
 }
 
 /// Drive a configured `gix::Remote` through connect -> prepare ->

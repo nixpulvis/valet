@@ -157,6 +157,10 @@ fn dispatch(st: &mut StubState, req: Request) -> Response {
         Request::CreateLot { .. } => Response::Error("stub: create_lot not supported".into()),
         Request::DeleteLot { .. } => Response::Error("stub: delete_lot not supported".into()),
         Request::History { .. } => Response::Error("stub: history not supported".into()),
+        Request::RemoteAdd { .. } => Response::Error("stub: remote_add not supported".into()),
+        Request::RemoteRemove { .. } => Response::Error("stub: remote_remove not supported".into()),
+        Request::RemoteList { .. } => Response::Error("stub: remote_list not supported".into()),
+        Request::Sync { .. } => Response::Error("stub: sync not supported".into()),
     }
 }
 
