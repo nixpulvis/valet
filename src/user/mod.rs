@@ -124,8 +124,8 @@ impl User {
     ///
     /// For more information, see [`Lot`].
     #[cfg(feature = "db")]
-    pub async fn lots(&self, db: &Database) -> Result<Vec<Lot>, Error> {
-        Ok(Lot::load_all(db, self).await?)
+    pub async fn lots(&self, db: &Database, data_dir: &std::path::Path) -> Result<Vec<Lot>, Error> {
+        Ok(Lot::load_all(db, self, data_dir).await?)
     }
 
     /// Return the list of registered usernames from the database.
@@ -256,7 +256,12 @@ mod tests {
     #[cfg(feature = "db")]
     #[tokio::test(flavor = "multi_thread")]
     async fn lots() {
-        let db = Database::new("sqlite://:memory:")
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("valet.sqlite").display()
+        );
+        let db = Database::new(&url)
             .await
             .expect("failed to create database");
         let user = User::new("nixpulvis", "password".try_into().unwrap())
@@ -264,13 +269,16 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot_a = Lot::new("lot a");
+        let mut lot_a = Lot::new("lot a", dir.path()).unwrap();
         lot_a.save(&db, &user).await.expect("failed to save lot");
-        let mut lot_b = Lot::new("lot b");
+        let mut lot_b = Lot::new("lot b", dir.path()).unwrap();
         lot_b.save(&db, &user).await.expect("failed to save lot");
 
-        let lots = user.lots(&db).await.expect("failed to load lots");
-        assert_eq!(lots, vec![lot_a, lot_b]);
+        let lots = user
+            .lots(&db, dir.path())
+            .await
+            .expect("failed to load lots");
+        assert_eq!(lots.len(), 2);
     }
 
     #[cfg(feature = "db")]

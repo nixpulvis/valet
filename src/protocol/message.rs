@@ -109,6 +109,73 @@ pub enum Request {
         lot: String,
         uuid: Uuid<Record>,
     },
+    /// Configure a named remote on each lot in `lots`. Errors a lot if
+    /// a remote with that name already exists there. Answered with
+    /// [`Response::RemoteResults`] (one entry per requested lot).
+    RemoteAdd {
+        username: String,
+        name: String,
+        url: String,
+        lots: Vec<String>,
+    },
+    /// Remove a named remote from each lot in `lots`. Errors a lot if
+    /// no such remote is configured. Answered with
+    /// [`Response::RemoteResults`].
+    RemoteRemove {
+        username: String,
+        name: String,
+        lots: Vec<String>,
+    },
+    /// List configured remotes for each lot. Empty `lots` defaults to
+    /// every lot the user has access to. Answered with
+    /// [`Response::RemoteList`].
+    RemoteList { username: String, lots: Vec<String> },
+    /// Pull then push on every configured remote on each requested
+    /// lot. Empty `lots` defaults to all the user's lots. Push is
+    /// skipped when the pull conflicted or errored. Answered with
+    /// [`Response::SyncResults`].
+    Sync { username: String, lots: Vec<String> },
+}
+
+/// One configured remote on one lot. Carried by
+/// [`Response::RemoteList`].
+#[derive(Encode, Decode, Debug, Clone)]
+pub struct RemoteEntry {
+    pub name: String,
+    pub url: String,
+}
+
+/// Per-(lot, remote) outcome of a sync round. Carried by
+/// [`Response::SyncResults`].
+#[derive(Encode, Decode, Debug)]
+pub struct SyncOutcome {
+    pub lot: String,
+    pub remote: String,
+    /// `Ok(SyncReport)` on a finished pull (clean, with a follow-up
+    /// push result, or conflicted); `Err(message)` on a transport /
+    /// config / I/O failure during the pull.
+    pub result: Result<SyncReport, String>,
+}
+
+/// What a single sync round produced for one (lot, remote) pair.
+/// Push is only attempted (and only representable) when the pull
+/// merged cleanly, so the variants encode the ordering: a conflict
+/// stops the round, a clean pull may still see push rejected.
+#[derive(Encode, Decode, Debug)]
+pub enum SyncReport {
+    /// Pull merged cleanly. `advanced` counts the entries (or refs,
+    /// for the subdir layout) that moved. `pushed` is the follow-up
+    /// `git push`: `Ok(())` on success, `Err(msg)` if the remote
+    /// rejected.
+    Clean {
+        advanced: u32,
+        pushed: Result<(), String>,
+    },
+    /// Pull paused on conflicts. The merge is dropped server-side
+    /// and no push is attempted; the caller must resolve out-of-band
+    /// and re-issue sync. `conflicts` are stringified entry ids for
+    /// human reporting.
+    Conflicted { conflicts: Vec<String> },
 }
 
 /// One historical revision of a record, as carried in
@@ -147,6 +214,15 @@ pub enum Response {
     Lots(Vec<(Uuid<Lot>, String)>),
     /// Record-revision list, newest first (History).
     History(Vec<RevisionEntry>),
+    /// Per-lot result for `RemoteAdd` / `RemoteRemove`. Each entry
+    /// reports success or a per-lot error string; the dispatcher does
+    /// not roll back partial successes.
+    RemoteResults(Vec<(String, Result<(), String>)>),
+    /// Per-lot remote listing for `RemoteList`. The inner vec is the
+    /// remotes configured on that lot.
+    RemoteList(Vec<(String, Vec<RemoteEntry>)>),
+    /// Per-(lot, remote) sync outcomes from `Sync`.
+    SyncResults(Vec<SyncOutcome>),
     /// Human-readable error message, returned in place of any success variant
     /// when the handler cannot satisfy the request.
     // TODO: Make a proper Error enum for this too
@@ -482,6 +558,84 @@ impl Call for DeleteLot {
     }
 }
 
+/// Payload for [`Request::RemoteAdd`].
+pub struct RemoteAdd {
+    pub username: String,
+    pub name: String,
+    pub url: String,
+    pub lots: Vec<String>,
+}
+impl Call for RemoteAdd {
+    type Response = Vec<(String, Result<(), String>)>;
+    fn into_request(self) -> Request {
+        Request::RemoteAdd {
+            username: self.username,
+            name: self.name,
+            url: self.url,
+            lots: self.lots,
+        }
+    }
+    fn from_response(r: Response) -> Result<Self::Response, ResponseError> {
+        r.expect_remote_results()
+    }
+}
+
+/// Payload for [`Request::RemoteRemove`].
+pub struct RemoteRemove {
+    pub username: String,
+    pub name: String,
+    pub lots: Vec<String>,
+}
+impl Call for RemoteRemove {
+    type Response = Vec<(String, Result<(), String>)>;
+    fn into_request(self) -> Request {
+        Request::RemoteRemove {
+            username: self.username,
+            name: self.name,
+            lots: self.lots,
+        }
+    }
+    fn from_response(r: Response) -> Result<Self::Response, ResponseError> {
+        r.expect_remote_results()
+    }
+}
+
+/// Payload for [`Request::RemoteList`].
+pub struct RemoteList {
+    pub username: String,
+    pub lots: Vec<String>,
+}
+impl Call for RemoteList {
+    type Response = Vec<(String, Vec<RemoteEntry>)>;
+    fn into_request(self) -> Request {
+        Request::RemoteList {
+            username: self.username,
+            lots: self.lots,
+        }
+    }
+    fn from_response(r: Response) -> Result<Self::Response, ResponseError> {
+        r.expect_remote_list()
+    }
+}
+
+/// Payload for [`Request::Sync`].
+pub struct Sync {
+    pub username: String,
+    pub lots: Vec<String>,
+}
+impl Call for Sync {
+    type Response = Vec<SyncOutcome>;
+    fn into_request(self) -> Request {
+        Request::Sync {
+            username: self.username,
+            lots: self.lots,
+        }
+    }
+    fn from_response(r: Response) -> Result<Self::Response, ResponseError> {
+        r.expect_sync_results()
+    }
+}
+
 /// Payload for [`Request::History`].
 pub struct History {
     pub username: String,
@@ -562,6 +716,40 @@ impl Response {
             _ => Err(ResponseError::UnexpectedResponse),
         }
     }
+
+    /// Extract [`Response::RemoteResults`]. Folds [`Response::Error`]
+    /// and any other variant into [`ResponseError`].
+    pub(crate) fn expect_remote_results(
+        self,
+    ) -> Result<Vec<(String, Result<(), String>)>, ResponseError> {
+        match self {
+            Response::RemoteResults(v) => Ok(v),
+            Response::Error(msg) => Err(ResponseError::Remote(msg)),
+            _ => Err(ResponseError::UnexpectedResponse),
+        }
+    }
+
+    /// Extract [`Response::RemoteList`]. Folds [`Response::Error`] and
+    /// any other variant into [`ResponseError`].
+    pub(crate) fn expect_remote_list(
+        self,
+    ) -> Result<Vec<(String, Vec<RemoteEntry>)>, ResponseError> {
+        match self {
+            Response::RemoteList(v) => Ok(v),
+            Response::Error(msg) => Err(ResponseError::Remote(msg)),
+            _ => Err(ResponseError::UnexpectedResponse),
+        }
+    }
+
+    /// Extract [`Response::SyncResults`]. Folds [`Response::Error`]
+    /// and any other variant into [`ResponseError`].
+    pub(crate) fn expect_sync_results(self) -> Result<Vec<SyncOutcome>, ResponseError> {
+        match self {
+            Response::SyncResults(v) => Ok(v),
+            Response::Error(msg) => Err(ResponseError::Remote(msg)),
+            _ => Err(ResponseError::UnexpectedResponse),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -579,6 +767,11 @@ mod tests {
     fn sample_record() -> Record {
         use crate::Lot;
         use crate::record::Data;
+        #[cfg(feature = "db")]
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(feature = "db")]
+        let lot = Lot::new("test-lot", dir.path()).unwrap();
+        #[cfg(not(feature = "db"))]
         let lot = Lot::new("test-lot");
         Record::new(
             &lot,

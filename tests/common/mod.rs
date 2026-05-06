@@ -17,16 +17,44 @@ pub mod stub;
 #[cfg(feature = "protocol-native-msg-server")]
 pub mod envelope;
 
-/// Register a user, create the default lot, unlock, and return the
-/// resulting [`EmbeddedHandler`]. Every embedded / socket / native-
-/// messaging test starts from this state.
+/// Test-scoped wrapper around [`EmbeddedHandler`] that keeps the
+/// [`tempfile::TempDir`] backing its data directory alive for as
+/// long as the handler. Derefs to the inner handler so existing
+/// `client.call(...)` sites are unchanged.
 ///
 /// [`EmbeddedHandler`]: valet::protocol::EmbeddedHandler
 #[cfg(feature = "protocol-embedded")]
-pub async fn embedded_client_with_user(
-    username: &str,
-    password: &str,
-) -> valet::protocol::EmbeddedHandler {
+pub struct EmbeddedTestHandler {
+    handler: valet::protocol::EmbeddedHandler,
+    _dir: tempfile::TempDir,
+}
+
+#[cfg(feature = "protocol-embedded")]
+impl std::ops::Deref for EmbeddedTestHandler {
+    type Target = valet::protocol::EmbeddedHandler;
+    fn deref(&self) -> &Self::Target {
+        &self.handler
+    }
+}
+
+// Forward `SendHandler` so callers like `Serve::serve(handler)` that
+// take `H: SendHandler` accept the wrapper directly. `Deref` would
+// be enough for method calls, but trait bounds don't auto-deref.
+#[cfg(feature = "protocol-embedded")]
+impl valet::SendHandler for EmbeddedTestHandler {
+    async fn handle(
+        &self,
+        req: valet::protocol::message::Request,
+    ) -> std::io::Result<valet::protocol::message::Response> {
+        self.handler.handle(req).await
+    }
+}
+
+/// Register a user, create the default lot, unlock, and return the
+/// resulting handler wrapped in [`EmbeddedTestHandler`]. Every
+/// embedded / socket / native-messaging test starts from this state.
+#[cfg(feature = "protocol-embedded")]
+pub async fn embedded_client_with_user(username: &str, password: &str) -> EmbeddedTestHandler {
     use valet::Lot;
     use valet::SendHandler;
     use valet::db::Database;
@@ -35,29 +63,36 @@ pub async fn embedded_client_with_user(
     use valet::protocol::message::Unlock;
     use valet::user::User;
 
-    let db = Database::new("sqlite://:memory:")
-        .await
-        .expect("open in-memory db");
+    let dir = tempfile::tempdir().unwrap();
+    // Build the DB up front so we can register the user and seed the
+    // default lot before the handler takes ownership of it.
+    let db = Database::open_dir(dir.path()).await.expect("open db");
     let user = User::new(username, password.try_into().unwrap())
         .expect("new user")
         .register(&db)
         .await
         .expect("register user");
-    // `EmbeddedHandler::new` takes ownership of the DB, so create the
-    // default lot before handing the DB over.
-    Lot::new(DEFAULT_LOT)
+    Lot::new(DEFAULT_LOT, dir.path())
+        .expect("new lot")
         .save(&db, &user)
         .await
         .expect("create default lot");
-    let client = EmbeddedHandler::new(db, &tokio::runtime::Handle::current());
-    client
+    let handler = EmbeddedHandler::new(
+        db,
+        dir.path().to_path_buf(),
+        &tokio::runtime::Handle::current(),
+    );
+    handler
         .call(Unlock {
             username: username.to_owned(),
             password: password.try_into().unwrap(),
         })
         .await
         .expect("unlock");
-    client
+    EmbeddedTestHandler {
+        handler,
+        _dir: dir,
+    }
 }
 
 /// Fresh short-path temp directory for Unix-socket endpoints. Returns

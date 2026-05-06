@@ -4,6 +4,7 @@ use crate::{
     uuid::Uuid,
 };
 use std::collections::BTreeMap;
+use storgit::Layout;
 
 /// An in-memory map from `Label` to `Uuid<Record>` for a single lot.
 ///
@@ -168,8 +169,13 @@ mod tests {
     };
     use std::str::FromStr;
 
-    async fn setup() -> (Database, User, Lot) {
-        let db = Database::new("sqlite://:memory:")
+    async fn setup() -> (tempfile::TempDir, Lot) {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("valet.sqlite").display()
+        );
+        let db = Database::new(&url)
             .await
             .expect("failed to create database");
         let user = User::new("nixpulvis", "password".try_into().unwrap())
@@ -177,27 +183,27 @@ mod tests {
             .register(&db)
             .await
             .expect("failed to register user");
-        let mut lot = Lot::new("lot a");
+        let mut lot = Lot::new("lot a", dir.path()).expect("failed to create lot");
         lot.save(&db, &user).await.expect("failed to save lot");
-        (db, user, lot)
+        (dir, lot)
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn empty_index() {
-        let (_db, _user, lot) = setup().await;
+        let (_dir, lot) = setup().await;
         assert!(lot.index().is_empty());
         assert_eq!(0, lot.index().len());
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn index_contains_inserted_labels() {
-        let (db, _user, mut lot) = setup().await;
+        let (_dir, mut lot) = setup().await;
         let uuid_a = Record::new(
             &lot,
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
         let uuid_b = Record::new(
@@ -205,7 +211,7 @@ mod tests {
             "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
 
@@ -223,7 +229,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn find_by_name_ignores_extras() {
-        let (db, _user, mut lot) = setup().await;
+        let (_dir, mut lot) = setup().await;
         let uuid = Record::new(
             &lot,
             "acct"
@@ -233,7 +239,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw1".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
 
@@ -246,14 +252,14 @@ mod tests {
             name.clone(),
             Data::new("pw2".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
 
         assert_eq!(1, lot.index().len(), "name-identity keeps a single record");
         assert_eq!(Some(&uuid), lot.index().find_by_name(name.name()));
 
-        let revisions = Record::history(&db, &lot, &uuid)
+        let revisions = Record::history(&lot, &uuid)
             .await
             .unwrap()
             .expect("history exists");
@@ -268,13 +274,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn index_then_show_resolves_password() {
-        let (db, _user, mut lot) = setup().await;
+        let (_dir, mut lot) = setup().await;
         Record::new(
             &lot,
             "target".parse::<Label>().unwrap(),
             Data::new("s3cret".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
 
@@ -283,7 +289,7 @@ mod tests {
             .find(&"target".parse::<Label>().unwrap())
             .expect("label in index")
             .clone();
-        let record = Record::show(&db, &lot, &uuid)
+        let record = Record::show(&lot, &uuid)
             .await
             .unwrap()
             .expect("record exists");
@@ -292,13 +298,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn for_loop_iteration() {
-        let (db, _user, mut lot) = setup().await;
+        let (_dir, mut lot) = setup().await;
         Record::new(
             &lot,
             "a".parse::<Label>().unwrap(),
             Data::new("1".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
         Record::new(
@@ -306,7 +312,7 @@ mod tests {
             "b".parse::<Label>().unwrap(),
             Data::new("2".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
 
@@ -318,8 +324,15 @@ mod tests {
         assert_eq!(vec!["a".to_string(), "b".to_string()], seen);
     }
 
+    // Returns `Lot` only; the `TempDir` from `setup()` is dropped
+    // here, so the on-disk repo backing the returned lot is gone by
+    // the time the caller sees it. Safe today only because every
+    // caller reads exclusively through the in-memory `lot.index()`.
+    // Any test that exercises the store (get/put/history) via this
+    // fixture will fail; in that case, change the signature to
+    // `(TempDir, Lot)` like `setup`.
     async fn seed_search_lot() -> Lot {
-        let (db, _user, mut lot) = setup().await;
+        let (_dir, mut lot) = setup().await;
         Record::new(
             &lot,
             "nix@example.com"
@@ -329,7 +342,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw1".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
         Record::new(
@@ -341,7 +354,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw2".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
         Record::new(
@@ -353,7 +366,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw3".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
         Record::new(
@@ -365,7 +378,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw4".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
         Record::new(
@@ -379,7 +392,7 @@ mod tests {
                 .unwrap(),
             Data::new("pw5".try_into().unwrap()),
         )
-        .save(&db, &mut lot)
+        .save(&mut lot)
         .await
         .unwrap();
         lot
@@ -477,15 +490,15 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn deleted_record_absent_from_index() {
-        let (db, _user, mut lot) = setup().await;
+        let (_dir, mut lot) = setup().await;
         let record = Record::new(
             &lot,
             "ephemeral".parse::<Label>().unwrap(),
             Data::new("x".try_into().unwrap()),
         );
-        record.save(&db, &mut lot).await.unwrap();
+        record.save(&mut lot).await.unwrap();
         assert_eq!(1, lot.index().len());
-        record.delete(&db, &mut lot).await.unwrap();
+        record.delete(&mut lot).await.unwrap();
         assert!(lot.index().is_empty());
     }
 }

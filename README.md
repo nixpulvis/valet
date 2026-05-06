@@ -39,8 +39,8 @@ to take that model and modernize it:
   belongs to.
 - **Local ownership by default.** The database is a SQLite file with embedded
   Git repos on your disk. Nothing is sent to a vendor by default; there is no
-  account to create. When sync lands it will be peer-to-peer between your own
-  devices or servers.
+  account to create. Sync is peer-to-peer between your own devices or servers
+  over any URL `git` can speak (ssh, https, file).
 - **First-party clients on every platform.** The core library is consumed by
   a CLI, a desktop GUI, browser extensions for Firefox/Chrome/Safari, and
   system-level autofill on macOS and iOS, all developed in this repo against
@@ -77,67 +77,34 @@ Note: macOS Ext. and the macOS App will be merged before release.
 
 ## CLI
 
-An idea for the CLI...
+A single user pushing one lot to a bare git repo on a server, as an
+encrypted offsite backup.
+
 ```sh
-$ valet register <username>
-valet> Password: <password>
+# one-time, on the server:
+$ ssh you@host 'git init --bare ~/valet/main.git'
 
-$ valet validate <username>
-valet> Password: <password>
-
-$ valet unlock <username>
-valet> Password: <password>
-
-valet> add <label> <value>...
-
-valet> del <label>
-
-valet> list
-- <label>
-- ...
-
-valet> get <label>
-<value>...
+$ valet register alice
+Password: ********
+$ valet unlock alice
+Password: ********
+valet> add github.com/alice s3cret
+valet> get github.com/alice
+s3cret
+valet> remote add origin ssh://you@host/~/valet/main.git main
+valet> sync main
+main/origin: clean (0 advanced), pushed
 ```
 
-Example Adding Password
-```sh
-$ valet unlock nixpulvis
-valet> Password: mastersecret
-valet> add github.com/nixpulvis anothersecret
-✅
+Each subsequent `sync main` pushes new commits to the remote. The remote
+holds only ciphertext; the lot key never leaves the local database. `sync`
+with no arguments syncs every lot the user can see.
 
-# Or in oneline (two with the password prompt).
-$ valet add github.com/nixpulvis anothersecret
-valet> Password: mastersecret
-✅
-```
+Restoring on a new machine, and syncing the same lot across two devices,
+both require sharing the lot key with another database; that lands with
+cross-user lot sharing (see [Threat Models](#threat-models)).
 
-Example Getting Password
-```sh
-$ valet unlock nixpulvis
-valet> Password: mastersecret
-valet> get github.com/nixpulvis
-anothersecret
-
-# Or in oneline (two with the password prompt).
-$ valet get github.com/nixpulvis
-valet> Password: mastersecret
-anothersecret
-````
-
-Example Adding SSH Key
-```sh
-$ valet unlock nixpulvis
-valet> Password: mastersecret
-valet> add ssh/nixpulvis/machine "..."
-valet> add ssh/nixpulvis/machine.pub "..."
-✅
-
-# Helper commands
-valet> add-ssh ssh/nixpulvis ~/.ssh/machine.pub
-```
-
+TODO: SSH Keys
 TODO: GPG Keys
 
 ### Threat Models
@@ -177,14 +144,45 @@ Full history of secrets should be kept by default in case users accidentally
 update a secret before confirming it was accepted by it's intended recipient.
 Losing a password can be just as bad as having a password stolen.
 
-##### Single/Multi User, Online
-TODO: Next is a single user with many databases all syncronized manually. Here
-databases are transfered between clients with changes merged and conflicts
-handled by the user without an active 3rd party. The way the databases are
-transfered shouldn't effect the application, however if using a network drive,
-each client would still need it's own copy. Here we need to worry about
-maliciously corrupted databases trying to steal data through the syncronization
-process.
+##### Single User, Online
+The next layer adds sync. A single user runs Valet on multiple devices, each
+with its own copy of the database, and points each lot at one or more remote
+git URLs (ssh, https, or file). `sync` fetches commits from each remote, merges
+them into the local lot, and pushes the merged result back. The remote does not
+need to be a Valet process; any git endpoint works.
+
+Everything that crosses the wire is ciphertext. A lot's records are encrypted
+under the lot key, which the remote never sees, and AAD binds each ciphertext
+to the lot uuid plus the record uuid. A malicious remote (or anyone observing
+the transport) therefore cannot read or modify record contents, and cannot
+substitute one record's ciphertext for another's without the merge failing
+authentication.
+
+What a hostile remote *can* do is withhold or replay commits: serve an old
+view, drop incoming commits, or hand different clients divergent histories.
+Valet keeps full record history so an unwanted overwrite is recoverable, but
+freshness is not authenticated end-to-end. Treat the remote as an availability
+dependency, not a confidentiality one.
+
+Conflict resolution is intentionally a manual user step. When two devices
+edit the same record between syncs, `sync` reports the conflicting entries
+and stops; the user picks which side wins. This keeps the trust boundary at
+the user rather than handing it to a merge heuristic.
+
+##### Multi User
+Sharing a lot between two distinct users is not yet supported. Two pieces
+need to land together to make it safe:
+
+- **Lot key sharing.** Lot keys are stored encrypted per-user in `user_lots`.
+  Granting a key to a second user means re-encrypting it under a key the
+  recipient controls; there is no surface for that yet, so cross-user
+  sharing through `sync` alone is impossible today.
+- **Recipient authentication.** Before a granter encrypts a lot key for a
+  recipient, the granter needs to verify the recipient's public key
+  actually belongs to the person they intend to share with. Without an
+  identity check, key sharing degrades to trust-on-first-use against
+  whoever happens to publish a key under a given name. Valet does not yet
+  ship an identity surface for this; it lands alongside key sharing.
 
 ##### Single/Multi User, Hosted
 TODO: Now we introduce a hosted Valet server, which allows for online

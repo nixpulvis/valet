@@ -24,20 +24,3 @@ impl Related<crate::lot::orm::Entity> for Entity {
         Some(Relation::UserLot.def())
     }
 }
-
-/// Traverses User -> UserLots -> Lots -> Records.
-#[allow(dead_code)]
-pub struct UserToRecords;
-
-impl Linked for UserToRecords {
-    type FromEntity = Entity;
-    type ToEntity = crate::record::orm::Entity;
-
-    fn link(&self) -> Vec<RelationDef> {
-        vec![
-            Relation::UserLot.def(),
-            crate::lot::orm::user_lots::Relation::Lot.def(),
-            crate::lot::orm::Relation::Records.def(),
-        ]
-    }
-}

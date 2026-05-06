@@ -1,8 +1,8 @@
 //! Walk through a basic storgit session: put a couple of entries, update
 //! one in place so it picks up a second commit, archive an entry, and
 //! print the history of each. For [`SubmoduleLayout`] also demonstrates
-//! the split-snapshot persistence model: each `snapshot()` reports only
-//! the parts that changed since the previous snapshot. Run with:
+//! the split-bundle persistence model: each `bundle()` reports only
+//! the parts that changed since the previous bundle. Run with:
 //!
 //!     cargo run -p storgit --example demo -- [--submodule|--subdir]
 //!
@@ -10,10 +10,10 @@
 
 use std::path::PathBuf;
 
-use storgit::layout::Layout;
-use storgit::layout::subdir::SubdirLayout;
-use storgit::layout::submodule::{ModuleChange, SubmoduleLayout};
-use storgit::{EntryId, Store};
+use storgit::{
+    EntryId, Store,
+    layout::{Layout, subdir::SubdirLayout, submodule::SubmoduleLayout},
+};
 
 enum LayoutChoice {
     Submodule,
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         LayoutChoice::Submodule => run::<SubmoduleLayout>(
             scratch.path().join("repo"),
             load_scratch.path().join("repo"),
-            report_snapshot_submodule,
+            report_bundle_submodule,
         ),
         LayoutChoice::Subdir => run::<SubdirLayout>(
             scratch.path().join("repo"),
@@ -95,21 +95,21 @@ fn run<L: Layout>(
     Ok(())
 }
 
-/// Take a snapshot and print which parts a persistence layer would
+/// Take a bundle and print which parts a persistence layer would
 /// rewrite. Demonstrates that untouched modules never appear.
-fn report_snapshot_submodule(
+fn report_bundle_submodule(
     store: &mut Store<SubmoduleLayout>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let snap = store.snapshot()?;
-    print!("  snapshot:");
-    if snap.parent.is_some() {
+    let bundle = store.bundle()?;
+    print!("  bundle:");
+    if !bundle.parent.is_empty() {
         print!(" parent");
     }
-    for (name, change) in &snap.modules {
-        match change {
-            ModuleChange::Changed(_) => print!(" {name}"),
-            ModuleChange::Deleted => print!(" -{name}"),
-        }
+    for name in bundle.modules.keys() {
+        print!(" {name}");
+    }
+    for name in &bundle.deleted {
+        print!(" -{name}");
     }
     println!();
     Ok(())

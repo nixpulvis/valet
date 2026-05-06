@@ -1,5 +1,7 @@
 //! The subdir layout, i.e. `path/records/<id>/{data,label}`.
 
+mod merge;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -12,17 +14,39 @@ use gix::objs::{
 use crate::entry::Entry;
 use crate::error::Error;
 use crate::git::{
-    BRANCH, decode_tree, init_bare_on_branch, module_ref_path, read_ref_file, write_commit,
-    write_ref_file,
+    BareRepo, LABEL_FILE, build_slot_entries, decode_tree, init_bare_on_branch, write_commit,
 };
 use crate::id::CommitId;
 use crate::id::EntryId;
 use crate::layout::Layout;
-use crate::module::{DATA_FILE, LABEL_FILE};
+use crate::merge::{ApplyMode, MergeStatus};
 use crate::tarball::tar_dir;
 
 /// Subtree name inside the repo's root tree that holds every entry.
 const RECORDS_DIR: &str = "records";
+
+/// The persisted, transferable form of a subdir-layout
+/// [`Store`][crate::Store]. Pairs with [`Layout::apply`] (consumer)
+/// and [`Layout::bundle`] (producer).
+///
+/// Subdir keeps its whole state in one bare repo, so the bundle
+/// carries one tarball of that repo plus the ids hard-deleted since
+/// the previous bundle.
+#[derive(Debug, Default, Clone)]
+pub struct Bundle {
+    /// Tarball of the bare repo. Empty means "no change since the
+    /// previous bundle": either a fresh store with no commits, or a
+    /// re-bundle after no writes.
+    pub repo: Vec<u8>,
+    /// Ids hard-deleted since the previous bundle. The persistence
+    /// pipeline drops these from backing storage.
+    ///
+    /// Subdir's `delete` today archives (single shared ref can't
+    /// cheaply rewrite history; see `TODO-sync-deletes.md`); the
+    /// receiver should log a warning that history-rewrite isn't
+    /// implemented yet and proceed.
+    pub deleted: Vec<EntryId>,
+}
 
 /// Backed by a single bare repo at `path`. Every entry lives as a
 /// subtree of that repo's root tree, and a single shared ref
@@ -32,8 +56,8 @@ const RECORDS_DIR: &str = "records";
 ///
 /// ```text
 /// <path>/                 bare repo
-///   HEAD -> refs/heads/storgit
-///   refs/heads/storgit    -> the latest commit
+///   HEAD -> refs/heads/main
+///   refs/heads/main       -> the latest commit
 ///   objects/              the shared object DB for every entry
 /// ```
 ///
@@ -66,16 +90,19 @@ const RECORDS_DIR: &str = "records";
 /// splices it into a new `records/` tree (copying the other ids
 /// unchanged), wraps that in a new root tree, and commits with the
 /// prior tip as parent. The new commit is published by rewriting
-/// `refs/heads/storgit` to point at it. `put` is a no-op when the
+/// `refs/heads/main` to point at it. `put` is a no-op when the
 /// rebuilt `records/<id>/` subtree is byte-identical to the prior
 /// one; in that case no commit is written and the ref is unchanged.
-/// `delete` is currently an alias for `archive`: a single shared ref
-/// can't cheaply excise one entry's history without rewriting every
-/// commit that touched it.
+/// `delete` runs the same in-repo write as `archive` (a single
+/// shared ref can't cheaply excise one entry's history without
+/// rewriting every commit that touched it) and additionally
+/// records the id in `pending_deletes`, so the next [`Layout::bundle`]
+/// surfaces it in `Bundle.deleted` for the persistence layer to
+/// drop from backing storage.
 ///
 /// # Per-entry history
 ///
-/// There are no per-entry refs. [`Store::history`](crate::Store::history)
+/// There are no per-entry refs. [`Layout::history`]
 /// walks the shared commit graph and emits an [`Entry`] for each
 /// commit where the `records/<id>/` subtree differs from its parent's,
 /// which mirrors what `git log -- records/<id>/` would surface. The
@@ -92,6 +119,23 @@ const RECORDS_DIR: &str = "records";
 pub struct SubdirLayout {
     path: PathBuf,
     label_cache: BTreeMap<EntryId, Vec<u8>>,
+    /// True when a `put`, `archive`, `delete`, `apply`, or `merge`
+    /// has advanced HEAD since the last [`Layout::bundle`]. Drives
+    /// the bundle's `repo` slot.
+    dirty: bool,
+    /// Hard-delete intent accumulated since the last [`Layout::bundle`].
+    /// `delete()` archives in storgit (subdir can't cheaply rewrite
+    /// history) and pushes the id here; the next bundle drains it
+    /// into [`Bundle::deleted`].
+    ///
+    /// NOTE: this is in-memory only. A process killed between
+    /// `delete()` and `bundle()` loses the deletion intent: the
+    /// archive commit is durable in the repo, but the persistence
+    /// layer never gets told to drop the id from backing storage.
+    /// Durable tracking would need a real ref or sidecar file in
+    /// `<git_dir>/storgit/`; revisit alongside the broader
+    /// process-kill durability story.
+    pending_deletes: Vec<EntryId>,
 }
 
 impl SubdirLayout {
@@ -99,20 +143,26 @@ impl SubdirLayout {
         Ok(gix::open(&self.path)?)
     }
 
-    fn head_commit(&self, _repo: &gix::Repository) -> Result<Option<gix::ObjectId>, Error> {
-        read_ref_file(&module_ref_path(&self.path))
+    fn bare(&self) -> BareRepo<'_> {
+        BareRepo::new(&self.path)
     }
 
-    /// Tree oid of `records/<id>/` at the given root tree, if any.
-    fn id_subtree_oid(
-        repo: &gix::Repository,
-        root_tree_id: gix::ObjectId,
-        id: &EntryId,
-    ) -> Result<Option<gix::ObjectId>, Error> {
-        let Some(records_oid) = subtree_entry(repo, root_tree_id, RECORDS_DIR)? else {
-            return Ok(None);
-        };
-        subtree_entry(repo, records_oid, id.as_str())
+    fn head_commit(&self, _repo: &gix::Repository) -> Result<Option<gix::ObjectId>, Error> {
+        self.bare().read_head()
+    }
+
+    /// Refresh derived state after HEAD advanced via something
+    /// other than `put`/`archive` (e.g. a merge commit).
+    pub(crate) fn rebuild_after_advance(&mut self) -> Result<(), Error> {
+        self.dirty = true;
+        self.rebuild_label_cache()
+    }
+
+    /// Mark dirty so the next `bundle()` re-tars the repo. Used when
+    /// something outside HEAD changes (e.g. remote config writes via
+    /// `Distribute::add_remote` / `remove_remote`).
+    pub(crate) fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     /// Build and persist the label_cache by walking `HEAD:records/`.
@@ -122,9 +172,8 @@ impl SubdirLayout {
         let Some(head) = self.head_commit(&repo)? else {
             return Ok(());
         };
-        let commit = repo.find_object(head)?.into_commit();
-        let root_tree_id = commit.decode()?.tree();
-        let Some(records_oid) = subtree_entry(&repo, root_tree_id, RECORDS_DIR)? else {
+        let rt = RecordsTree::at_commit(&repo, Some(head))?;
+        let Some(records_oid) = rt.records_oid()? else {
             return Ok(());
         };
         let records_tree = decode_tree(&repo, records_oid)?;
@@ -151,6 +200,68 @@ impl SubdirLayout {
     }
 }
 
+/// A view on the subdir layout's fixed tree shape at some commit:
+/// `root -> records/ -> <id>/`. Groups the navigation and mutation
+/// helpers that would otherwise each thread `prior_root_tree_id` /
+/// `prior_records_oid` / `prior_id_subtree_oid` as separate args.
+///
+/// `root_tree` is `None` when the commit doesn't exist yet (fresh
+/// repo); every lookup through a `None` root just returns `None`.
+pub(super) struct RecordsTree<'r> {
+    repo: &'r gix::Repository,
+    root_tree: Option<gix::ObjectId>,
+}
+
+impl<'r> RecordsTree<'r> {
+    /// View at `commit`. `None` means no commit has landed yet.
+    pub(super) fn at_commit(
+        repo: &'r gix::Repository,
+        commit: Option<gix::ObjectId>,
+    ) -> Result<Self, Error> {
+        let root_tree = match commit {
+            Some(c) => Some(repo.find_object(c)?.into_commit().decode()?.tree()),
+            None => None,
+        };
+        Ok(Self { repo, root_tree })
+    }
+
+    /// View at `root_tree` directly. Used by the merge kernel when it
+    /// has a tree oid in hand without needing to redecode the commit.
+    pub(super) fn at_root(repo: &'r gix::Repository, root_tree: Option<gix::ObjectId>) -> Self {
+        Self { repo, root_tree }
+    }
+
+    /// `records/` subtree oid at this root, if any.
+    pub(super) fn records_oid(&self) -> Result<Option<gix::ObjectId>, Error> {
+        match self.root_tree {
+            Some(t) => subtree_entry(self.repo, t, RECORDS_DIR),
+            None => Ok(None),
+        }
+    }
+
+    /// `records/<id>/` subtree oid, if any.
+    pub(super) fn id_subtree(&self, id: &EntryId) -> Result<Option<gix::ObjectId>, Error> {
+        let Some(records) = self.records_oid()? else {
+            return Ok(None);
+        };
+        subtree_entry(self.repo, records, id.as_str())
+    }
+
+    /// Write a new root tree whose `records/<id>/` is set to
+    /// `new_id_subtree` (or removed when `None`), preserving every
+    /// other root-level entry and every other record. Returns the
+    /// new root tree oid.
+    pub(super) fn with_id(
+        &self,
+        id: &EntryId,
+        new_id_subtree: Option<gix::ObjectId>,
+    ) -> Result<gix::ObjectId, Error> {
+        let prior_records = self.records_oid()?;
+        let records_tree_id = write_records_tree(self.repo, prior_records, id, new_id_subtree)?;
+        write_root_tree(self.repo, self.root_tree, records_tree_id)
+    }
+}
+
 /// Look up a named child of `tree_id` and return its oid, or `None`
 /// if that child doesn't exist. Matches by byte-wise filename.
 fn subtree_entry(
@@ -167,6 +278,12 @@ fn subtree_entry(
 }
 
 impl Layout for SubdirLayout {
+    type Bundle = Bundle;
+
+    fn git_dir(&self) -> PathBuf {
+        self.path.clone()
+    }
+
     fn new(path: PathBuf) -> Result<Self, Error> {
         if path.exists() {
             return Err(Error::Other(format!(
@@ -178,6 +295,8 @@ impl Layout for SubdirLayout {
         Ok(SubdirLayout {
             path,
             label_cache: BTreeMap::new(),
+            dirty: false,
+            pending_deletes: Vec::new(),
         })
     }
 
@@ -186,12 +305,14 @@ impl Layout for SubdirLayout {
         let mut layout = SubdirLayout {
             path,
             label_cache: BTreeMap::new(),
+            dirty: false,
+            pending_deletes: Vec::new(),
         };
         layout.rebuild_label_cache()?;
         Ok(layout)
     }
 
-    fn save(&mut self) -> Result<Vec<u8>, Error> {
+    fn save_tar(&mut self) -> Result<Vec<u8>, Error> {
         tar_dir(&self.path)
     }
 
@@ -203,64 +324,24 @@ impl Layout for SubdirLayout {
     ) -> Result<Option<CommitId>, Error> {
         if label.is_none() && data.is_none() {
             return Err(Error::Other(
-                "Store::put requires at least one of label or data; use Store::archive for a tombstone"
+                "Layout::put requires at least one of label or data; use Layout::archive for a tombstone"
                     .into(),
+            ));
+        }
+        if self.bare().merge_in_progress() {
+            return Err(Error::Other(
+                "Layout::put: merge in progress; resolve or abort first".into(),
             ));
         }
         let repo = self.open_repo()?;
         let prior_commit = self.head_commit(&repo)?;
-        let prior_root_tree_id = if let Some(pid) = prior_commit {
-            Some(repo.find_object(pid)?.into_commit().decode()?.tree())
-        } else {
-            None
-        };
-        let prior_records_oid = match prior_root_tree_id {
-            Some(tid) => subtree_entry(&repo, tid, RECORDS_DIR)?,
-            None => None,
-        };
-        let prior_id_subtree_oid = match prior_records_oid {
-            Some(roid) => subtree_entry(&repo, roid, id.as_str())?,
-            None => None,
-        };
+        let rt = RecordsTree::at_commit(&repo, prior_commit)?;
+        let prior_id_subtree_oid = rt.id_subtree(id)?;
         let prior_id_entries = match prior_id_subtree_oid {
             Some(sid) => Some(decode_tree(&repo, sid)?.entries),
             None => None,
         };
-        let prior_blob = |filename: &str| -> Option<gix::ObjectId> {
-            prior_id_entries.as_ref().and_then(|entries| {
-                entries
-                    .iter()
-                    .find(|e| e.filename.as_bstr() == BStr::new(filename))
-                    .map(|e| e.oid)
-            })
-        };
-
-        let data_oid = match data {
-            Some(bytes) => Some(repo.write_blob(bytes)?.detach()),
-            None => prior_blob(DATA_FILE),
-        };
-        let label_oid = match label {
-            Some(bytes) => Some(repo.write_blob(bytes)?.detach()),
-            None => prior_blob(LABEL_FILE),
-        };
-
-        let mut id_entries: Vec<TreeEntry> = Vec::with_capacity(2);
-        if let Some(oid) = data_oid {
-            id_entries.push(TreeEntry {
-                mode: EntryKind::Blob.into(),
-                filename: BString::from(DATA_FILE),
-                oid,
-            });
-        }
-        if let Some(oid) = label_oid {
-            id_entries.push(TreeEntry {
-                mode: EntryKind::Blob.into(),
-                filename: BString::from(LABEL_FILE),
-                oid,
-            });
-        }
-        // DATA_FILE < LABEL_FILE lexicographically, so push order already
-        // satisfies git's strict filename sort.
+        let id_entries = build_slot_entries(&repo, prior_id_entries.as_deref(), label, data)?;
         let id_tree = Tree {
             entries: id_entries,
         };
@@ -272,15 +353,14 @@ impl Layout for SubdirLayout {
             return Ok(None);
         }
 
-        let records_tree_id = write_records_tree(&repo, prior_records_oid, id, Some(id_tree_id))?;
-        let root_tree_id = write_root_tree(&repo, prior_root_tree_id, records_tree_id)?;
+        let root_tree_id = rt.with_id(id, Some(id_tree_id))?;
         let commit_id = write_commit(
             &repo,
             root_tree_id,
             prior_commit.into_iter().collect(),
             "put",
         )?;
-        write_ref_file(&module_ref_path(&self.path), commit_id)?;
+        self.bare().write_head(commit_id)?;
 
         match label {
             Some(bytes) if !bytes.is_empty() => {
@@ -291,6 +371,7 @@ impl Layout for SubdirLayout {
             }
             None => {}
         }
+        self.dirty = true;
         Ok(Some(commit_id.into()))
     }
 
@@ -299,37 +380,28 @@ impl Layout for SubdirLayout {
         let Some(head) = self.head_commit(&repo)? else {
             return Ok(None);
         };
-        let commit = repo.find_object(head)?.into_commit();
-        let root_tree_id = commit.decode()?.tree();
-        if Self::id_subtree_oid(&repo, root_tree_id, id)?.is_none() {
+        let rt = RecordsTree::at_commit(&repo, Some(head))?;
+        if rt.id_subtree(id)?.is_none() {
             return Ok(None);
         }
         Ok(Some(read_subdir_entry_at(&repo, head, id)?))
     }
 
-    fn archive(&mut self, id: &EntryId) -> Result<(), Error> {
+    fn archive(&mut self, id: &EntryId) -> Result<bool, Error> {
         let repo = self.open_repo()?;
         let Some(prior_commit) = self.head_commit(&repo)? else {
-            return Ok(());
+            return Ok(false);
         };
-        let prior_root_tree_id = repo
-            .find_object(prior_commit)?
-            .into_commit()
-            .decode()?
-            .tree();
-        let prior_records_oid = subtree_entry(&repo, prior_root_tree_id, RECORDS_DIR)?;
-        let Some(roid) = prior_records_oid else {
-            return Ok(());
-        };
-        if subtree_entry(&repo, roid, id.as_str())?.is_none() {
-            return Ok(());
+        let rt = RecordsTree::at_commit(&repo, Some(prior_commit))?;
+        if rt.id_subtree(id)?.is_none() {
+            return Ok(false);
         }
-        let records_tree_id = write_records_tree(&repo, Some(roid), id, None)?;
-        let root_tree_id = write_root_tree(&repo, Some(prior_root_tree_id), records_tree_id)?;
+        let root_tree_id = rt.with_id(id, None)?;
         let commit_id = write_commit(&repo, root_tree_id, vec![prior_commit], "archive")?;
-        write_ref_file(&module_ref_path(&self.path), commit_id)?;
+        self.bare().write_head(commit_id)?;
         self.label_cache.remove(id);
-        Ok(())
+        self.dirty = true;
+        Ok(true)
     }
 
     fn delete(&mut self, id: &EntryId) -> Result<(), Error> {
@@ -337,7 +409,13 @@ impl Layout for SubdirLayout {
         // record without rewriting the ref. For now `delete` behaves
         // like `archive`: the entry is removed from the tree, and the
         // past commits that touched it remain reachable from HEAD.
-        self.archive(id)
+        // The hard-delete intent is recorded in `pending_deletes`
+        // (gated on archive actually doing work) so the next
+        // `bundle()` carries it through to the persistence layer.
+        if self.archive(id)? {
+            self.pending_deletes.push(id.clone());
+        }
+        Ok(())
     }
 
     fn list(&self) -> Result<Vec<EntryId>, Error> {
@@ -345,9 +423,8 @@ impl Layout for SubdirLayout {
         let Some(head) = self.head_commit(&repo)? else {
             return Ok(Vec::new());
         };
-        let commit = repo.find_object(head)?.into_commit();
-        let root_tree_id = commit.decode()?.tree();
-        let Some(records_oid) = subtree_entry(&repo, root_tree_id, RECORDS_DIR)? else {
+        let rt = RecordsTree::at_commit(&repo, Some(head))?;
+        let Some(records_oid) = rt.records_oid()? else {
             return Ok(Vec::new());
         };
         let records_tree = decode_tree(&repo, records_oid)?;
@@ -376,12 +453,12 @@ impl Layout for SubdirLayout {
             let commit = repo.find_object(info.id)?.into_commit();
             let decoded = commit.decode()?;
             let tree_id = decoded.tree();
-            let this_subtree = Self::id_subtree_oid(&repo, tree_id, id)?;
+            let this_subtree = RecordsTree::at_root(&repo, Some(tree_id)).id_subtree(id)?;
             let parent_ids: Vec<gix::ObjectId> = decoded.parents().collect();
             let parent_subtree = if let Some(&pid) = parent_ids.first() {
                 let pc = repo.find_object(pid)?.into_commit();
                 let ptid = pc.decode()?.tree();
-                Self::id_subtree_oid(&repo, ptid, id)?
+                RecordsTree::at_root(&repo, Some(ptid)).id_subtree(id)?
             } else {
                 None
             };
@@ -401,6 +478,58 @@ impl Layout for SubdirLayout {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
+    }
+
+    /// Re-tar the bare repo when [`SubdirLayout`] has advanced HEAD
+    /// since the previous bundle, otherwise leave `repo` empty. Drains
+    /// `pending_deletes` into `bundle.deleted`.
+    fn bundle(&mut self) -> Result<Bundle, Error> {
+        let repo = if self.dirty {
+            tar_dir(&self.path)?
+        } else {
+            Vec::new()
+        };
+        let deleted = std::mem::take(&mut self.pending_deletes);
+        self.dirty = false;
+        Ok(Bundle { repo, deleted })
+    }
+
+    /// Fold `bundle` into this layout. With [`ApplyMode::Merge`] the
+    /// kernel runs and may surface conflicts; with
+    /// [`ApplyMode::FastForwardOnly`] a divergent incoming HEAD
+    /// returns [`Error::NotFastForward`] with an empty `ids` (the
+    /// single shared ref is rejected layout-wide). An empty
+    /// `bundle.repo` is a clean no-op.
+    ///
+    /// `bundle.deleted` is ignored on the merge side (deletes are a
+    /// persistence concern; subdir can't cheaply rewrite history yet
+    /// -- see `TODO-sync-deletes.md`).
+    fn apply(&mut self, bundle: Bundle, mode: ApplyMode) -> Result<MergeStatus, Error> {
+        if bundle.repo.is_empty() {
+            return Ok(MergeStatus::Clean(Vec::new()));
+        }
+        let Some(incoming_head) = crate::tarball::import_tarball_objects(&bundle.repo, &self.path)?
+        else {
+            return Ok(MergeStatus::Clean(Vec::new()));
+        };
+
+        if mode == ApplyMode::FastForwardOnly {
+            let local_head = self.bare().read_head()?;
+            if let Some(local) = local_head
+                && local != incoming_head
+            {
+                let repo = self.open_repo()?;
+                let merge_base = repo
+                    .merge_base(local, incoming_head)
+                    .ok()
+                    .map(|i| i.detach());
+                if merge_base != Some(local) {
+                    return Err(Error::NotFastForward { ids: Vec::new() });
+                }
+            }
+        }
+
+        self.run_merge_kernel(incoming_head)
     }
 }
 
@@ -473,34 +602,9 @@ fn read_subdir_entry_at(
     commit_id: gix::ObjectId,
     id: &EntryId,
 ) -> Result<Entry, Error> {
-    let commit = repo.find_object(commit_id)?.into_commit();
-    let sig = commit.committer()?;
-    let seconds = sig.seconds().max(0) as u64;
-    let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
-    let root_tree_id = commit.decode()?.tree();
-    let id_subtree_oid = SubdirLayout::id_subtree_oid(repo, root_tree_id, id)?;
-    let (label, data) = match id_subtree_oid {
-        Some(sid) => {
-            let id_tree = decode_tree(repo, sid)?;
-            let mut label = None;
-            let mut data = None;
-            for entry in id_tree.entries {
-                if entry.filename.as_bstr() == BStr::new(DATA_FILE) {
-                    data = Some(repo.find_object(entry.oid)?.data.clone());
-                } else if entry.filename.as_bstr() == BStr::new(LABEL_FILE) {
-                    label = Some(repo.find_object(entry.oid)?.data.clone());
-                }
-            }
-            (label, data)
-        }
-        None => (None, None),
-    };
-    Ok(Entry {
-        commit: commit_id.into(),
-        time,
-        label,
-        data,
-    })
+    let rt = RecordsTree::at_commit(repo, Some(commit_id))?;
+    let id_subtree_oid = rt.id_subtree(id)?;
+    Entry::at_commit_tree(repo, commit_id, id_subtree_oid)
 }
 
 /// Sanity-check that `path` holds a valid subdir-layout storgit
@@ -513,16 +617,9 @@ fn validate_subdir_repo(path: &Path) -> Result<(), Error> {
             "storgit subdir open: path {path:?} is not a git repo: {e}"
         ))
     })?;
-    let head_raw = std::fs::read_to_string(path.join("HEAD"))
-        .map_err(|e| Error::Other(format!("storgit subdir open: cannot read HEAD: {e}")))?;
-    let head_trimmed = head_raw.trim();
-    let expected = format!("ref: {BRANCH}");
-    if head_trimmed != expected {
-        return Err(Error::Other(format!(
-            "storgit subdir open: HEAD must be {expected:?}; got {head_trimmed:?}"
-        )));
-    }
-    if let Some(commit_oid) = read_ref_file(&module_ref_path(path))? {
+    let br = BareRepo::new(path);
+    br.validate_head_branch("storgit subdir open")?;
+    if let Some(commit_oid) = br.read_head()? {
         let commit = repo.find_object(commit_oid)?.into_commit();
         let tree_id = commit.decode()?.tree();
         let tree = decode_tree(&repo, tree_id)?;

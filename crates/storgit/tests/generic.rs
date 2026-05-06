@@ -8,10 +8,10 @@
 mod common;
 
 use common::{get_data, mkid, put_data};
-use storgit::layout::Layout;
-use storgit::layout::subdir::SubdirLayout;
-use storgit::layout::submodule::SubmoduleLayout;
-use storgit::{CommitId, Entry, EntryId, Store, id};
+use storgit::{
+    CommitId, Distribute, Entry, EntryId, Store, id,
+    layout::{Layout, subdir::SubdirLayout, submodule::SubmoduleLayout},
+};
 
 macro_rules! store_test {
     ($name:ident, |$store:ident| $body:block) => {
@@ -245,6 +245,15 @@ store_test!(archive_clears_label_from_cache, |store| {
     assert!(store.list_labels().is_empty());
 });
 
+store_test!(
+    delete_unknown_id_does_not_leak_into_bundle_deleted,
+    |store| {
+        store.delete(&mkid("never-existed")).unwrap();
+        let bundle = store.bundle().unwrap();
+        assert!(bundle.deleted.is_empty());
+    }
+);
+
 // -- new / open / save / load (layout-agnostic trait methods) ----------
 //
 // Bodies are parameterised over `L: Layout` and instantiated per layout
@@ -442,4 +451,89 @@ fn id_accepts_reasonable_strings() {
     EntryId::new("alpha-beta").unwrap();
     EntryId::new("user@example.com").unwrap();
     EntryId::new("01945e9b-3e3f-7b2a-b8ab-8a52c82d4c01").unwrap();
+}
+
+store_test!(remotes_starts_empty, |store| {
+    assert!(store.remotes().unwrap().is_empty());
+});
+
+store_test!(add_remote_then_list, |store| {
+    store
+        .add_remote("origin", "https://example.com/repo.git")
+        .unwrap();
+    let rs = store.remotes().unwrap();
+    assert_eq!(rs.len(), 1);
+    assert_eq!(rs[0].name, "origin");
+    assert_eq!(rs[0].url, "https://example.com/repo.git");
+});
+
+store_test!(remove_remote_clears_it, |store| {
+    store.add_remote("origin", "url").unwrap();
+    store.remove_remote("origin").unwrap();
+    assert!(store.remotes().unwrap().is_empty());
+});
+
+store_test!(remove_unknown_remote_errors, |store| {
+    assert!(store.remove_remote("missing").is_err());
+});
+
+store_test!(add_duplicate_remote_errors, |store| {
+    store.add_remote("origin", "url1").unwrap();
+    assert!(store.add_remote("origin", "url2").is_err());
+});
+
+store_test!(fetch_unknown_remote_errors, |store| {
+    assert!(store.fetch("nope").is_err());
+});
+
+store_test!(push_unknown_remote_errors, |store| {
+    assert!(store.push("nope").is_err());
+});
+
+store_test!(push_returns_unsupported_when_remote_exists, |store| {
+    store.add_remote("origin", "file:///tmp/nope").unwrap();
+    let err = store.push("origin").unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("not yet supported") || msg.contains("rejected"),
+        "expected unsupported/rejected message, got: {msg}"
+    );
+});
+
+store_test!(fetch_from_local_repo_lands_refs, |store| {
+    // Populate a second store of the same layout; fetch from its
+    // git_dir via file:// URL. Destination HEAD must not move;
+    // remote-tracking refs must land.
+    let mut src = common::make_store_like(&store);
+    put_data(&mut src, "alpha", b"hello");
+    // For submodule, puts buffer until bundle/save flushes the
+    // parent ref; call bundle to persist the parent HEAD.
+    src.flush_for_test();
+
+    let url = format!("file://{}", src.git_dir().display());
+    store.add_remote("src", &url).unwrap();
+
+    let head_before = read_head_ref(&store.git_dir());
+    store.fetch("src").unwrap();
+    let head_after = read_head_ref(&store.git_dir());
+    assert_eq!(head_before, head_after, "fetch must not move local HEAD");
+
+    let loose = store.git_dir().join("refs/remotes/src/main");
+    let packed = store.git_dir().join("packed-refs");
+    assert!(
+        loose.exists() || packed.exists(),
+        "expected refs/remotes/src/main (loose or packed) after fetch"
+    );
+});
+
+fn read_head_ref(git_dir: &std::path::Path) -> Option<String> {
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(ref_path) = head.strip_prefix("ref: ") {
+        std::fs::read_to_string(git_dir.join(ref_path))
+            .ok()
+            .map(|s| s.trim().to_string())
+    } else {
+        Some(head.to_string())
+    }
 }

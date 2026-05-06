@@ -4,6 +4,21 @@ pub enum Error {
     Git(Box<dyn std::error::Error + Send + Sync + 'static>),
     /// A [`crate::layout::submodule::ModuleFetcher`] returned an error.
     Fetch(Box<dyn std::error::Error + Send + Sync + 'static>),
+    /// Push rejected by a remote. Covers non-fast-forward, auth
+    /// failure, pre-receive hook rejection, network errors -- any
+    /// reason the remote did not accept the push.
+    PushRejected {
+        remote: String,
+        reason: String,
+    },
+    /// `apply` with [`crate::ApplyMode::FastForwardOnly`] rejected
+    /// the incoming bundle because applying it would not be a
+    /// fast-forward. `ids` lists the entries whose local and
+    /// incoming heads diverged. Empty for the subdir layout (single
+    /// shared ref; rejection is layout-wide, not per-id).
+    NotFastForward {
+        ids: Vec<String>,
+    },
     Other(String),
 }
 
@@ -13,6 +28,16 @@ impl std::fmt::Display for Error {
             Error::Io(e) => write!(f, "io: {e}"),
             Error::Git(e) => write!(f, "git: {e}"),
             Error::Fetch(e) => write!(f, "fetch: {e}"),
+            Error::PushRejected { remote, reason } => {
+                write!(f, "push to {remote} rejected: {reason}")
+            }
+            Error::NotFastForward { ids } => {
+                write!(
+                    f,
+                    "non-fast-forward: caller must pull and merge first \
+                     (diverging ids: {ids:?})"
+                )
+            }
             Error::Other(s) => write!(f, "{s}"),
         }
     }

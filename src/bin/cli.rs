@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::io::Write;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use valet::db::Database;
@@ -15,7 +16,7 @@ use valet::password::Password;
 use valet::protocol::EmbeddedHandler;
 use valet::protocol::message::{
     CreateLot, CreateRecord, DeleteLot, Fetch, History, List, ListLots, ListUsers, Register,
-    Unlock, Validate,
+    RemoteAdd, RemoteList, RemoteRemove, Sync, SyncReport, Unlock, Validate,
 };
 use valet::record::{Data, Label, LabelName, Query, Record, SaveProgress};
 use valet::{Lot, SendHandler};
@@ -23,11 +24,20 @@ use valet::{Lot, SendHandler};
 #[derive(Parser)]
 #[command(version, about = crate_description!())]
 struct Cli {
-    #[arg(short, long, default_value_t = valet::db::default_url())]
-    database: String,
+    /// Data directory: holds `valet.sqlite` and per-lot bare repos
+    /// at `lots/<uuid>/`. Defaults to `$VALET_DIR` or
+    /// `$XDG_DATA_HOME/valet/`.
+    #[arg(short, long = "dir", default_value_os_t = default_data_dir())]
+    data_dir: PathBuf,
 
     #[command(subcommand)]
     command: ValetCommand,
+}
+
+fn default_data_dir() -> PathBuf {
+    std::env::var_os("VALET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(valet::db::default_dir)
 }
 
 #[derive(Subcommand)]
@@ -100,8 +110,31 @@ enum Repl {
         #[arg(short = 'H', long = "history")]
         history: bool,
     },
+    #[command(subcommand)]
+    Remote(RemoteCommand),
+    /// Pull then push on every configured remote on each lot. With no
+    /// lots, syncs every lot the user has access to. Push is skipped
+    /// when the pull conflicted.
+    Sync {
+        lots: Vec<String>,
+    },
     Clear,
     Lock,
+}
+
+#[derive(Subcommand)]
+enum RemoteCommand {
+    /// Configure `<name>` -> `<url>` on each listed lot.
+    Add {
+        name: String,
+        url: String,
+        lots: Vec<String>,
+    },
+    /// Remove `<name>` from each listed lot.
+    Remove { name: String, lots: Vec<String> },
+    /// List configured remotes per lot. With no lots, lists every
+    /// lot the user has access to.
+    List { lots: Vec<String> },
 }
 
 #[derive(Subcommand)]
@@ -143,7 +176,7 @@ async fn main() -> Result<(), CliError> {
 
     match &cli.command {
         ValetCommand::User(UserCommand::Register { username }) => {
-            let client = open_client(&cli.database).await?;
+            let client = open_client(&cli.data_dir).await?;
             let password = get_password()?;
             client
                 .call(Register {
@@ -154,7 +187,7 @@ async fn main() -> Result<(), CliError> {
             println!("{} registered", username);
         }
         ValetCommand::User(UserCommand::Validate { username }) => {
-            let client = open_client(&cli.database).await?;
+            let client = open_client(&cli.data_dir).await?;
             let username = get_default_username(username, &client).await?;
             let password = get_password()?;
             client
@@ -166,13 +199,13 @@ async fn main() -> Result<(), CliError> {
             println!("{} validated", username);
         }
         ValetCommand::User(UserCommand::List) => {
-            let client = open_client(&cli.database).await?;
+            let client = open_client(&cli.data_dir).await?;
             for user in client.call(ListUsers).await? {
                 println!("{user}")
             }
         }
         ValetCommand::Unlock { username } => {
-            let client = open_client(&cli.database).await?;
+            let client = open_client(&cli.data_dir).await?;
             let username = get_default_username(username, &client).await?;
             let password = get_password()?;
             client
@@ -208,14 +241,14 @@ async fn main() -> Result<(), CliError> {
             // parallel Database handle just for this operation.
             // TODO: fold import into the handler once we have a
             // streaming response protocol.
-            let db = Database::new(&cli.database).await?;
-            let client = open_client(&cli.database).await?;
+            let db = Database::open_dir(&cli.data_dir).await?;
+            let client = open_client(&cli.data_dir).await?;
             let username = get_default_username(username, &client).await?;
             let password = get_password()?;
             let user = valet::User::load(&db, &username, password).await?;
-            if let Some(mut lot) = Lot::load(&db, DEFAULT_LOT, &user).await? {
+            if let Some(mut lot) = Lot::load(&db, DEFAULT_LOT, &user, &cli.data_dir).await? {
                 if ty == "apple" {
-                    import_apple(&db, &mut lot, filepath).await;
+                    import_apple(&mut lot, filepath).await;
                 }
             } else {
                 eprintln!("Missing LOT: {}", DEFAULT_LOT);
@@ -231,10 +264,11 @@ async fn main() -> Result<(), CliError> {
     Ok(())
 }
 
-async fn open_client(database: &str) -> Result<Arc<EmbeddedHandler>, CliError> {
-    let db = Database::new(database).await?;
+async fn open_client(data_dir: &std::path::Path) -> Result<Arc<EmbeddedHandler>, CliError> {
+    let db = Database::open_dir(data_dir).await?;
     Ok(Arc::new(EmbeddedHandler::new(
         db,
+        data_dir.to_path_buf(),
         &tokio::runtime::Handle::current(),
     )))
 }
@@ -451,6 +485,117 @@ async fn run_repl(rl: ClapEditor<Repl>, client: Arc<EmbeddedHandler>, username: 
                 }
             }
         }
+        Repl::Remote(RemoteCommand::Add { name, url, lots }) => {
+            if lots.is_empty() {
+                println!("remote add: at least one lot is required");
+                return;
+            }
+            match client
+                .call(RemoteAdd {
+                    username: username.clone(),
+                    name: name.clone(),
+                    url: url.clone(),
+                    lots: lots.clone(),
+                })
+                .await
+            {
+                Ok(results) => {
+                    for (lot, res) in results {
+                        match res {
+                            Ok(()) => println!("{lot}: added {name} -> {url}"),
+                            Err(e) => println!("{lot}: {e}"),
+                        }
+                    }
+                }
+                Err(e) => println!("remote add failed: {e}"),
+            }
+        }
+        Repl::Remote(RemoteCommand::Remove { name, lots }) => {
+            if lots.is_empty() {
+                println!("remote remove: at least one lot is required");
+                return;
+            }
+            match client
+                .call(RemoteRemove {
+                    username: username.clone(),
+                    name: name.clone(),
+                    lots: lots.clone(),
+                })
+                .await
+            {
+                Ok(results) => {
+                    for (lot, res) in results {
+                        match res {
+                            Ok(()) => println!("{lot}: removed {name}"),
+                            Err(e) => println!("{lot}: {e}"),
+                        }
+                    }
+                }
+                Err(e) => println!("remote remove failed: {e}"),
+            }
+        }
+        Repl::Remote(RemoteCommand::List { lots }) => {
+            match client
+                .call(RemoteList {
+                    username: username.clone(),
+                    lots: lots.clone(),
+                })
+                .await
+            {
+                Ok(per_lot) => {
+                    for (lot, remotes) in per_lot {
+                        if remotes.is_empty() {
+                            println!("{lot}: (no remotes)");
+                        } else {
+                            for r in remotes {
+                                println!("{lot}: {} -> {}", r.name, r.url);
+                            }
+                        }
+                    }
+                }
+                Err(e) => println!("remote list failed: {e}"),
+            }
+        }
+        Repl::Sync { lots } => {
+            match client
+                .call(Sync {
+                    username: username.clone(),
+                    lots: lots.clone(),
+                })
+                .await
+            {
+                Ok(outcomes) => {
+                    if outcomes.is_empty() {
+                        println!("no remotes configured");
+                    }
+                    for o in outcomes {
+                        match o.result {
+                            Ok(SyncReport::Clean { advanced, pushed }) => match pushed {
+                                Ok(()) => println!(
+                                    "{}/{}: clean ({} advanced), pushed",
+                                    o.lot, o.remote, advanced
+                                ),
+                                Err(e) => println!(
+                                    "{}/{}: clean ({} advanced), push rejected: {}",
+                                    o.lot, o.remote, advanced, e
+                                ),
+                            },
+                            Ok(SyncReport::Conflicted { conflicts }) => {
+                                println!(
+                                    "{}/{}: conflicted ({}): {}",
+                                    o.lot,
+                                    o.remote,
+                                    conflicts.len(),
+                                    conflicts.join(", ")
+                                );
+                            }
+                            Err(e) => println!("{}/{}: error: {}", o.lot, o.remote, e),
+                        }
+                    }
+                }
+                Err(e) => println!("sync failed: {e}"),
+            }
+        }
         Repl::Clear => {
             // NOTE: Order matters here.
             // 2J first clears into scrollback
@@ -528,7 +673,7 @@ impl From<valet::lot::Error> for CliError {
     }
 }
 
-async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
+async fn import_apple(lot: &mut Lot, path: &str) {
     let file = File::open(path).expect("failed to open file");
     let mut rdr = csv::Reader::from_reader(file);
 
@@ -617,7 +762,7 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
     let lot_name = lot.name().to_owned();
     println!("Importing {total} records into {lot_name}...");
     let mut put = 0usize;
-    let result = Record::save_many(db, lot, &records, |ev| match ev {
+    let result = Record::save_many(lot, &records, |ev| match ev {
         SaveProgress::OpenedStore => {
             println!("Opened store");
         }
@@ -625,8 +770,8 @@ async fn import_apple(db: &Database, lot: &mut Lot, path: &str) {
             put += 1;
             println!("Put {put}/{total} {lot_name}::{}", record.label());
         }
-        SaveProgress::Snapshot(_) => {
-            println!("Snapshot complete");
+        SaveProgress::ParentFlushed => {
+            println!("Parent flushed");
         }
         SaveProgress::SaveRecord => {
             println!("Saved {total} records");

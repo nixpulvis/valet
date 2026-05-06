@@ -3,10 +3,11 @@ use sqlx::SqlitePool;
 use std::path::PathBuf;
 use url::Url;
 
-/// Default SQLite path: `$XDG_DATA_HOME/valet/valet.sqlite`, falling back to
-/// `$HOME/.local/share/valet/valet.sqlite` per the XDG Base Directory spec.
-/// Returns an absolute filesystem path (not a `sqlite://` URL).
-pub fn default_path() -> PathBuf {
+/// Default valet data directory: `$XDG_DATA_HOME/valet/`, falling
+/// back to `$HOME/.local/share/valet/` per the XDG Base Directory
+/// spec. Holds `valet.sqlite` plus `lots/<lot-uuid>/` per-lot bare
+/// repos.
+pub fn default_dir() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -16,17 +17,28 @@ pub fn default_path() -> PathBuf {
                 .unwrap_or_else(|| PathBuf::from("."));
             home.join(".local").join("share")
         });
-    base.join("valet").join("valet.sqlite")
+    base.join("valet")
 }
 
-pub fn default_url() -> String {
-    default_path().to_string_lossy().into_owned()
+/// Path to the SQLite database file inside `data_dir`. Always
+/// `<data_dir>/valet.sqlite`.
+pub fn sqlite_path(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("valet.sqlite")
 }
 
 #[derive(Clone)]
 pub struct Database(DatabaseConnection);
 
 impl Database {
+    /// Open the database at `<data_dir>/valet.sqlite`, creating the
+    /// directory if necessary. The standard CLI / handler entry
+    /// point.
+    pub async fn open_dir(data_dir: &std::path::Path) -> Result<Database, Error> {
+        std::fs::create_dir_all(data_dir).map_err(sqlx::Error::Io)?;
+        let url = format!("sqlite://{}?mode=rwc", sqlite_path(data_dir).display());
+        Self::new(&url).await
+    }
+
     pub async fn new(input: &str) -> Result<Database, Error> {
         let url = Self::parse_url(input)?;
 

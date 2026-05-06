@@ -51,7 +51,7 @@ impl EntryId {
     /// bookkeeping inside the parent tree, and therefore must not be
     /// used as an entry id.
     pub fn is_reserved(s: &str) -> bool {
-        s == crate::parent::INDEX_DIR
+        s == crate::layout::submodule::parent::INDEX_DIR
     }
 
     /// Construct a validated id, returning [`EntryIdError`] on rejection.

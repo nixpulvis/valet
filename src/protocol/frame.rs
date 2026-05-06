@@ -190,6 +190,11 @@ mod tests {
     }
 
     fn sample_record() -> Record {
+        #[cfg(feature = "db")]
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(feature = "db")]
+        let lot = Lot::new("test-lot", dir.path()).unwrap();
+        #[cfg(not(feature = "db"))]
         let lot = Lot::new("test-lot");
         Record::new(
             &lot,
