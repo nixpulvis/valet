@@ -27,23 +27,15 @@ async fn register_unlock_status() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn register_leaves_user_unlocked() {
-    use valet::db::Database;
     use valet::protocol::EmbeddedHandler;
 
     // Local-scoped tempdir: the handler only needs the path to live
     // through the test body, which it does by virtue of `dir` being
     // dropped after the last `.await` returns.
     let dir = tempfile::tempdir().unwrap();
-    let url = format!(
-        "sqlite://{}?mode=rwc",
-        dir.path().join("valet.sqlite").display()
-    );
-    let db = Database::new(&url).await.unwrap();
-    let client = EmbeddedHandler::new(
-        db,
-        dir.path().to_path_buf(),
-        &tokio::runtime::Handle::current(),
-    );
+    let client = EmbeddedHandler::open(dir.path(), &tokio::runtime::Handle::current())
+        .await
+        .unwrap();
     client
         .call(Register {
             username: "bob".into(),
@@ -290,7 +282,6 @@ async fn sync_with_no_remotes_returns_empty() {
 mod sync_round_trip {
     use std::path::Path;
     use valet::SendHandler;
-    use valet::db::Database;
     use valet::protocol::EmbeddedHandler;
     use valet::protocol::message::{
         CreateLot, CreateRecord, Fetch, History, List, Register, RemoteAdd, Sync, SyncOutcome,
@@ -304,16 +295,9 @@ mod sync_round_trip {
     const RECORD: &str = "a";
 
     async fn open(data_dir: &Path) -> EmbeddedHandler {
-        let url = format!(
-            "sqlite://{}?mode=rwc",
-            data_dir.join("valet.sqlite").display()
-        );
-        let db = Database::new(&url).await.unwrap();
-        EmbeddedHandler::new(
-            db,
-            data_dir.to_path_buf(),
-            &tokio::runtime::Handle::current(),
-        )
+        EmbeddedHandler::open(data_dir, &tokio::runtime::Handle::current())
+            .await
+            .unwrap()
     }
 
     async fn unlock(h: &EmbeddedHandler) {

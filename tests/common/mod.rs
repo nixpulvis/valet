@@ -64,18 +64,14 @@ pub async fn embedded_client_with_user(username: &str, password: &str) -> Embedd
     use valet::user::User;
 
     let dir = tempfile::tempdir().unwrap();
-    let url = format!(
-        "sqlite://{}?mode=rwc",
-        dir.path().join("valet.sqlite").display()
-    );
-    let db = Database::new(&url).await.expect("open db");
+    // Build the DB up front so we can register the user and seed the
+    // default lot before the handler takes ownership of it.
+    let db = Database::open_dir(dir.path()).await.expect("open db");
     let user = User::new(username, password.try_into().unwrap())
         .expect("new user")
         .register(&db)
         .await
         .expect("register user");
-    // `EmbeddedHandler::new` takes ownership of the DB, so create the
-    // default lot before handing the DB over.
     Lot::new(DEFAULT_LOT, dir.path())
         .expect("new lot")
         .save(&db, &user)

@@ -178,6 +178,18 @@ impl EmbeddedHandler {
         Self { state }
     }
 
+    /// Open the database at `<data_dir>/valet.sqlite` and build a
+    /// handler around it. Wraps the [`Database::open_dir`] +
+    /// [`Self::new`] pair that every entry point would otherwise
+    /// repeat.
+    pub async fn open(
+        data_dir: &std::path::Path,
+        rt: &tokio::runtime::Handle,
+    ) -> Result<Self, crate::db::Error> {
+        let db = Database::open_dir(data_dir).await?;
+        Ok(Self::new(db, data_dir.to_path_buf(), rt))
+    }
+
     /// Open the database under `$VALET_DIR` (or
     /// [`crate::db::default_dir`] when unset) and build a handler
     /// around it. Used by the `valetd` binary and by any transport
@@ -186,10 +198,9 @@ impl EmbeddedHandler {
         let data_dir = std::env::var_os("VALET_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(crate::db::default_dir);
-        let db = Database::open_dir(&data_dir)
+        Self::open(&data_dir, rt)
             .await
-            .map_err(|e| format!("failed to open database at {}: {e:?}", data_dir.display()))?;
-        Ok(Self::new(db, data_dir, rt))
+            .map_err(|e| format!("failed to open database at {}: {e:?}", data_dir.display()))
     }
 }
 
